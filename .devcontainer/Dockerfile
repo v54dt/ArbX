@@ -15,6 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Rust 1.94.1
+RUN curl --proto '=https' --tlsv1.2 -sSf https://static.rust-lang.org/rustup/rustup-init.sh | sh -s -- -y --default-toolchain 1.94.1
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 # CMake 4.3.1
 RUN wget -qO- https://github.com/Kitware/CMake/releases/download/v4.3.1/cmake-4.3.1-linux-x86_64.tar.gz \
     | tar xzf - -C /usr/local --strip-components=1
