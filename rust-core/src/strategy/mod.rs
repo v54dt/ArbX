@@ -1,4 +1,5 @@
 pub mod base;
+pub mod cross_exchange;
 
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
