@@ -62,10 +62,7 @@ async fn main() -> anyhow::Result<()> {
         fee_rate_b: dec!(0.0004),
     };
 
-    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![
-        Box::new(spot_feed),
-        Box::new(futures_feed),
-    ];
+    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(spot_feed), Box::new(futures_feed)];
 
     let mut engine = ArbitrageEngine::new(feeds, Box::new(strategy));
     engine.run().await?;

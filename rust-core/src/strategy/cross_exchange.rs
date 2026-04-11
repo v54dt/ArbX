@@ -21,13 +21,9 @@ pub struct CrossExchangeStrategy {
     pub venue_b: Venue,
     pub instrument_a: Instrument,
     pub instrument_b: Instrument,
-    /// Minimum NET profit (after fees) in basis points to trigger.
     pub min_net_profit_bps: Decimal,
-    /// Maximum quantity to trade per opportunity.
     pub max_quantity: Decimal,
-    /// Taker fee rate at venue A (e.g. 0.001 = 0.1%).
     pub fee_rate_a: Decimal,
-    /// Taker fee rate at venue B.
     pub fee_rate_b: Decimal,
 }
 
@@ -61,10 +57,7 @@ impl CrossExchangeStrategy {
             return None;
         }
 
-        let quantity = best_ask
-            .size
-            .min(best_bid.size)
-            .min(self.max_quantity);
+        let quantity = best_ask.size.min(best_bid.size).min(self.max_quantity);
         if quantity <= Decimal::ZERO {
             return None;
         }

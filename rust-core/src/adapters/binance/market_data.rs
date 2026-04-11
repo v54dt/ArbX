@@ -14,8 +14,8 @@ use std::sync::Arc;
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
 use crate::models::instrument::Instrument;
-use crate::models::market::Quote;
 use crate::models::market::OrderBook;
+use crate::models::market::Quote;
 
 pub enum BinanceMarket {
     Spot,

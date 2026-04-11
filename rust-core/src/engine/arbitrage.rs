@@ -18,10 +18,7 @@ pub struct ArbitrageEngine {
 }
 
 impl ArbitrageEngine {
-    pub fn new(
-        feeds: Vec<Box<dyn MarketDataFeed>>,
-        strategy: Box<dyn ArbitrageStrategy>,
-    ) -> Self {
+    pub fn new(feeds: Vec<Box<dyn MarketDataFeed>>, strategy: Box<dyn ArbitrageStrategy>) -> Self {
         Self {
             feeds,
             strategy,

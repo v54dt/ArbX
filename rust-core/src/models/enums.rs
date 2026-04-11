@@ -9,14 +9,14 @@ pub enum Side {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum OrderType {
     Limit,
-    Market
+    Market,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TimeInForce {
     ROD,
     IOC,
-    FOK
+    FOK,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,5 +35,5 @@ pub enum Venue {
     Shioaji,
     Binance,
     Bybit,
-    Okx
+    Okx,
 }

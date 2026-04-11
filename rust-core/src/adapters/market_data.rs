@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::models::market::{Quote, OrderBook};
+use crate::models::market::{OrderBook, Quote};
 
 pub struct MarketDataReceivers {
     pub quotes: mpsc::UnboundedReceiver<Quote>,
