@@ -19,7 +19,8 @@ use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
 pub struct CrossExchangeStrategy {
     pub venue_a: Venue,
     pub venue_b: Venue,
-    pub instrument: Instrument,
+    pub instrument_a: Instrument,
+    pub instrument_b: Instrument,
     /// Minimum NET profit (after fees) in basis points to trigger.
     pub min_net_profit_bps: Decimal,
     /// Maximum quantity to trade per opportunity.
@@ -32,7 +33,11 @@ pub struct CrossExchangeStrategy {
 
 impl CrossExchangeStrategy {
     fn book_key(venue: Venue, instrument: &Instrument) -> String {
-        format!("{:?}:{}-{}", venue, instrument.base, instrument.quote).to_lowercase()
+        format!(
+            "{:?}:{}-{}:{:?}",
+            venue, instrument.base, instrument.quote, instrument.instrument_type
+        )
+        .to_lowercase()
     }
 
     /// Returns None if no profitable trade exists in this direction.
@@ -40,12 +45,14 @@ impl CrossExchangeStrategy {
         &self,
         books: &HashMap<String, OrderBook>,
         buy_venue: Venue,
+        buy_instrument: &Instrument,
         sell_venue: Venue,
+        sell_instrument: &Instrument,
         buy_fee: Decimal,
         sell_fee: Decimal,
     ) -> Option<Opportunity> {
-        let buy_book = books.get(&Self::book_key(buy_venue, &self.instrument))?;
-        let sell_book = books.get(&Self::book_key(sell_venue, &self.instrument))?;
+        let buy_book = books.get(&Self::book_key(buy_venue, buy_instrument))?;
+        let sell_book = books.get(&Self::book_key(sell_venue, sell_instrument))?;
 
         let best_ask = buy_book.best_ask()?;
         let best_bid = sell_book.best_bid()?;
@@ -84,7 +91,7 @@ impl CrossExchangeStrategy {
         let legs = smallvec![
             Leg {
                 venue: buy_venue,
-                instrument: self.instrument.clone(),
+                instrument: buy_instrument.clone(),
                 side: Side::Buy,
                 quote_price: best_ask.price,
                 order_price: best_ask.price,
@@ -93,7 +100,7 @@ impl CrossExchangeStrategy {
             },
             Leg {
                 venue: sell_venue,
-                instrument: self.instrument.clone(),
+                instrument: sell_instrument.clone(),
                 side: Side::Sell,
                 quote_price: best_bid.price,
                 order_price: best_bid.price,
@@ -133,14 +140,18 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
         let a_to_b = self.evaluate_direction(
             books,
             self.venue_a,
+            &self.instrument_a,
             self.venue_b,
+            &self.instrument_b,
             self.fee_rate_a,
             self.fee_rate_b,
         );
         let b_to_a = self.evaluate_direction(
             books,
             self.venue_b,
+            &self.instrument_b,
             self.venue_a,
+            &self.instrument_a,
             self.fee_rate_b,
             self.fee_rate_a,
         );

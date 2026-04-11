@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
@@ -10,16 +11,19 @@ use crate::strategy::base::ArbitrageStrategy;
 
 /// Main loop: receive quote → update local book → evaluate strategy → log opportunity.
 pub struct ArbitrageEngine {
-    feed: Box<dyn MarketDataFeed>,
+    feeds: Vec<Box<dyn MarketDataFeed>>,
     strategy: Box<dyn ArbitrageStrategy>,
     books: HashMap<String, OrderBook>,
     portfolios: HashMap<String, PortfolioSnapshot>,
 }
 
 impl ArbitrageEngine {
-    pub fn new(feed: Box<dyn MarketDataFeed>, strategy: Box<dyn ArbitrageStrategy>) -> Self {
+    pub fn new(
+        feeds: Vec<Box<dyn MarketDataFeed>>,
+        strategy: Box<dyn ArbitrageStrategy>,
+    ) -> Self {
         Self {
-            feed,
+            feeds,
             strategy,
             books: HashMap::new(),
             portfolios: HashMap::new(),
@@ -27,14 +31,34 @@ impl ArbitrageEngine {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        info!(strategy = self.strategy.name(), "starting arbitrage engine");
+        info!(
+            strategy = self.strategy.name(),
+            feeds = self.feeds.len(),
+            "starting arbitrage engine"
+        );
 
-        let MarketDataReceivers {
-            mut quotes,
-            order_books: _,
-        } = self.feed.connect().await?;
+        // Merge all feed quote streams into a single channel.
+        let (merged_tx, mut merged_rx) = mpsc::unbounded_channel::<Quote>();
 
-        while let Some(quote) = quotes.recv().await {
+        for feed in self.feeds.iter_mut() {
+            let MarketDataReceivers {
+                mut quotes,
+                order_books: _,
+            } = feed.connect().await?;
+            let tx = merged_tx.clone();
+            tokio::spawn(async move {
+                while let Some(q) = quotes.recv().await {
+                    if tx.send(q).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // Drop our own sender so the channel closes when all feeds end.
+        drop(merged_tx);
+
+        while let Some(quote) = merged_rx.recv().await {
             let key = book_key(&quote);
             self.books.insert(key, quote_to_book(&quote));
 
@@ -49,17 +73,20 @@ impl ArbitrageEngine {
             }
         }
 
-        warn!("quote stream ended");
+        warn!("all quote streams ended");
         Ok(())
     }
 }
 
 /// Canonical book key used by strategies and the engine.
-/// Format: `"venue:base-quote"` all lowercase.
+/// Format: `"venue:base-quote:instrument_type"` all lowercase.
 fn book_key(quote: &Quote) -> String {
     format!(
-        "{:?}:{}-{}",
-        quote.venue, quote.instrument.base, quote.instrument.quote
+        "{:?}:{}-{}:{:?}",
+        quote.venue,
+        quote.instrument.base,
+        quote.instrument.quote,
+        quote.instrument.instrument_type
     )
     .to_lowercase()
 }
