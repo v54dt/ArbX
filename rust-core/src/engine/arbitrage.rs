@@ -55,17 +55,20 @@ impl ArbitrageEngine {
 }
 
 /// Canonical book key used by strategies and the engine.
-/// Format: `"venue:symbol"` all lowercase.
-/// FIXME: replace string symbol with Instrument struct
+/// Format: `"venue:base-quote"` all lowercase.
 fn book_key(quote: &Quote) -> String {
-    format!("{:?}:{}", quote.venue, quote.symbol).to_lowercase()
+    format!(
+        "{:?}:{}-{}",
+        quote.venue, quote.instrument.base, quote.instrument.quote
+    )
+    .to_lowercase()
 }
 
 /// Convert a top-of-book Quote into a minimal OrderBook (single level each side).
 fn quote_to_book(q: &Quote) -> OrderBook {
     OrderBook {
         venue: q.venue,
-        symbol: q.symbol.clone(),
+        instrument: q.instrument.clone(),
         bids: vec![OrderBookLevel {
             price: q.bid,
             size: q.bid_size,

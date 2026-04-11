@@ -3,16 +3,17 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::enums::Venue;
+use super::instrument::Instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub venue: Venue,
-    pub symbol: String,
+    pub instrument: Instrument,
     pub bid: Decimal,
     pub ask: Decimal,
     pub bid_size: Decimal,
     pub ask_size: Decimal,
-    pub timestamp: DateTime<Utc>
+    pub timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +25,7 @@ pub struct OrderBookLevel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderBook {
     pub venue: Venue,
-    pub symbol: String,
+    pub instrument: Instrument,
     pub bids: Vec<OrderBookLevel>,
     pub asks: Vec<OrderBookLevel>,
     pub timestamp: DateTime<Utc>,

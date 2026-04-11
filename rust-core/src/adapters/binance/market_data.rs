@@ -8,8 +8,12 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{error, info};
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
+use crate::models::instrument::Instrument;
 use crate::models::market::Quote;
 use crate::models::market::OrderBook;
 
@@ -54,7 +58,9 @@ where
 
 pub struct BinanceMarketData {
     market: BinanceMarket,
-    symbols: Vec<String>,
+    /// Map of Binance symbol (e.g. "BTCUSDT") -> canonical Instrument.
+    /// Registered via `register_instrument()` before `connect()`.
+    instruments: HashMap<String, Instrument>,
     ws_task: Option<JoinHandle<()>>,
     quote_tx: Option<mpsc::UnboundedSender<Quote>>,
     book_tx: Option<mpsc::UnboundedSender<OrderBook>>,
@@ -66,13 +72,19 @@ impl BinanceMarketData {
     pub fn new(market: BinanceMarket) -> Self {
         Self {
             market,
-            symbols: Vec::new(),
+            instruments: HashMap::new(),
             ws_task: None,
             quote_tx: None,
             book_tx: None,
             ws_write_tx: None,
             next_req_id: 1,
         }
+    }
+
+    /// Register a Binance symbol -> Instrument mapping.
+    pub fn register_instrument(&mut self, binance_symbol: &str, instrument: Instrument) {
+        self.instruments
+            .insert(binance_symbol.to_uppercase(), instrument);
     }
 
     fn next_id(&mut self) -> u64 {
@@ -92,8 +104,8 @@ impl MarketDataFeed for BinanceMarketData {
         self.book_tx = Some(book_tx);
 
         let streams: Vec<String> = self
-            .symbols
-            .iter()
+            .instruments
+            .keys()
             .map(|s| format!("{}@bookTicker", s.to_lowercase()))
             .collect();
 
@@ -110,6 +122,7 @@ impl MarketDataFeed for BinanceMarketData {
         let (ws_write_tx, mut ws_write_rx) = mpsc::unbounded_channel::<String>();
         self.ws_write_tx = Some(ws_write_tx);
 
+        let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
         let task = tokio::spawn(async move {
             let (mut write, mut read) = ws_stream.split();
@@ -126,17 +139,19 @@ impl MarketDataFeed for BinanceMarketData {
                                     if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
                                         let data = wrapper.get("data").unwrap_or(&wrapper);
                                         if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone()) {
-                                            let quote = Quote {
-                                                venue: Venue::Binance,
-                                                symbol: ticker.symbol,
-                                                bid: ticker.bid_price,
-                                                ask: ticker.ask_price,
-                                                bid_size: ticker.bid_qty,
-                                                ask_size: ticker.ask_qty,
-                                                timestamp: chrono::Utc::now(),
-                                            };
-                                            if tx.send(quote).is_err() {
-                                                break;
+                                            if let Some(instrument) = instruments.get(&ticker.symbol) {
+                                                let quote = Quote {
+                                                    venue: Venue::Binance,
+                                                    instrument: instrument.clone(),
+                                                    bid: ticker.bid_price,
+                                                    ask: ticker.ask_price,
+                                                    bid_size: ticker.bid_qty,
+                                                    ask_size: ticker.ask_qty,
+                                                    timestamp: chrono::Utc::now(),
+                                                };
+                                                if tx.send(quote).is_err() {
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
@@ -181,8 +196,8 @@ impl MarketDataFeed for BinanceMarketData {
     }
 
     async fn subscribe(&mut self, symbols: &[String]) -> Result<()> {
-        self.symbols.extend(symbols.iter().cloned());
-
+        // Symbols must already be registered via `register_instrument()`.
+        // This method only sends the dynamic SUBSCRIBE frame if already connected.
         let id = self.next_id();
         if let Some(tx) = &self.ws_write_tx {
             let params: Vec<String> = symbols
@@ -200,7 +215,9 @@ impl MarketDataFeed for BinanceMarketData {
     }
 
     async fn unsubscribe(&mut self, symbols: &[String]) -> Result<()> {
-        self.symbols.retain(|s| !symbols.contains(s));
+        for s in symbols {
+            self.instruments.remove(&s.to_uppercase());
+        }
 
         let id = self.next_id();
         if let Some(tx) = &self.ws_write_tx {
