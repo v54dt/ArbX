@@ -30,15 +30,6 @@ pub enum OrderStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AssetClass {
-    Equity,
-    Futures,
-    Option,
-    CryptoSpot,
-    CryptoPerp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Venue {
     Fubon,
     Shioaji,

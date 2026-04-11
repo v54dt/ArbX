@@ -19,7 +19,7 @@ impl RiskLimit for MaxPositionSize {
         let current = portfolio
             .positions
             .iter()
-            .find(|p| p.symbol == order.symbol)
+            .find(|p| p.instrument == order.instrument)
             .map(|p| p.quantity.abs())
             .unwrap_or(Decimal::ZERO);
 

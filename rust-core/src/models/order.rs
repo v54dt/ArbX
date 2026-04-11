@@ -3,12 +3,13 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use super::enums::{OrderStatus, OrderType, Side, TimeInForce, Venue};
+use super::instrument::Instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: String,
     pub venue: Venue,
-    pub symbol: String,
+    pub instrument: Instrument,
     pub side: Side,
     pub order_type: OrderType,
     pub time_in_force: Option<TimeInForce>,
@@ -21,7 +22,7 @@ pub struct Order {
 pub struct Fill {
     pub order_id: String,
     pub venue: Venue,
-    pub symbol: String,
+    pub instrument: Instrument,
     pub side: Side,
     pub price: Decimal,
     pub quantity: Decimal,

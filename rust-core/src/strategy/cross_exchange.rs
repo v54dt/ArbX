@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use smallvec::smallvec;
 
 use crate::models::enums::{OrderType, Side, Venue};
+use crate::models::instrument::Instrument;
 use crate::models::market::OrderBook;
 use crate::models::order::Order;
 use crate::models::position::PortfolioSnapshot;
@@ -14,11 +15,11 @@ use super::base::ArbitrageStrategy;
 use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
 
 /// Cross-exchange spot arbitrage between two venues.
-/// TODO: walk-the-book VWAP, staleness regection
+/// TODO: walk-the-book VWAP, staleness rejection
 pub struct CrossExchangeStrategy {
     pub venue_a: Venue,
     pub venue_b: Venue,
-    pub symbol: String,
+    pub instrument: Instrument,
     /// Minimum NET profit (after fees) in basis points to trigger.
     pub min_net_profit_bps: Decimal,
     /// Maximum quantity to trade per opportunity.
@@ -30,8 +31,8 @@ pub struct CrossExchangeStrategy {
 }
 
 impl CrossExchangeStrategy {
-    fn book_key(venue: Venue, symbol: &str) -> String {
-        format!("{:?}:{}", venue, symbol).to_lowercase()
+    fn book_key(venue: Venue, instrument: &Instrument) -> String {
+        format!("{:?}:{}-{}", venue, instrument.base, instrument.quote).to_lowercase()
     }
 
     /// Returns None if no profitable trade exists in this direction.
@@ -43,18 +44,16 @@ impl CrossExchangeStrategy {
         buy_fee: Decimal,
         sell_fee: Decimal,
     ) -> Option<Opportunity> {
-        let buy_book = books.get(&Self::book_key(buy_venue, &self.symbol))?;
-        let sell_book = books.get(&Self::book_key(sell_venue, &self.symbol))?;
+        let buy_book = books.get(&Self::book_key(buy_venue, &self.instrument))?;
+        let sell_book = books.get(&Self::book_key(sell_venue, &self.instrument))?;
 
         let best_ask = buy_book.best_ask()?;
         let best_bid = sell_book.best_bid()?;
 
-        // No edge if sell price is not higher than buy price.
         if best_bid.price <= best_ask.price {
             return None;
         }
 
-        // Quantity is limited by available depth on both legs and our cap.
         let quantity = best_ask
             .size
             .min(best_bid.size)
@@ -85,7 +84,7 @@ impl CrossExchangeStrategy {
         let legs = smallvec![
             Leg {
                 venue: buy_venue,
-                instrument: self.symbol.clone(),
+                instrument: self.instrument.clone(),
                 side: Side::Buy,
                 quote_price: best_ask.price,
                 order_price: best_ask.price,
@@ -94,7 +93,7 @@ impl CrossExchangeStrategy {
             },
             Leg {
                 venue: sell_venue,
-                instrument: self.symbol.clone(),
+                instrument: self.instrument.clone(),
                 side: Side::Sell,
                 quote_price: best_bid.price,
                 order_price: best_bid.price,
@@ -131,7 +130,6 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
         books: &HashMap<String, OrderBook>,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
     ) -> Option<Opportunity> {
-        // Try both directions, return the more profitable one.
         let a_to_b = self.evaluate_direction(
             books,
             self.venue_a,
@@ -168,7 +166,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
             .map(|leg| Order {
                 id: String::new(),
                 venue: leg.venue,
-                symbol: leg.instrument.clone(),
+                instrument: leg.instrument.clone(),
                 side: leg.side,
                 order_type: OrderType::Limit,
                 time_in_force: None,

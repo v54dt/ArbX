@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use smallvec::SmallVec;
 
 use crate::models::enums::{Side, Venue};
+use crate::models::instrument::Instrument;
 
 pub type OpportunityId = String;
 pub type StrategyId = String;
@@ -27,7 +28,7 @@ pub enum OpportunityKind {
 #[derive(Debug, Clone)]
 pub struct Leg {
     pub venue: Venue,
-    pub instrument: String,
+    pub instrument: Instrument,
     pub side: Side,
     pub quote_price: Decimal,
     pub order_price: Decimal,
