@@ -63,11 +63,30 @@ impl ArbitrageEngine {
             self.books.insert(key, quote_to_book(&quote));
 
             if let Some(opp) = self.strategy.evaluate(&self.books, &self.portfolios).await {
+                let direction = opp
+                    .legs
+                    .iter()
+                    .map(|leg| {
+                        format!(
+                            "{:?} {:?} {:?}@{}x{}",
+                            leg.side,
+                            leg.venue,
+                            leg.instrument.instrument_type,
+                            leg.order_price,
+                            leg.quantity
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+
                 info!(
                     id = opp.id.as_str(),
-                    net_profit = %opp.economics.net_profit,
-                    net_profit_bps = %opp.economics.net_profit_bps,
-                    legs = opp.legs.len(),
+                    direction = direction.as_str(),
+                    gross = %opp.economics.gross_profit,
+                    fees = %opp.economics.fees_total,
+                    net = %opp.economics.net_profit,
+                    net_bps = %opp.economics.net_profit_bps,
+                    notional = %opp.economics.notional,
                     "opportunity detected"
                 );
             }
