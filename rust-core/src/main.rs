@@ -1,5 +1,6 @@
 mod adapters;
 mod models;
+mod risk;
 
 use adapters::binance::market_data::{BinanceMarketData, BinanceMarket};
 
