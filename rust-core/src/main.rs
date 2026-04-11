@@ -4,7 +4,6 @@ mod models;
 mod risk;
 mod strategy;
 
-use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
