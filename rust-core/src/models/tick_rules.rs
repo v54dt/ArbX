@@ -49,4 +49,24 @@ mod tests {
     fn tw_stock_tick_boundary_10() {
         assert_eq!(tw_stock_tick_size(dec!(10)), dec!(0.05));
     }
+
+    #[test]
+    fn tw_stock_tick_boundary_50() {
+        assert_eq!(tw_stock_tick_size(dec!(50)), dec!(0.10));
+    }
+
+    #[test]
+    fn tw_stock_tick_boundary_100() {
+        assert_eq!(tw_stock_tick_size(dec!(100)), dec!(0.50));
+    }
+
+    #[test]
+    fn tw_stock_tick_boundary_500() {
+        assert_eq!(tw_stock_tick_size(dec!(500)), dec!(1.00));
+    }
+
+    #[test]
+    fn tw_stock_tick_boundary_1000() {
+        assert_eq!(tw_stock_tick_size(dec!(1000)), dec!(5.00));
+    }
 }
