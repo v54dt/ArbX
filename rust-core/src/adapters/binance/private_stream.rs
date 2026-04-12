@@ -125,6 +125,8 @@ impl BinancePrivateStream {
             quote: String::new(),
             settle_currency: None,
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         };
 
         let fill = Fill {

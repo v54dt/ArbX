@@ -26,4 +26,8 @@ pub struct Instrument {
     pub quote: String,
     pub settle_currency: Option<String>,
     pub expiry: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_trade_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub settlement_time: Option<DateTime<Utc>>,
 }

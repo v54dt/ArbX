@@ -62,6 +62,8 @@ fn parse_instrument(cfg: &InstrumentConfig) -> anyhow::Result<Instrument> {
         quote: cfg.quote.clone(),
         settle_currency: cfg.settle_currency.clone(),
         expiry: None,
+        last_trade_time: None,
+        settlement_time: None,
     })
 }
 
