@@ -34,6 +34,9 @@ risk:
   max_daily_loss: "1000"
   max_notional_exposure: "100000"
 
+engine:
+  reconcile_interval_secs: 30
+
 logging:
   level: info
   json_output: false

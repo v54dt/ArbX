@@ -230,7 +230,11 @@ async fn main() -> anyhow::Result<()> {
     } else {
         Box::new(executor)
     };
-    let position_manager = BinancePositionManager::new(parse_market(&cfg.venues[idx_b].market)?);
+    let position_manager = BinancePositionManager::new(
+        parse_market(&cfg.venues[idx_b].market)?,
+        &cfg.venues[idx_b].api_key,
+        &cfg.venues[idx_b].api_secret,
+    );
 
     let mut engine = ArbitrageEngine::new(
         feeds,
@@ -238,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
         risk_manager,
         executor,
         Box::new(position_manager),
+        cfg.engine.reconcile_interval_secs,
     );
     engine.run().await?;
 

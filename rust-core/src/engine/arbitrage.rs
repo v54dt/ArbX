@@ -28,6 +28,7 @@ pub struct ArbitrageEngine {
     books: HashMap<String, OrderBook>,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
+    reconcile_interval_secs: u64,
 }
 
 impl ArbitrageEngine {
@@ -37,6 +38,7 @@ impl ArbitrageEngine {
         risk_manager: RiskManager,
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
+        reconcile_interval_secs: u64,
     ) -> Self {
         Self {
             feeds,
@@ -47,6 +49,7 @@ impl ArbitrageEngine {
             books: HashMap::new(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
+            reconcile_interval_secs,
         }
     }
 
@@ -93,6 +96,9 @@ impl ArbitrageEngine {
             });
         }
 
+        let mut reconcile_interval =
+            tokio::time::interval(std::time::Duration::from_secs(self.reconcile_interval_secs));
+
         loop {
             tokio::select! {
                 Some(quote) = merged_rx.recv() => {
@@ -103,6 +109,17 @@ impl ArbitrageEngine {
                     let key = format!("{:?}", fill.venue).to_lowercase();
                     if let Ok(snapshot) = self.position_manager.get_portfolio().await {
                         self.portfolios.insert(key, snapshot);
+                    }
+                }
+                _ = reconcile_interval.tick() => {
+                    if let Err(e) = self.position_manager.sync_positions().await {
+                        warn!(error = %e, "position reconciliation failed");
+                    } else {
+                        if let Ok(snapshot) = self.position_manager.get_portfolio().await {
+                            let key = "reconciled".to_string();
+                            self.portfolios.insert(key, snapshot);
+                        }
+                        info!("position reconciliation completed");
                     }
                 }
                 else => break,

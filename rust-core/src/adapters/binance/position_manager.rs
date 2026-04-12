@@ -2,34 +2,61 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
+use serde::Deserialize;
 
 use super::market_data::BinanceMarket;
+use super::rest_client::BinanceRestClient;
 use crate::adapters::position_manager::PositionManager;
+use crate::adapters::rest_client::{HttpMethod, RestRequest};
 use crate::models::enums::{Side, Venue};
-use crate::models::instrument::Instrument;
+use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
-/// Binance implementation of the `PositionManager` trait.
-/// Tracks positions locally
+#[derive(Debug, Deserialize)]
+struct FuturesPositionRisk {
+    symbol: String,
+    #[serde(rename = "positionAmt")]
+    position_amt: String,
+    #[serde(rename = "entryPrice")]
+    entry_price: String,
+    #[serde(rename = "unRealizedProfit")]
+    unrealized_profit: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpotBalance {
+    asset: String,
+    free: String,
+    locked: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpotAccountInfo {
+    balances: Vec<SpotBalance>,
+}
+
 pub struct BinancePositionManager {
     market: BinanceMarket,
     base_url: String,
+    rest_client: Option<BinanceRestClient>,
     positions: HashMap<String, Position>,
 }
 
 impl BinancePositionManager {
-    pub fn new(market: BinanceMarket) -> Self {
-        let base_url = match market {
-            BinanceMarket::Spot => "https://api.binance.com",
-            BinanceMarket::UsdtFutures => "https://fapi.binance.com",
-            BinanceMarket::CoinFutures => "https://dapi.binance.com",
-        }
-        .to_string();
+    pub fn new(market: BinanceMarket, api_key: &str, api_secret: &str) -> Self {
+        let base_url = market.rest_base_url().to_string();
+
+        let rest_client = if api_key.is_empty() || api_secret.is_empty() {
+            None
+        } else {
+            Some(BinanceRestClient::new(&base_url, api_key, api_secret))
+        };
 
         Self {
             market,
             base_url,
+            rest_client,
             positions: HashMap::new(),
         }
     }
@@ -136,11 +163,102 @@ impl PositionManager for BinancePositionManager {
     }
 
     async fn sync_positions(&mut self) -> anyhow::Result<()> {
-        // TODO: real Binance REST GET /fapi/v2/positionRisk
+        let rest = match &self.rest_client {
+            Some(r) => r,
+            None => {
+                tracing::warn!(
+                    market = self.market_label(),
+                    "no credentials, skipping sync"
+                );
+                return Ok(());
+            }
+        };
+
+        use crate::adapters::rest_client::ExchangeRestClient;
+
+        match self.market {
+            BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => {
+                let req = RestRequest {
+                    method: HttpMethod::Get,
+                    path: "/fapi/v2/positionRisk".to_string(),
+                    params: HashMap::new(),
+                };
+                let resp = rest.send(req).await?;
+                if resp.status != 200 {
+                    anyhow::bail!("positionRisk returned {}: {}", resp.status, resp.body);
+                }
+                let risks: Vec<FuturesPositionRisk> = serde_json::from_str(&resp.body)?;
+                for r in risks {
+                    let amt: Decimal = r.position_amt.parse().unwrap_or(Decimal::ZERO);
+                    if amt == Decimal::ZERO {
+                        continue;
+                    }
+                    let entry: Decimal = r.entry_price.parse().unwrap_or(Decimal::ZERO);
+                    let upnl: Decimal = r.unrealized_profit.parse().unwrap_or(Decimal::ZERO);
+                    let key = r.symbol.clone();
+                    let pos = self.positions.entry(key).or_insert_with(|| Position {
+                        venue: Venue::Binance,
+                        instrument: Instrument {
+                            asset_class: AssetClass::Crypto,
+                            instrument_type: InstrumentType::Swap,
+                            base: r.symbol.clone(),
+                            quote: "USDT".into(),
+                            settle_currency: Some("USDT".into()),
+                            expiry: None,
+                        },
+                        quantity: Decimal::ZERO,
+                        average_cost: Decimal::ZERO,
+                        unrealized_pnl: Decimal::ZERO,
+                        realized_pnl: Decimal::ZERO,
+                    });
+                    pos.quantity = amt;
+                    pos.average_cost = entry;
+                    pos.unrealized_pnl = upnl;
+                }
+            }
+            BinanceMarket::Spot => {
+                let req = RestRequest {
+                    method: HttpMethod::Get,
+                    path: "/api/v3/account".to_string(),
+                    params: HashMap::new(),
+                };
+                let resp = rest.send(req).await?;
+                if resp.status != 200 {
+                    anyhow::bail!("account returned {}: {}", resp.status, resp.body);
+                }
+                let info: SpotAccountInfo = serde_json::from_str(&resp.body)?;
+                for b in info.balances {
+                    let free: Decimal = b.free.parse().unwrap_or(Decimal::ZERO);
+                    let locked: Decimal = b.locked.parse().unwrap_or(Decimal::ZERO);
+                    let total = free + locked;
+                    if total == Decimal::ZERO {
+                        continue;
+                    }
+                    let key = format!("{}-USDT", b.asset);
+                    let pos = self.positions.entry(key).or_insert_with(|| Position {
+                        venue: Venue::Binance,
+                        instrument: Instrument {
+                            asset_class: AssetClass::Crypto,
+                            instrument_type: InstrumentType::Spot,
+                            base: b.asset.clone(),
+                            quote: "USDT".into(),
+                            settle_currency: None,
+                            expiry: None,
+                        },
+                        quantity: Decimal::ZERO,
+                        average_cost: Decimal::ZERO,
+                        unrealized_pnl: Decimal::ZERO,
+                        realized_pnl: Decimal::ZERO,
+                    });
+                    pos.quantity = total;
+                }
+            }
+        }
+
         tracing::info!(
             market = self.market_label(),
-            base_url = self.base_url.as_str(),
-            "sync_positions (stub)"
+            positions = self.positions.len(),
+            "sync_positions completed"
         );
         Ok(())
     }
@@ -191,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_buy() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures);
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
         let inst = test_instrument();
 
         // First buy: 1 BTC @ 50000
@@ -209,7 +327,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_sell_with_pnl() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures);
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
         let inst = test_instrument();
 
         // Buy 2 BTC @ 50000
@@ -225,7 +343,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_full_close() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures);
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -237,14 +355,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_position_missing() {
-        let pm = BinancePositionManager::new(BinanceMarket::Spot);
+        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "");
         let result = pm.get_position("ETH-USDT").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_get_portfolio_empty() {
-        let pm = BinancePositionManager::new(BinanceMarket::Spot);
+        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "");
         let snap = pm.get_portfolio().await.unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);
