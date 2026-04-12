@@ -18,6 +18,7 @@ pub struct Position {
 }
 
 impl Position {
+    // Compares against UTC date; TW settlement is in Asia/Taipei timezone
     pub fn is_settled(&self) -> bool {
         match self.settlement_date {
             Some(date) => Utc::now().date_naive() >= date,

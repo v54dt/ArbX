@@ -62,6 +62,9 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
         let etf_mid = (etf_ask.price + etf_bid.price) / Decimal::TWO;
         let fair_value = self.fair_futures_price(etf_mid);
 
+        let carry_rate = self.cost_of_carry_bps / Decimal::from(10_000)
+            * Decimal::from(self.days_to_expiry)
+            / Decimal::from(365);
         let threshold = fair_value * self.min_net_profit_bps / Decimal::from(10_000);
 
         let (fut_side, fut_price, etf_side, etf_price, basis_bps) =
@@ -86,11 +89,11 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
 
         let etf_qty = fut_qty * self.hedge_ratio;
 
-        let deviation = match fut_side {
-            Side::Sell => fut_price - fair_value,
-            Side::Buy => fair_value - fut_price,
+        let carry_cost = etf_price * carry_rate;
+        let gross_profit = match fut_side {
+            Side::Sell => (fut_price - etf_price - carry_cost) * fut_qty,
+            Side::Buy => (etf_price - carry_cost - fut_price) * fut_qty,
         };
-        let gross_profit = deviation * fut_qty;
 
         let fee_etf_total = etf_price * etf_qty * self.fee_etf.taker();
         let fee_fut_total = fut_price * fut_qty * self.fee_futures.taker();
@@ -289,6 +292,8 @@ mod tests {
         assert_eq!(opp.legs[1].side, Side::Sell); // sell futures
         assert_eq!(opp.legs[0].instrument, etf_instrument());
         assert_eq!(opp.legs[1].instrument, futures_instrument());
+        assert!(opp.economics.gross_profit > Decimal::ZERO);
+        assert!(opp.economics.net_profit > Decimal::ZERO);
     }
 
     #[tokio::test]
@@ -296,10 +301,12 @@ mod tests {
         let s = make_strategy();
         // ETF mid = 150, fair ≈ 150.2466
         // Futures ask well below fair value
-        let books = make_books(dec!(149), dec!(151), dec!(145), dec!(146));
+        let books = make_books(dec!(149), dec!(151), dec!(140), dec!(141));
         let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell); // sell ETF
         assert_eq!(opp.legs[1].side, Side::Buy); // buy futures
+        assert!(opp.economics.gross_profit > Decimal::ZERO);
+        assert!(opp.economics.net_profit > Decimal::ZERO);
     }
 
     #[tokio::test]
