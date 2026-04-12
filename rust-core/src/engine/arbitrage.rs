@@ -10,8 +10,8 @@ use smallvec::SmallVec;
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
-use crate::models::enums::Venue;
 use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
+use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
 use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
 use crate::risk::manager::RiskManager;
@@ -78,158 +78,178 @@ impl ArbitrageEngine {
         // Drop our own sender so the channel closes when all feeds end.
         drop(merged_tx);
 
-        while let Some(quote) = merged_rx.recv().await {
-            let key = book_key(quote.venue, &quote.instrument);
-            self.books.insert(key, quote_to_book(&quote));
-
-            if let Some(opp) = self.strategy.evaluate(&self.books, &self.portfolios).await {
-                let direction = opp
-                    .legs
-                    .iter()
-                    .map(|leg| {
-                        format!(
-                            "{:?} {:?} {:?}@{}x{}",
-                            leg.side,
-                            leg.venue,
-                            leg.instrument.instrument_type,
-                            leg.order_price,
-                            leg.quantity
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" | ");
-
-                info!(
-                    id = opp.id.as_str(),
-                    direction = direction.as_str(),
-                    gross = %opp.economics.gross_profit,
-                    fees = %opp.economics.fees_total,
-                    net = %opp.economics.net_profit,
-                    net_bps = %opp.economics.net_profit_bps,
-                    notional = %opp.economics.notional,
-                    "opportunity detected"
-                );
-
-                // Compute hedge orders from the opportunity
-                let orders = self.strategy.compute_hedge_orders(&opp);
-
-                // Track trade legs for the TradeLog
-                let mut trade_legs: SmallVec<[TradeLeg; 4]> = SmallVec::new();
-                let mut submitted_count: usize = 0;
-                let mut risk_rejected_count: usize = 0;
-                let total_orders = orders.len();
-
-                // Get portfolio snapshot from position manager
-                let portfolio = self
-                    .position_manager
-                    .get_portfolio()
-                    .await
-                    .unwrap_or_else(|_| PortfolioSnapshot {
-                        venue: Venue::Binance,
-                        positions: vec![],
-                        total_equity: Decimal::ZERO,
-                        available_balance: Decimal::ZERO,
-                        unrealized_pnl: Decimal::ZERO,
-                        realized_pnl: Decimal::ZERO,
-                    });
-
-                // Risk-check and submit each order
-                for mut req in orders {
-                    let verdict = self.risk_manager.check_pre_trade(&req, &portfolio);
-
-                    if !verdict.approved {
-                        warn!(
-                            reason = verdict.reason.as_deref().unwrap_or("unknown"),
-                            "order rejected by risk manager"
-                        );
-                        risk_rejected_count += 1;
-                        trade_legs.push(TradeLeg {
-                            venue: req.venue,
-                            instrument: req.instrument.clone(),
-                            side: req.side,
-                            intended_price: req.price.unwrap_or(Decimal::ZERO),
-                            intended_quantity: req.quantity,
-                            order_id: None,
-                            submitted_at: Utc::now(),
-                        });
-                        continue;
-                    }
-
-                    if let Some(adj_qty) = verdict.adjusted_qty {
-                        req.quantity = adj_qty;
-                    }
-
-                    let order = req.into_order();
-                    match self.executor.submit_order(&order).await {
-                        Ok(order_id) => {
-                            info!(
-                                order_id = order_id.as_str(),
-                                side = ?order.side,
-                                qty = %order.quantity,
-                                "order submitted"
-                            );
-                            submitted_count += 1;
-                            // TODO: apply fills from executor's fill stream to position_manager
-                            trade_legs.push(TradeLeg {
-                                venue: order.venue,
-                                instrument: order.instrument.clone(),
-                                side: order.side,
-                                intended_price: order.price.unwrap_or(Decimal::ZERO),
-                                intended_quantity: order.quantity,
-                                order_id: Some(order_id),
-                                submitted_at: Utc::now(),
-                            });
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "order submission failed");
-                            trade_legs.push(TradeLeg {
-                                venue: order.venue,
-                                instrument: order.instrument.clone(),
-                                side: order.side,
-                                intended_price: order.price.unwrap_or(Decimal::ZERO),
-                                intended_quantity: order.quantity,
-                                order_id: None,
-                                submitted_at: Utc::now(),
-                            });
-                        }
+        // Connect executor and forward fills into a merged channel.
+        let exec_receivers = self.executor.connect().await?;
+        let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
+        {
+            let tx = fill_tx;
+            let mut fills = exec_receivers.fills;
+            tokio::spawn(async move {
+                while let Some(f) = fills.recv().await {
+                    if tx.send(f).is_err() {
+                        break;
                     }
                 }
+            });
+        }
 
-                // Determine outcome and record the trade log
-                let outcome = if risk_rejected_count == total_orders {
-                    TradeOutcome::RiskRejected
-                } else if submitted_count == total_orders {
-                    TradeOutcome::AllSubmitted
-                } else {
-                    TradeOutcome::PartialFailure
-                };
-
-                let trade_log = TradeLog {
-                    id: opp.id.clone(),
-                    strategy_id: opp.meta.strategy_id.clone(),
-                    outcome,
-                    legs: trade_legs,
-                    expected_gross_profit: opp.economics.gross_profit,
-                    expected_fees: opp.economics.fees_total,
-                    expected_net_profit: opp.economics.net_profit,
-                    expected_net_profit_bps: opp.economics.net_profit_bps,
-                    notional: opp.economics.notional,
-                    created_at: Utc::now(),
-                };
-
-                info!(
-                    trade_id = trade_log.id.as_str(),
-                    outcome = ?trade_log.outcome,
-                    legs = trade_log.legs.len(),
-                    expected_net = %trade_log.expected_net_profit,
-                    "trade log recorded"
-                );
-
-                self.trade_logs.push(trade_log);
+        loop {
+            tokio::select! {
+                Some(quote) = merged_rx.recv() => {
+                    self.handle_quote(quote).await?;
+                }
+                Some(fill) = fill_rx.recv() => {
+                    self.position_manager.apply_fill(&fill).await?;
+                    let key = format!("{:?}", fill.venue).to_lowercase();
+                    if let Ok(snapshot) = self.position_manager.get_portfolio().await {
+                        self.portfolios.insert(key, snapshot);
+                    }
+                }
+                else => break,
             }
         }
 
         warn!("all quote streams ended");
+        Ok(())
+    }
+
+    async fn handle_quote(&mut self, quote: Quote) -> Result<()> {
+        let key = book_key(quote.venue, &quote.instrument);
+        self.books.insert(key, quote_to_book(&quote));
+
+        if let Some(opp) = self.strategy.evaluate(&self.books, &self.portfolios).await {
+            let direction = opp
+                .legs
+                .iter()
+                .map(|leg| {
+                    format!(
+                        "{:?} {:?} {:?}@{}x{}",
+                        leg.side,
+                        leg.venue,
+                        leg.instrument.instrument_type,
+                        leg.order_price,
+                        leg.quantity
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+
+            info!(
+                id = opp.id.as_str(),
+                direction = direction.as_str(),
+                gross = %opp.economics.gross_profit,
+                fees = %opp.economics.fees_total,
+                net = %opp.economics.net_profit,
+                net_bps = %opp.economics.net_profit_bps,
+                notional = %opp.economics.notional,
+                "opportunity detected"
+            );
+
+            let orders = self.strategy.compute_hedge_orders(&opp);
+
+            let mut trade_legs: SmallVec<[TradeLeg; 4]> = SmallVec::new();
+            let mut submitted_count: usize = 0;
+            let mut risk_rejected_count: usize = 0;
+            let total_orders = orders.len();
+
+            let portfolio = self
+                .position_manager
+                .get_portfolio()
+                .await
+                .unwrap_or_default();
+
+            for mut req in orders {
+                let verdict = self.risk_manager.check_pre_trade(&req, &portfolio);
+
+                if !verdict.approved {
+                    warn!(
+                        reason = verdict.reason.as_deref().unwrap_or("unknown"),
+                        "order rejected by risk manager"
+                    );
+                    risk_rejected_count += 1;
+                    trade_legs.push(TradeLeg {
+                        venue: req.venue,
+                        instrument: req.instrument.clone(),
+                        side: req.side,
+                        intended_price: req.price.unwrap_or(Decimal::ZERO),
+                        intended_quantity: req.quantity,
+                        order_id: None,
+                        submitted_at: Utc::now(),
+                    });
+                    continue;
+                }
+
+                if let Some(adj_qty) = verdict.adjusted_qty {
+                    req.quantity = adj_qty;
+                }
+
+                let order = req.into_order();
+                match self.executor.submit_order(&order).await {
+                    Ok(order_id) => {
+                        info!(
+                            order_id = order_id.as_str(),
+                            side = ?order.side,
+                            qty = %order.quantity,
+                            "order submitted"
+                        );
+                        submitted_count += 1;
+                        trade_legs.push(TradeLeg {
+                            venue: order.venue,
+                            instrument: order.instrument.clone(),
+                            side: order.side,
+                            intended_price: order.price.unwrap_or(Decimal::ZERO),
+                            intended_quantity: order.quantity,
+                            order_id: Some(order_id),
+                            submitted_at: Utc::now(),
+                        });
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "order submission failed");
+                        trade_legs.push(TradeLeg {
+                            venue: order.venue,
+                            instrument: order.instrument.clone(),
+                            side: order.side,
+                            intended_price: order.price.unwrap_or(Decimal::ZERO),
+                            intended_quantity: order.quantity,
+                            order_id: None,
+                            submitted_at: Utc::now(),
+                        });
+                    }
+                }
+            }
+
+            let outcome = if risk_rejected_count == total_orders {
+                TradeOutcome::RiskRejected
+            } else if submitted_count == total_orders {
+                TradeOutcome::AllSubmitted
+            } else {
+                TradeOutcome::PartialFailure
+            };
+
+            let trade_log = TradeLog {
+                id: opp.id.clone(),
+                strategy_id: opp.meta.strategy_id.clone(),
+                outcome,
+                legs: trade_legs,
+                expected_gross_profit: opp.economics.gross_profit,
+                expected_fees: opp.economics.fees_total,
+                expected_net_profit: opp.economics.net_profit,
+                expected_net_profit_bps: opp.economics.net_profit_bps,
+                notional: opp.economics.notional,
+                created_at: Utc::now(),
+            };
+
+            info!(
+                trade_id = trade_log.id.as_str(),
+                outcome = ?trade_log.outcome,
+                legs = trade_log.legs.len(),
+                expected_net = %trade_log.expected_net_profit,
+                "trade log recorded"
+            );
+
+            self.trade_logs.push(trade_log);
+        }
+
         Ok(())
     }
 }

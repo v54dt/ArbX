@@ -47,8 +47,7 @@ impl BinancePositionManager {
         }
     }
 
-    /// Apply a `Fill` to the local position state.
-    pub fn apply_fill(&mut self, fill: &Fill) {
+    pub fn apply_fill_inner(&mut self, fill: &Fill) {
         let key = Self::position_key(&fill.instrument);
         let market_label = self.market_label();
 
@@ -66,7 +65,6 @@ impl BinancePositionManager {
 
         match fill.side {
             Side::Buy => {
-                // Weighted average cost:
                 let old_cost = position.quantity * position.average_cost;
                 let fill_cost = fill.quantity * fill.price;
                 let new_qty = position.quantity + fill.quantity;
@@ -78,12 +76,10 @@ impl BinancePositionManager {
                 position.quantity = new_qty;
             }
             Side::Sell => {
-                // Realized PnL
                 let pnl = (fill.price - position.average_cost) * fill.quantity;
                 position.realized_pnl += pnl;
                 position.quantity -= fill.quantity;
 
-                // If position fully closed, reset average cost
                 if position.quantity <= Decimal::ZERO {
                     position.quantity = Decimal::ZERO;
                     position.average_cost = Decimal::ZERO;
@@ -148,6 +144,11 @@ impl PositionManager for BinancePositionManager {
         );
         Ok(())
     }
+
+    async fn apply_fill(&mut self, fill: &Fill) -> anyhow::Result<()> {
+        self.apply_fill_inner(fill);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -194,13 +195,13 @@ mod tests {
         let inst = test_instrument();
 
         // First buy: 1 BTC @ 50000
-        pm.apply_fill(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
         let pos = pm.positions.get("BTC-USDT").unwrap();
         assert_eq!(pos.quantity, dec!(1));
         assert_eq!(pos.average_cost, dec!(50000));
 
         // Second buy: 1 BTC @ 60000 -> avg = (50000 + 60000) / 2 = 55000
-        pm.apply_fill(&make_fill(&inst, Side::Buy, dec!(60000), dec!(1)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(60000), dec!(1)));
         let pos = pm.positions.get("BTC-USDT").unwrap();
         assert_eq!(pos.quantity, dec!(2));
         assert_eq!(pos.average_cost, dec!(55000));
@@ -212,10 +213,10 @@ mod tests {
         let inst = test_instrument();
 
         // Buy 2 BTC @ 50000
-        pm.apply_fill(&make_fill(&inst, Side::Buy, dec!(50000), dec!(2)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(2)));
 
         // Sell 1 BTC @ 55000 -> realized PnL = (55000 - 50000) * 1 = 5000
-        pm.apply_fill(&make_fill(&inst, Side::Sell, dec!(55000), dec!(1)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Sell, dec!(55000), dec!(1)));
         let pos = pm.positions.get("BTC-USDT").unwrap();
         assert_eq!(pos.quantity, dec!(1));
         assert_eq!(pos.average_cost, dec!(50000));
@@ -227,8 +228,8 @@ mod tests {
         let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures);
         let inst = test_instrument();
 
-        pm.apply_fill(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
-        pm.apply_fill(&make_fill(&inst, Side::Sell, dec!(50000), dec!(1)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
+        pm.apply_fill_inner(&make_fill(&inst, Side::Sell, dec!(50000), dec!(1)));
         let pos = pm.positions.get("BTC-USDT").unwrap();
         assert_eq!(pos.quantity, dec!(0));
         assert_eq!(pos.average_cost, dec!(0));

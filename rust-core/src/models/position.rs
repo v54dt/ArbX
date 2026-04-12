@@ -14,7 +14,7 @@ pub struct Position {
     pub realized_pnl: Decimal,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PortfolioSnapshot {
     pub venue: Venue,
     pub positions: Vec<Position>,
