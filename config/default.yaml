@@ -24,6 +24,10 @@ strategy:
   min_net_profit_bps: "1"
   max_quantity: "0.01"
   max_quote_age_ms: 5000
+  tick_size_a: "0.01"
+  tick_size_b: "0.01"
+  lot_size_a: "0.00001"
+  lot_size_b: "0.00001"
 
 risk:
   max_position_size: "1"
