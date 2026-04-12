@@ -68,3 +68,85 @@ impl OrderBook {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn empty_book() -> OrderBook {
+        OrderBook {
+            venue: Venue::Binance,
+            instrument: Instrument {
+                asset_class: AssetClass::Crypto,
+                instrument_type: InstrumentType::Spot,
+                base: "BTC".into(),
+                quote: "USDT".into(),
+                settle_currency: None,
+                expiry: None,
+            },
+            bids: vec![],
+            asks: vec![],
+            timestamp: Utc::now(),
+            local_timestamp: Utc::now(),
+        }
+    }
+
+    fn book_with_levels(bid: Decimal, ask: Decimal) -> OrderBook {
+        let mut ob = empty_book();
+        ob.bids = vec![OrderBookLevel {
+            price: bid,
+            size: dec!(1),
+        }];
+        ob.asks = vec![OrderBookLevel {
+            price: ask,
+            size: dec!(1),
+        }];
+        ob
+    }
+
+    #[test]
+    fn mid_price_correct() {
+        let ob = book_with_levels(dec!(100), dec!(102));
+        assert_eq!(ob.mid_price(), Some(dec!(101)));
+    }
+
+    #[test]
+    fn mid_price_empty_book_returns_none() {
+        assert_eq!(empty_book().mid_price(), None);
+    }
+
+    #[test]
+    fn spread_bps_correct() {
+        let ob = book_with_levels(dec!(100), dec!(101));
+        assert_eq!(ob.spread_bps(), Some(dec!(100)));
+    }
+
+    #[test]
+    fn spread_bps_empty_book_returns_none() {
+        assert_eq!(empty_book().spread_bps(), None);
+    }
+
+    #[test]
+    fn best_bid_returns_first() {
+        let ob = book_with_levels(dec!(100), dec!(102));
+        assert_eq!(ob.best_bid().unwrap().price, dec!(100));
+    }
+
+    #[test]
+    fn best_ask_returns_first() {
+        let ob = book_with_levels(dec!(100), dec!(102));
+        assert_eq!(ob.best_ask().unwrap().price, dec!(102));
+    }
+
+    #[test]
+    fn best_bid_empty_returns_none() {
+        assert!(empty_book().best_bid().is_none());
+    }
+
+    #[test]
+    fn best_ask_empty_returns_none() {
+        assert!(empty_book().best_ask().is_none());
+    }
+}

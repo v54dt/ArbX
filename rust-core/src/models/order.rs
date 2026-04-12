@@ -67,3 +67,74 @@ pub struct OrderUpdate {
     pub average_price: Option<Decimal>,
     pub updated_at: DateTime<Utc>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn sample_instrument() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".into(),
+            quote: "USDT".into(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    fn sample_order_request() -> OrderRequest {
+        OrderRequest {
+            venue: Venue::Binance,
+            instrument: sample_instrument(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            time_in_force: Some(TimeInForce::Ioc),
+            price: Some(dec!(50000)),
+            quantity: dec!(1),
+        }
+    }
+
+    #[test]
+    fn order_request_into_order_sets_empty_id() {
+        let order = sample_order_request().into_order();
+        assert!(order.id.is_empty());
+    }
+
+    #[test]
+    fn order_request_into_order_sets_timestamp() {
+        let before = Utc::now();
+        let order = sample_order_request().into_order();
+        let after = Utc::now();
+        assert!(order.created_at >= before && order.created_at <= after);
+    }
+
+    #[test]
+    fn order_request_into_order_preserves_fields() {
+        let req = sample_order_request();
+        let order = req.clone().into_order();
+        assert_eq!(order.venue, Venue::Binance);
+        assert_eq!(order.instrument, sample_instrument());
+        assert_eq!(order.side, Side::Buy);
+        assert_eq!(order.price, Some(dec!(50000)));
+        assert_eq!(order.quantity, dec!(1));
+        assert_eq!(order.order_type, OrderType::Limit);
+        assert_eq!(order.time_in_force, Some(TimeInForce::Ioc));
+    }
+
+    #[test]
+    fn order_request_serialization_roundtrip() {
+        let req = sample_order_request();
+        let json = serde_json::to_string(&req).unwrap();
+        let deserialized: OrderRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.venue, req.venue);
+        assert_eq!(deserialized.instrument, req.instrument);
+        assert_eq!(deserialized.side, req.side);
+        assert_eq!(deserialized.order_type, req.order_type);
+        assert_eq!(deserialized.time_in_force, req.time_in_force);
+        assert_eq!(deserialized.price, req.price);
+        assert_eq!(deserialized.quantity, req.quantity);
+    }
+}
