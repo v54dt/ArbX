@@ -254,6 +254,8 @@ async fn main() -> anyhow::Result<()> {
         &cfg.venues[idx_b].api_secret,
     )?;
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     let mut engine = ArbitrageEngine::new(
         feeds,
         Box::new(strategy),
@@ -261,8 +263,25 @@ async fn main() -> anyhow::Result<()> {
         executor,
         Box::new(position_manager),
         cfg.engine.reconcile_interval_secs,
+        shutdown_rx,
     );
-    engine.run().await?;
+
+    tokio::select! {
+        result = engine.run() => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "engine error");
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Ctrl+C received, initiating shutdown...");
+            let _ = shutdown_tx.send(true);
+        }
+    }
+
+    tracing::info!(
+        total_trades = engine.trade_logs().len(),
+        "shutdown complete"
+    );
 
     Ok(())
 }

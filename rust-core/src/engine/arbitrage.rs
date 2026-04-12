@@ -29,6 +29,7 @@ pub struct ArbitrageEngine {
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
     reconcile_interval_secs: u64,
+    shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl ArbitrageEngine {
@@ -39,6 +40,7 @@ impl ArbitrageEngine {
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
         reconcile_interval_secs: u64,
+        shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             feeds,
@@ -50,7 +52,12 @@ impl ArbitrageEngine {
             portfolios: HashMap::new(),
             trade_logs: vec![],
             reconcile_interval_secs,
+            shutdown_rx,
         }
+    }
+
+    pub fn trade_logs(&self) -> &[TradeLog] {
+        &self.trade_logs
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -122,11 +129,21 @@ impl ArbitrageEngine {
                         info!("position reconciliation completed");
                     }
                 }
+                _ = self.shutdown_rx.changed() => {
+                    if *self.shutdown_rx.borrow() {
+                        info!("shutdown signal received, stopping engine");
+                        break;
+                    }
+                }
                 else => break,
             }
         }
 
-        warn!("all quote streams ended");
+        info!(
+            trade_logs = self.trade_logs.len(),
+            "engine shutting down, {} trades recorded",
+            self.trade_logs.len()
+        );
         Ok(())
     }
 
