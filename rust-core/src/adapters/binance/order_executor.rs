@@ -176,3 +176,100 @@ impl OrderExecutor for BinanceOrderExecutor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+
+    fn make_instrument(base: &str, quote: &str) -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: base.to_string(),
+            quote: quote.to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    fn make_executor(market: BinanceMarket) -> BinanceOrderExecutor {
+        BinanceOrderExecutor::new(market, "key".into(), "secret".into())
+    }
+
+    #[test]
+    fn instrument_to_symbol_formats_correctly() {
+        let inst = make_instrument("BTC", "USDT");
+        assert_eq!(BinanceOrderExecutor::instrument_to_symbol(&inst), "BTCUSDT");
+
+        let inst2 = make_instrument("eth", "btc");
+        assert_eq!(BinanceOrderExecutor::instrument_to_symbol(&inst2), "ETHBTC");
+    }
+
+    #[test]
+    fn tif_to_string_maps_correctly() {
+        assert_eq!(
+            BinanceOrderExecutor::tif_to_string(Some(TimeInForce::Ioc)),
+            "IOC"
+        );
+        assert_eq!(
+            BinanceOrderExecutor::tif_to_string(Some(TimeInForce::Fok)),
+            "FOK"
+        );
+        assert_eq!(
+            BinanceOrderExecutor::tif_to_string(Some(TimeInForce::Rod)),
+            "GTC"
+        );
+        assert_eq!(BinanceOrderExecutor::tif_to_string(None), "GTC");
+    }
+
+    #[test]
+    fn side_str_maps_correctly() {
+        assert_eq!(BinanceOrderExecutor::side_str(Side::Buy), "BUY");
+        assert_eq!(BinanceOrderExecutor::side_str(Side::Sell), "SELL");
+    }
+
+    #[test]
+    fn order_type_str_maps_correctly() {
+        assert_eq!(
+            BinanceOrderExecutor::order_type_str(OrderType::Limit),
+            "LIMIT"
+        );
+        assert_eq!(
+            BinanceOrderExecutor::order_type_str(OrderType::Market),
+            "MARKET"
+        );
+    }
+
+    #[test]
+    fn order_path_matches_market() {
+        assert_eq!(
+            make_executor(BinanceMarket::Spot).order_path(),
+            "/api/v3/order"
+        );
+        assert_eq!(
+            make_executor(BinanceMarket::UsdtFutures).order_path(),
+            "/fapi/v1/order"
+        );
+        assert_eq!(
+            make_executor(BinanceMarket::CoinFutures).order_path(),
+            "/dapi/v1/order"
+        );
+    }
+
+    #[test]
+    fn new_sets_correct_base_url() {
+        assert_eq!(
+            BinanceMarket::Spot.rest_base_url(),
+            "https://api.binance.com"
+        );
+        assert_eq!(
+            BinanceMarket::UsdtFutures.rest_base_url(),
+            "https://fapi.binance.com"
+        );
+        assert_eq!(
+            BinanceMarket::CoinFutures.rest_base_url(),
+            "https://dapi.binance.com"
+        );
+    }
+}
