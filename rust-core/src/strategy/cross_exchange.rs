@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
-use crate::models::enums::{OrderType, Side, Venue};
+use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::instrument::Instrument;
 use crate::models::market::{OrderBook, book_key};
 use crate::models::order::Order;
@@ -181,7 +181,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 instrument: leg.instrument.clone(),
                 side: leg.side,
                 order_type: OrderType::Limit,
-                time_in_force: None,
+                time_in_force: Some(TimeInForce::Ioc),
                 price: Some(leg.order_price),
                 quantity: leg.quantity,
                 created_at: now,

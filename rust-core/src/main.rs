@@ -7,10 +7,13 @@ mod strategy;
 use rust_decimal_macros::dec;
 
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
+use adapters::binance::order_executor::BinanceOrderExecutor;
 use adapters::market_data::MarketDataFeed;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
 use models::instrument::{AssetClass, Instrument, InstrumentType};
+use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
+use risk::manager::RiskManager;
 use strategy::cross_exchange::CrossExchangeStrategy;
 
 #[tokio::main]
@@ -63,7 +66,24 @@ async fn main() -> anyhow::Result<()> {
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(spot_feed), Box::new(futures_feed)];
 
-    let mut engine = ArbitrageEngine::new(feeds, Box::new(strategy));
+    // Risk limits
+    let risk_manager = RiskManager::new(vec![
+        Box::new(MaxPositionSize {
+            max_quantity: dec!(1),
+        }),
+        Box::new(MaxDailyLoss {
+            max_loss: dec!(1000),
+        }),
+        Box::new(MaxNotionalExposure {
+            max_notional: dec!(100000),
+        }),
+    ]);
+
+    // Order executor (stub — logs but doesn't send real orders)
+    let executor = BinanceOrderExecutor::new(BinanceMarket::UsdtFutures);
+
+    let mut engine =
+        ArbitrageEngine::new(feeds, Box::new(strategy), risk_manager, Box::new(executor));
     engine.run().await?;
 
     Ok(())
