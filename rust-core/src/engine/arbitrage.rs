@@ -235,7 +235,7 @@ impl ArbitrageEngine {
 }
 
 /// Convert a top-of-book Quote into a minimal OrderBook (single level each side).
-fn quote_to_book(q: &Quote) -> OrderBook {
+pub(crate) fn quote_to_book(q: &Quote) -> OrderBook {
     OrderBook {
         venue: q.venue,
         instrument: q.instrument.clone(),
@@ -249,5 +249,108 @@ fn quote_to_book(q: &Quote) -> OrderBook {
         }],
         timestamp: q.timestamp,
         local_timestamp: chrono::Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::enums::Venue;
+    use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
+    use crate::models::market::{Quote, book_key};
+    use chrono::Utc;
+    use rust_decimal_macros::dec;
+
+    fn test_instrument() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".into(),
+            quote: "USDT".into(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    fn test_quote(bid: Decimal, ask: Decimal) -> Quote {
+        Quote {
+            venue: Venue::Binance,
+            instrument: test_instrument(),
+            bid,
+            ask,
+            bid_size: dec!(1.5),
+            ask_size: dec!(2.0),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn quote_to_book_creates_single_level_book() {
+        let q = test_quote(dec!(50000), dec!(50010));
+        let book = quote_to_book(&q);
+
+        assert_eq!(book.bids.len(), 1);
+        assert_eq!(book.asks.len(), 1);
+        assert_eq!(book.bids[0].price, dec!(50000));
+        assert_eq!(book.bids[0].size, dec!(1.5));
+        assert_eq!(book.asks[0].price, dec!(50010));
+        assert_eq!(book.asks[0].size, dec!(2.0));
+    }
+
+    #[test]
+    fn quote_to_book_preserves_venue_and_instrument() {
+        let q = test_quote(dec!(100), dec!(101));
+        let book = quote_to_book(&q);
+
+        assert_eq!(book.venue, Venue::Binance);
+        assert_eq!(book.instrument.base, "BTC");
+        assert_eq!(book.instrument.quote, "USDT");
+        assert_eq!(book.instrument.instrument_type, InstrumentType::Spot);
+    }
+
+    #[test]
+    fn quote_to_book_preserves_timestamp() {
+        let ts = Utc::now();
+        let q = Quote {
+            venue: Venue::Binance,
+            instrument: test_instrument(),
+            bid: dec!(100),
+            ask: dec!(101),
+            bid_size: dec!(1),
+            ask_size: dec!(1),
+            timestamp: ts,
+        };
+        let book = quote_to_book(&q);
+        assert_eq!(book.timestamp, ts);
+    }
+
+    #[test]
+    fn book_key_format_is_consistent() {
+        let inst = test_instrument();
+        let key = book_key(Venue::Binance, &inst);
+        assert_eq!(key, "binance:btc-usdt:spot");
+    }
+
+    #[test]
+    fn book_key_different_venues_produce_different_keys() {
+        let inst = test_instrument();
+        let k1 = book_key(Venue::Binance, &inst);
+        let k2 = book_key(Venue::Okx, &inst);
+        assert_ne!(k1, k2);
+        assert!(k1.starts_with("binance:"));
+        assert!(k2.starts_with("okx:"));
+    }
+
+    #[test]
+    fn book_key_different_instrument_types_produce_different_keys() {
+        let spot = test_instrument();
+        let mut swap = test_instrument();
+        swap.instrument_type = InstrumentType::Swap;
+
+        let k1 = book_key(Venue::Binance, &spot);
+        let k2 = book_key(Venue::Binance, &swap);
+        assert_ne!(k1, k2);
+        assert!(k1.ends_with(":spot"));
+        assert!(k2.ends_with(":swap"));
     }
 }
