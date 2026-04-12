@@ -331,6 +331,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: None,
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         }
     }
 
@@ -890,6 +892,7 @@ mod tests {
                     average_cost: dec!(100),
                     unrealized_pnl: Decimal::ZERO,
                     realized_pnl: Decimal::ZERO,
+                    settlement_date: None,
                 }],
                 total_equity: dec!(10000),
                 available_balance: dec!(5000),

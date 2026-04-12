@@ -181,6 +181,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: None,
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         }
     }
 

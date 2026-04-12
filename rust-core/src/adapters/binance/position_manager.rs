@@ -88,6 +88,7 @@ impl BinancePositionManager {
                 average_cost: Decimal::ZERO,
                 unrealized_pnl: Decimal::ZERO,
                 realized_pnl: Decimal::ZERO,
+                settlement_date: None,
             });
 
         match fill.side {
@@ -212,11 +213,14 @@ impl PositionManager for BinancePositionManager {
                             quote: "USDT".into(),
                             settle_currency: Some("USDT".into()),
                             expiry: None,
+                            last_trade_time: None,
+                            settlement_time: None,
                         },
                         quantity: Decimal::ZERO,
                         average_cost: Decimal::ZERO,
                         unrealized_pnl: Decimal::ZERO,
                         realized_pnl: Decimal::ZERO,
+                        settlement_date: None,
                     });
                     pos.quantity = amt;
                     pos.average_cost = entry;
@@ -251,11 +255,14 @@ impl PositionManager for BinancePositionManager {
                             quote: "USDT".into(),
                             settle_currency: None,
                             expiry: None,
+                            last_trade_time: None,
+                            settlement_time: None,
                         },
                         quantity: Decimal::ZERO,
                         average_cost: Decimal::ZERO,
                         unrealized_pnl: Decimal::ZERO,
                         realized_pnl: Decimal::ZERO,
+                        settlement_date: None,
                     });
                     pos.quantity = total;
                 }
@@ -291,6 +298,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: Some("USDT".to_string()),
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         }
     }
 

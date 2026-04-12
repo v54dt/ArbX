@@ -105,6 +105,7 @@ impl BybitPositionManager {
                 average_cost: Decimal::ZERO,
                 unrealized_pnl: Decimal::ZERO,
                 realized_pnl: Decimal::ZERO,
+                settlement_date: None,
             });
 
         match fill.side {
@@ -237,11 +238,14 @@ impl PositionManager for BybitPositionManager {
                     quote: quote.clone(),
                     settle_currency: Some(quote),
                     expiry: None,
+                    last_trade_time: None,
+                    settlement_time: None,
                 },
                 quantity: Decimal::ZERO,
                 average_cost: Decimal::ZERO,
                 unrealized_pnl: Decimal::ZERO,
                 realized_pnl: Decimal::ZERO,
+                settlement_date: None,
             });
             pos.quantity = size;
             pos.average_cost = avg;
@@ -277,6 +281,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: Some("USDT".to_string()),
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         }
     }
 

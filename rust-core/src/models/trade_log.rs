@@ -62,6 +62,8 @@ mod tests {
                     quote: "USDT".into(),
                     settle_currency: None,
                     expiry: None,
+                    last_trade_time: None,
+                    settlement_time: None,
                 },
                 side: Side::Buy,
                 intended_price: dec!(50000),

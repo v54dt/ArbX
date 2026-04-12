@@ -157,6 +157,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: None,
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         }
     }
 
@@ -196,6 +198,8 @@ mod tests {
             quote: "USDT".to_string(),
             settle_currency: None,
             expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
         };
         assert_eq!(OkxOrderExecutor::td_mode(&inst), "cross");
     }
