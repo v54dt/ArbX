@@ -55,6 +55,9 @@ pub struct RiskConfig {
 #[derive(Debug, Deserialize)]
 pub struct LoggingConfig {
     pub level: String,
+    #[serde(default)]
+    pub json_output: bool,
+    pub log_file: Option<String>,
 }
 
 fn resolve_env_var(value: &str) -> String {

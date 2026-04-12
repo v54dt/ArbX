@@ -115,9 +115,16 @@ impl ArbitrageEngine {
 
     async fn handle_quote(&mut self, quote: Quote) -> Result<()> {
         let key = book_key(quote.venue, &quote.instrument);
+        let quote_age_ms = (chrono::Utc::now() - quote.timestamp).num_milliseconds();
+        tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
         self.books.insert(key, quote_to_book(&quote));
 
-        if let Some(opp) = self.strategy.evaluate(&self.books, &self.portfolios).await {
+        let eval_start = std::time::Instant::now();
+        let eval_result = self.strategy.evaluate(&self.books, &self.portfolios).await;
+        let eval_us = eval_start.elapsed().as_micros();
+
+        if let Some(opp) = eval_result {
+            tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
             let direction = opp
                 .legs
                 .iter()
@@ -147,6 +154,7 @@ impl ArbitrageEngine {
 
             let orders = self.strategy.compute_hedge_orders(&opp);
 
+            let submit_start = std::time::Instant::now();
             let mut trade_legs: SmallVec<[TradeLeg; 4]> = SmallVec::new();
             let mut submitted_count: usize = 0;
             let mut risk_rejected_count: usize = 0;
@@ -217,6 +225,13 @@ impl ArbitrageEngine {
                     }
                 }
             }
+
+            let submit_us = submit_start.elapsed().as_micros();
+            tracing::info!(
+                submit_latency_us = submit_us,
+                orders = total_orders,
+                "order submission complete"
+            );
 
             let outcome = if risk_rejected_count == total_orders {
                 TradeOutcome::RiskRejected

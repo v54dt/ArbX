@@ -36,3 +36,5 @@ risk:
 
 logging:
   level: info
+  json_output: false
+  log_file: null

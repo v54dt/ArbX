@@ -103,12 +103,50 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "config/default.yaml".into());
     let cfg = config::load(&config_path)?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.logging.level)),
-        )
-        .init();
+    {
+        use tracing_subscriber::prelude::*;
+
+        let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.logging.level));
+
+        let file_appender = cfg.logging.log_file.as_ref().map(|path| {
+            let parent = std::path::Path::new(path)
+                .parent()
+                .unwrap_or(std::path::Path::new("."));
+            let filename = std::path::Path::new(path)
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("arbx.log"));
+            tracing_appender::rolling::daily(parent, filename.to_string_lossy().to_string())
+        });
+
+        let (non_blocking, _guard) = match file_appender {
+            Some(appender) => {
+                let (nb, guard) = tracing_appender::non_blocking(appender);
+                (Some(nb), Some(guard))
+            }
+            None => (None, None),
+        };
+
+        if cfg.logging.json_output {
+            let stdout_layer = tracing_subscriber::fmt::layer().json();
+            let file_layer =
+                non_blocking.map(|nb| tracing_subscriber::fmt::layer().json().with_writer(nb));
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(stdout_layer)
+                .with(file_layer)
+                .init();
+        } else {
+            let stdout_layer = tracing_subscriber::fmt::layer();
+            let file_layer =
+                non_blocking.map(|nb| tracing_subscriber::fmt::layer().with_writer(nb));
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(stdout_layer)
+                .with(file_layer)
+                .init();
+        }
+    }
 
     let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
     let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
