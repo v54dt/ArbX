@@ -14,9 +14,9 @@ pub enum OrderType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TimeInForce {
-    ROD,
-    IOC,
-    FOK,
+    Rod,
+    Ioc,
+    Fok,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

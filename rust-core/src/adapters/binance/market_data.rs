@@ -138,20 +138,20 @@ impl MarketDataFeed for BinanceMarketData {
                                     let text = text.to_string();
                                     if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
                                         let data = wrapper.get("data").unwrap_or(&wrapper);
-                                        if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone()) {
-                                            if let Some(instrument) = instruments.get(&ticker.symbol) {
-                                                let quote = Quote {
-                                                    venue: Venue::Binance,
-                                                    instrument: instrument.clone(),
-                                                    bid: ticker.bid_price,
-                                                    ask: ticker.ask_price,
-                                                    bid_size: ticker.bid_qty,
-                                                    ask_size: ticker.ask_qty,
-                                                    timestamp: chrono::Utc::now(),
-                                                };
-                                                if tx.send(quote).is_err() {
-                                                    break;
-                                                }
+                                        if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone())
+                                            && let Some(instrument) = instruments.get(&ticker.symbol)
+                                        {
+                                            let quote = Quote {
+                                                venue: Venue::Binance,
+                                                instrument: instrument.clone(),
+                                                bid: ticker.bid_price,
+                                                ask: ticker.ask_price,
+                                                bid_size: ticker.bid_qty,
+                                                ask_size: ticker.ask_qty,
+                                                timestamp: chrono::Utc::now(),
+                                            };
+                                            if tx.send(quote).is_err() {
+                                                break;
                                             }
                                         }
                                     }
