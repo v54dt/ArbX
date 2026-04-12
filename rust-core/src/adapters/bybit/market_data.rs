@@ -212,3 +212,50 @@ impl MarketDataFeed for BybitMarketData {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn btc_usdt_spot() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    #[test]
+    fn parse_ticker_valid_json() {
+        let json = r#"{
+            "data": {
+                "symbol": "BTCUSDT",
+                "bid1Price": "50000.5",
+                "bid1Size": "1.2",
+                "ask1Price": "50001.0",
+                "ask1Size": "0.8"
+            }
+        }"#;
+        let msg: TickerMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.data.symbol, "BTCUSDT");
+        assert_eq!(msg.data.bid_price, dec!(50000.5));
+        assert_eq!(msg.data.ask_price, dec!(50001.0));
+        assert_eq!(msg.data.bid_size, dec!(1.2));
+        assert_eq!(msg.data.ask_size, dec!(0.8));
+    }
+
+    #[test]
+    fn register_instrument_stores_correctly() {
+        let mut md = BybitMarketData::new(BybitMarket::Spot);
+        let inst = btc_usdt_spot();
+        md.register_instrument("btcusdt", inst.clone());
+        assert_eq!(md.instruments.len(), 1);
+        assert!(md.instruments.contains_key("BTCUSDT"));
+        assert_eq!(md.instruments["BTCUSDT"], inst);
+    }
+}
