@@ -29,10 +29,11 @@ pub enum OrderStatus {
     Rejected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Venue {
     Fubon,
     Shioaji,
+    #[default]
     Binance,
     Bybit,
     Okx,
