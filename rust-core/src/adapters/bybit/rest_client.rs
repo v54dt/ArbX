@@ -17,22 +17,21 @@ pub struct BybitRestClient {
 }
 
 impl BybitRestClient {
-    pub fn new(base_url: &str, api_key: &str, api_secret: &str) -> Self {
+    pub fn new(base_url: &str, api_key: &str, api_secret: &str) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 headers.insert("Content-Type", "application/json".parse().unwrap());
                 headers
             })
-            .build()
-            .expect("failed to build reqwest client");
+            .build()?;
 
-        Self {
+        Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
-        }
+        })
     }
 
     fn sign(&self, payload: &str) -> String {
@@ -150,7 +149,7 @@ mod tests {
     use super::*;
 
     fn test_client() -> BybitRestClient {
-        BybitRestClient::new("https://api.bybit.com", "test-key", "test-secret")
+        BybitRestClient::new("https://api.bybit.com", "test-key", "test-secret").unwrap()
     }
 
     #[test]

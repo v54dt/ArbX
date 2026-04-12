@@ -33,7 +33,7 @@ pub struct OkxPositionManager {
 }
 
 impl OkxPositionManager {
-    pub fn new(api_key: &str, api_secret: &str, passphrase: &str) -> Self {
+    pub fn new(api_key: &str, api_secret: &str, passphrase: &str) -> anyhow::Result<Self> {
         let rest_client = if api_key.is_empty() || api_secret.is_empty() {
             None
         } else {
@@ -42,13 +42,13 @@ impl OkxPositionManager {
                 api_key,
                 api_secret,
                 passphrase,
-            ))
+            )?)
         };
 
-        Self {
+        Ok(Self {
             rest_client,
             positions: HashMap::new(),
-        }
+        })
     }
 
     fn position_key(instrument: &Instrument) -> String {
@@ -83,6 +83,13 @@ impl OkxPositionManager {
                 position.quantity = new_qty;
             }
             Side::Sell => {
+                if fill.quantity > position.quantity {
+                    tracing::warn!(
+                        fill_qty = %fill.quantity,
+                        pos_qty = %position.quantity,
+                        "sell quantity exceeds position, resetting to zero"
+                    );
+                }
                 let pnl = (fill.price - position.average_cost) * fill.quantity;
                 position.realized_pnl += pnl;
                 position.quantity -= fill.quantity;
@@ -239,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_buy() {
-        let mut pm = OkxPositionManager::new("", "", "");
+        let mut pm = OkxPositionManager::new("", "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -255,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_sell_with_pnl() {
-        let mut pm = OkxPositionManager::new("", "", "");
+        let mut pm = OkxPositionManager::new("", "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(2)));
@@ -267,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_full_close() {
-        let mut pm = OkxPositionManager::new("", "", "");
+        let mut pm = OkxPositionManager::new("", "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -279,14 +286,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_position_missing() {
-        let pm = OkxPositionManager::new("", "", "");
+        let pm = OkxPositionManager::new("", "", "").unwrap();
         let result = pm.get_position("ETH-USDT").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_get_portfolio_empty() {
-        let pm = OkxPositionManager::new("", "", "");
+        let pm = OkxPositionManager::new("", "", "").unwrap();
         let snap = pm.get_portfolio().await.unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);

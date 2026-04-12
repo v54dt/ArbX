@@ -44,21 +44,21 @@ pub struct BinancePositionManager {
 }
 
 impl BinancePositionManager {
-    pub fn new(market: BinanceMarket, api_key: &str, api_secret: &str) -> Self {
+    pub fn new(market: BinanceMarket, api_key: &str, api_secret: &str) -> anyhow::Result<Self> {
         let base_url = market.rest_base_url().to_string();
 
         let rest_client = if api_key.is_empty() || api_secret.is_empty() {
             None
         } else {
-            Some(BinanceRestClient::new(&base_url, api_key, api_secret))
+            Some(BinanceRestClient::new(&base_url, api_key, api_secret)?)
         };
 
-        Self {
+        Ok(Self {
             market,
             base_url,
             rest_client,
             positions: HashMap::new(),
-        }
+        })
     }
 
     /// Produce a deterministic key for an instrument, e.g. `"BTC-USDT"`.
@@ -103,6 +103,13 @@ impl BinancePositionManager {
                 position.quantity = new_qty;
             }
             Side::Sell => {
+                if fill.quantity > position.quantity {
+                    tracing::warn!(
+                        fill_qty = %fill.quantity,
+                        pos_qty = %position.quantity,
+                        "sell quantity exceeds position, resetting to zero"
+                    );
+                }
                 let pnl = (fill.price - position.average_cost) * fill.quantity;
                 position.realized_pnl += pnl;
                 position.quantity -= fill.quantity;
@@ -309,7 +316,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_buy() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "").unwrap();
         let inst = test_instrument();
 
         // First buy: 1 BTC @ 50000
@@ -327,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_sell_with_pnl() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "").unwrap();
         let inst = test_instrument();
 
         // Buy 2 BTC @ 50000
@@ -343,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_full_close() {
-        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "");
+        let mut pm = BinancePositionManager::new(BinanceMarket::UsdtFutures, "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -355,14 +362,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_position_missing() {
-        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "");
+        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "").unwrap();
         let result = pm.get_position("ETH-USDT").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_get_portfolio_empty() {
-        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "");
+        let pm = BinancePositionManager::new(BinanceMarket::Spot, "", "").unwrap();
         let snap = pm.get_portfolio().await.unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);

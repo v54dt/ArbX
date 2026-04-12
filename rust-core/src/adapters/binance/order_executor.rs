@@ -20,21 +20,21 @@ pub struct BinanceOrderExecutor {
 }
 
 impl BinanceOrderExecutor {
-    pub fn new(market: BinanceMarket, api_key: String, api_secret: String) -> Self {
+    pub fn new(market: BinanceMarket, api_key: String, api_secret: String) -> anyhow::Result<Self> {
         let base_url = match market {
             BinanceMarket::Spot => "https://api.binance.com",
             BinanceMarket::UsdtFutures => "https://fapi.binance.com",
             BinanceMarket::CoinFutures => "https://dapi.binance.com",
         };
 
-        let rest_client = BinanceRestClient::new(base_url, &api_key, &api_secret);
+        let rest_client = BinanceRestClient::new(base_url, &api_key, &api_secret)?;
 
-        Self {
+        Ok(Self {
             market,
             rest_client,
             fills_tx: None,
             updates_tx: None,
-        }
+        })
     }
 
     fn order_path(&self) -> &'static str {
@@ -144,8 +144,11 @@ impl OrderExecutor for BinanceOrderExecutor {
         let order_id = json["orderId"]
             .as_u64()
             .map(|id| id.to_string())
-            .or_else(|| json["orderId"].as_str().map(|s| s.to_string()))
-            .unwrap_or_default();
+            .or_else(|| json["orderId"].as_str().map(|s| s.to_string()));
+        let order_id = match order_id {
+            Some(id) if !id.is_empty() => id,
+            _ => anyhow::bail!("missing orderId in response: {}", response.body),
+        };
 
         tracing::info!(
             order_id,
@@ -194,7 +197,7 @@ mod tests {
     }
 
     fn make_executor(market: BinanceMarket) -> BinanceOrderExecutor {
-        BinanceOrderExecutor::new(market, "key".into(), "secret".into())
+        BinanceOrderExecutor::new(market, "key".into(), "secret".into()).unwrap()
     }
 
     #[test]

@@ -58,7 +58,13 @@ impl OrderExecutor for PaperExecutor {
             "[PAPER] order submitted"
         );
 
-        let fill_price = order.price.unwrap_or(Decimal::ZERO);
+        let fill_price = match order.price {
+            Some(p) => p,
+            None => {
+                tracing::warn!("market order fill simulated at placeholder price ZERO");
+                Decimal::ZERO
+            }
+        };
 
         if let Some(tx) = &self.fills_tx {
             let _ = tx.send(Fill {
@@ -140,11 +146,9 @@ mod tests {
     }
 
     fn make_paper() -> PaperExecutor {
-        let inner = Box::new(BinanceOrderExecutor::new(
-            BinanceMarket::Spot,
-            String::new(),
-            String::new(),
-        ));
+        let inner = Box::new(
+            BinanceOrderExecutor::new(BinanceMarket::Spot, String::new(), String::new()).unwrap(),
+        );
         PaperExecutor::new(inner)
     }
 

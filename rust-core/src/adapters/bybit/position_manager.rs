@@ -40,8 +40,20 @@ pub struct BybitPositionManager {
     positions: HashMap<String, Position>,
 }
 
+fn split_bybit_symbol(symbol: &str) -> (String, String) {
+    const KNOWN_QUOTES: &[&str] = &["USDT", "USDC", "BTC", "ETH", "USD"];
+    for q in KNOWN_QUOTES {
+        if let Some(base) = symbol.strip_suffix(q)
+            && !base.is_empty()
+        {
+            return (base.to_string(), q.to_string());
+        }
+    }
+    (symbol.to_string(), String::new())
+}
+
 impl BybitPositionManager {
-    pub fn new(market: BybitMarket, api_key: &str, api_secret: &str) -> Self {
+    pub fn new(market: BybitMarket, api_key: &str, api_secret: &str) -> anyhow::Result<Self> {
         let rest_client = if api_key.is_empty() || api_secret.is_empty() {
             None
         } else {
@@ -49,14 +61,14 @@ impl BybitPositionManager {
                 "https://api.bybit.com",
                 api_key,
                 api_secret,
-            ))
+            )?)
         };
 
-        Self {
+        Ok(Self {
             market,
             rest_client,
             positions: HashMap::new(),
-        }
+        })
     }
 
     fn position_key(instrument: &Instrument) -> String {
@@ -108,6 +120,13 @@ impl BybitPositionManager {
                 position.quantity = new_qty;
             }
             Side::Sell => {
+                if fill.quantity > position.quantity {
+                    tracing::warn!(
+                        fill_qty = %fill.quantity,
+                        pos_qty = %position.quantity,
+                        "sell quantity exceeds position, resetting to zero"
+                    );
+                }
                 let pnl = (fill.price - position.average_cost) * fill.quantity;
                 position.realized_pnl += pnl;
                 position.quantity -= fill.quantity;
@@ -200,7 +219,9 @@ impl PositionManager for BybitPositionManager {
             }
             let avg: Decimal = entry.avg_price.parse().unwrap_or(Decimal::ZERO);
             let upnl: Decimal = entry.unrealised_pnl.parse().unwrap_or(Decimal::ZERO);
-            let key = entry.symbol.clone();
+
+            let (base, quote) = split_bybit_symbol(&entry.symbol);
+            let key = format!("{}-{}", base, quote);
 
             let instrument_type = match self.market {
                 BybitMarket::Spot => InstrumentType::Spot,
@@ -212,9 +233,9 @@ impl PositionManager for BybitPositionManager {
                 instrument: Instrument {
                     asset_class: AssetClass::Crypto,
                     instrument_type,
-                    base: entry.symbol.clone(),
-                    quote: "USDT".into(),
-                    settle_currency: Some("USDT".into()),
+                    base,
+                    quote: quote.clone(),
+                    settle_currency: Some(quote),
                     expiry: None,
                 },
                 quantity: Decimal::ZERO,
@@ -281,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_buy() {
-        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "");
+        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -297,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_sell_with_pnl() {
-        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "");
+        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(2)));
@@ -310,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_apply_fill_full_close() {
-        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "");
+        let mut pm = BybitPositionManager::new(BybitMarket::Linear, "", "").unwrap();
         let inst = test_instrument();
 
         pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
@@ -322,14 +343,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_position_missing() {
-        let pm = BybitPositionManager::new(BybitMarket::Spot, "", "");
+        let pm = BybitPositionManager::new(BybitMarket::Spot, "", "").unwrap();
         let result = pm.get_position("ETH-USDT").await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_get_portfolio_empty() {
-        let pm = BybitPositionManager::new(BybitMarket::Spot, "", "");
+        let pm = BybitPositionManager::new(BybitMarket::Spot, "", "").unwrap();
         let snap = pm.get_portfolio().await.unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);

@@ -18,14 +18,14 @@ pub struct OkxOrderExecutor {
 }
 
 impl OkxOrderExecutor {
-    pub fn new(api_key: String, api_secret: String, passphrase: String) -> Self {
+    pub fn new(api_key: String, api_secret: String, passphrase: String) -> anyhow::Result<Self> {
         let rest_client =
-            OkxRestClient::new("https://www.okx.com", &api_key, &api_secret, &passphrase);
-        Self {
+            OkxRestClient::new("https://www.okx.com", &api_key, &api_secret, &passphrase)?;
+        Ok(Self {
             rest_client,
             fills_tx: None,
             updates_tx: None,
-        }
+        })
     }
 
     fn instrument_to_inst_id(instrument: &Instrument) -> String {
@@ -112,10 +112,10 @@ impl OrderExecutor for OkxOrderExecutor {
         }
 
         let json: serde_json::Value = serde_json::from_str(&response.body)?;
-        let order_id = json["data"][0]["ordId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let order_id = match json["data"][0]["ordId"].as_str() {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => anyhow::bail!("missing ordId in response: {}", response.body),
+        };
 
         tracing::info!(
             order_id,

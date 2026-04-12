@@ -15,7 +15,7 @@ pub struct BinanceRestClient {
 }
 
 impl BinanceRestClient {
-    pub fn new(base_url: &str, api_key: &str, api_secret: &str) -> Self {
+    pub fn new(base_url: &str, api_key: &str, api_secret: &str) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
@@ -25,15 +25,14 @@ impl BinanceRestClient {
                 );
                 headers
             })
-            .build()
-            .expect("failed to build reqwest client");
+            .build()?;
 
-        Self {
+        Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
-        }
+        })
     }
 
     fn sign(&self, query_string: &str) -> String {
@@ -123,7 +122,7 @@ mod tests {
     use super::*;
 
     fn test_client() -> BinanceRestClient {
-        BinanceRestClient::new("https://api.binance.com", "test-key", "test-secret")
+        BinanceRestClient::new("https://api.binance.com", "test-key", "test-secret").unwrap()
     }
 
     #[test]
