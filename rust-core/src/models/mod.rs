@@ -1,4 +1,5 @@
 pub mod enums;
+pub mod fee;
 pub mod instrument;
 pub mod market;
 pub mod order;
