@@ -27,6 +27,14 @@ pub struct StrategyConfig {
     pub min_net_profit_bps: Decimal,
     pub max_quantity: Decimal,
     pub max_quote_age_ms: i64,
+    #[serde(default)]
+    pub tick_size_a: Option<Decimal>,
+    #[serde(default)]
+    pub tick_size_b: Option<Decimal>,
+    #[serde(default)]
+    pub lot_size_a: Option<Decimal>,
+    #[serde(default)]
+    pub lot_size_b: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -149,6 +149,22 @@ async fn main() -> anyhow::Result<()> {
         fee_a,
         fee_b,
         max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+        tick_size_a: cfg
+            .strategy
+            .tick_size_a
+            .unwrap_or(rust_decimal_macros::dec!(0.01)),
+        tick_size_b: cfg
+            .strategy
+            .tick_size_b
+            .unwrap_or(rust_decimal_macros::dec!(0.01)),
+        lot_size_a: cfg
+            .strategy
+            .lot_size_a
+            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+        lot_size_b: cfg
+            .strategy
+            .lot_size_b
+            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
     };
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(feed_a), Box::new(feed_b)];

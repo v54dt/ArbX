@@ -15,8 +15,6 @@ use crate::models::position::PortfolioSnapshot;
 use super::base::ArbitrageStrategy;
 use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
 
-/// Cross-exchange spot arbitrage between two venues.
-/// TODO: walk-the-book VWAP, staleness rejection
 pub struct CrossExchangeStrategy {
     pub venue_a: Venue,
     pub venue_b: Venue,
@@ -27,6 +25,10 @@ pub struct CrossExchangeStrategy {
     pub fee_a: FeeSchedule,
     pub fee_b: FeeSchedule,
     pub max_quote_age_ms: i64,
+    pub tick_size_a: Decimal,
+    pub tick_size_b: Decimal,
+    pub lot_size_a: Decimal,
+    pub lot_size_b: Decimal,
 }
 
 struct DirectionParams<'a> {
@@ -36,13 +38,97 @@ struct DirectionParams<'a> {
     sell_instrument: &'a Instrument,
     buy_fee: Decimal,
     sell_fee: Decimal,
+    tick_size_buy: Decimal,
+    tick_size_sell: Decimal,
+    lot_size: Decimal,
+}
+
+fn quantize(value: Decimal, step: Decimal) -> Decimal {
+    if step.is_zero() {
+        return value;
+    }
+    (value / step).floor() * step
+}
+
+fn quantize_up(value: Decimal, step: Decimal) -> Decimal {
+    if step.is_zero() {
+        return value;
+    }
+    (value / step).ceil() * step
+}
+
+fn vwap_ask(book: &OrderBook, qty: Decimal) -> Option<(Decimal, Decimal)> {
+    let mut remaining = qty;
+    let mut total_cost = Decimal::ZERO;
+    let mut filled = Decimal::ZERO;
+    for level in &book.asks {
+        let take = remaining.min(level.size);
+        total_cost += take * level.price;
+        filled += take;
+        remaining -= take;
+        if remaining <= Decimal::ZERO {
+            break;
+        }
+    }
+    if filled > Decimal::ZERO {
+        Some((total_cost / filled, filled))
+    } else {
+        None
+    }
+}
+
+fn vwap_bid(book: &OrderBook, qty: Decimal) -> Option<(Decimal, Decimal)> {
+    let mut remaining = qty;
+    let mut total_cost = Decimal::ZERO;
+    let mut filled = Decimal::ZERO;
+    for level in &book.bids {
+        let take = remaining.min(level.size);
+        total_cost += take * level.price;
+        filled += take;
+        remaining -= take;
+        if remaining <= Decimal::ZERO {
+            break;
+        }
+    }
+    if filled > Decimal::ZERO {
+        Some((total_cost / filled, filled))
+    } else {
+        None
+    }
 }
 
 impl CrossExchangeStrategy {
-    /// Returns None if no profitable trade exists in this direction.
+    fn check_inventory(
+        &self,
+        portfolios: &HashMap<String, PortfolioSnapshot>,
+        buy_venue: Venue,
+        buy_instrument: &Instrument,
+        quantity: Decimal,
+    ) -> Decimal {
+        let half_max = self.max_quantity * Decimal::new(5, 1);
+        for snapshot in portfolios.values() {
+            if snapshot.venue != buy_venue {
+                continue;
+            }
+            for pos in &snapshot.positions {
+                if pos.instrument == *buy_instrument && pos.quantity > half_max {
+                    let excess = pos.quantity - half_max;
+                    let reduced = quantity - excess;
+                    return if reduced > Decimal::ZERO {
+                        reduced
+                    } else {
+                        Decimal::ZERO
+                    };
+                }
+            }
+        }
+        quantity
+    }
+
     fn evaluate_direction(
         &self,
         books: &HashMap<String, OrderBook>,
+        portfolios: &HashMap<String, PortfolioSnapshot>,
         params: DirectionParams<'_>,
     ) -> Option<Opportunity> {
         let DirectionParams {
@@ -52,6 +138,9 @@ impl CrossExchangeStrategy {
             sell_instrument,
             buy_fee,
             sell_fee,
+            tick_size_buy,
+            tick_size_sell,
+            lot_size,
         } = params;
         let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
         let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
@@ -62,30 +151,40 @@ impl CrossExchangeStrategy {
             return None;
         }
 
-        let best_ask = buy_book.best_ask()?;
-        let best_bid = sell_book.best_bid()?;
+        let (vwap_ask_price, ask_fill) = vwap_ask(buy_book, self.max_quantity)?;
+        let (vwap_bid_price, bid_fill) = vwap_bid(sell_book, self.max_quantity)?;
 
-        if best_bid.price <= best_ask.price {
+        if vwap_bid_price <= vwap_ask_price {
             return None;
         }
 
-        let quantity = best_ask.size.min(best_bid.size).min(self.max_quantity);
+        let raw_qty = ask_fill.min(bid_fill).min(self.max_quantity);
+
+        let quantity = quantize(
+            self.check_inventory(portfolios, buy_venue, buy_instrument, raw_qty),
+            lot_size,
+        );
         if quantity <= Decimal::ZERO {
             return None;
         }
 
-        let gross_profit = (best_bid.price - best_ask.price) * quantity;
+        let (final_ask, _) = vwap_ask(buy_book, quantity)?;
+        let (final_bid, _) = vwap_bid(sell_book, quantity)?;
 
-        let fee_buy = best_ask.price * quantity * buy_fee;
-        let fee_sell = best_bid.price * quantity * sell_fee;
+        let order_ask = quantize_up(final_ask, tick_size_buy);
+        let order_bid = quantize(final_bid, tick_size_sell);
+
+        let gross_profit = (order_bid - order_ask) * quantity;
+        let fee_buy = order_ask * quantity * buy_fee;
+        let fee_sell = order_bid * quantity * sell_fee;
         let fees_total = fee_buy + fee_sell;
-
         let net_profit = gross_profit - fees_total;
+
         if net_profit <= Decimal::ZERO {
             return None;
         }
 
-        let notional = best_ask.price * quantity;
+        let notional = order_ask * quantity;
         let net_profit_bps = (net_profit / notional) * Decimal::from(10_000);
 
         if net_profit_bps < self.min_net_profit_bps {
@@ -98,8 +197,8 @@ impl CrossExchangeStrategy {
                 venue: buy_venue,
                 instrument: buy_instrument.clone(),
                 side: Side::Buy,
-                quote_price: best_ask.price,
-                order_price: best_ask.price,
+                quote_price: final_ask,
+                order_price: order_ask,
                 quantity,
                 fee_estimate: fee_buy,
             },
@@ -107,8 +206,8 @@ impl CrossExchangeStrategy {
                 venue: sell_venue,
                 instrument: sell_instrument.clone(),
                 side: Side::Sell,
-                quote_price: best_bid.price,
-                order_price: best_bid.price,
+                quote_price: final_bid,
+                order_price: order_bid,
                 quantity,
                 fee_estimate: fee_sell,
             },
@@ -140,10 +239,11 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
     async fn evaluate(
         &self,
         books: &HashMap<String, OrderBook>,
-        _portfolios: &HashMap<String, PortfolioSnapshot>,
+        portfolios: &HashMap<String, PortfolioSnapshot>,
     ) -> Option<Opportunity> {
         let a_to_b = self.evaluate_direction(
             books,
+            portfolios,
             DirectionParams {
                 buy_venue: self.venue_a,
                 buy_instrument: &self.instrument_a,
@@ -151,10 +251,14 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 sell_instrument: &self.instrument_b,
                 buy_fee: self.fee_a.taker(),
                 sell_fee: self.fee_b.taker(),
+                tick_size_buy: self.tick_size_a,
+                tick_size_sell: self.tick_size_b,
+                lot_size: self.lot_size_a.max(self.lot_size_b),
             },
         );
         let b_to_a = self.evaluate_direction(
             books,
+            portfolios,
             DirectionParams {
                 buy_venue: self.venue_b,
                 buy_instrument: &self.instrument_b,
@@ -162,6 +266,9 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 sell_instrument: &self.instrument_a,
                 buy_fee: self.fee_b.taker(),
                 sell_fee: self.fee_a.taker(),
+                tick_size_buy: self.tick_size_b,
+                tick_size_sell: self.tick_size_a,
+                lot_size: self.lot_size_a.max(self.lot_size_b),
             },
         );
 
@@ -206,7 +313,7 @@ mod tests {
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
     use crate::models::market::{OrderBook, OrderBookLevel, book_key};
-    use crate::models::position::PortfolioSnapshot;
+    use crate::models::position::{PortfolioSnapshot, Position};
     use crate::strategy::base::ArbitrageStrategy;
     use chrono::Utc;
     use rust_decimal::Decimal;
@@ -239,6 +346,10 @@ mod tests {
             fee_a: fee(dec!(0.001), dec!(0.001)),
             fee_b: fee(dec!(0.001), dec!(0.001)),
             max_quote_age_ms: 5000,
+            tick_size_a: dec!(0.01),
+            tick_size_b: dec!(0.01),
+            lot_size_a: dec!(0.001),
+            lot_size_b: dec!(0.001),
         }
     }
 
@@ -267,6 +378,29 @@ mod tests {
         }
     }
 
+    fn multi_level_book(
+        venue: Venue,
+        instrument: &Instrument,
+        bids: Vec<(Decimal, Decimal)>,
+        asks: Vec<(Decimal, Decimal)>,
+    ) -> OrderBook {
+        let now = Utc::now();
+        OrderBook {
+            venue,
+            instrument: instrument.clone(),
+            bids: bids
+                .into_iter()
+                .map(|(price, size)| OrderBookLevel { price, size })
+                .collect(),
+            asks: asks
+                .into_iter()
+                .map(|(price, size)| OrderBookLevel { price, size })
+                .collect(),
+            timestamp: now,
+            local_timestamp: now,
+        }
+    }
+
     fn empty_portfolios() -> HashMap<String, PortfolioSnapshot> {
         HashMap::new()
     }
@@ -278,7 +412,6 @@ mod tests {
             .collect()
     }
 
-    // No opportunity when spreads are flat in both directions.
     #[tokio::test]
     async fn no_opportunity_when_no_spread() {
         let s = strategy();
@@ -303,7 +436,6 @@ mod tests {
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
     }
 
-    // No opportunity when best bid < best ask in both directions.
     #[tokio::test]
     async fn no_opportunity_when_spread_negative() {
         let s = strategy();
@@ -328,7 +460,6 @@ mod tests {
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
     }
 
-    // Buy cheap on A, sell expensive on B.
     #[tokio::test]
     async fn detects_opportunity_a_to_b() {
         let s = strategy();
@@ -358,7 +489,6 @@ mod tests {
         assert_eq!(opp.legs[1].side, Side::Sell);
     }
 
-    // Buy cheap on B, sell expensive on A.
     #[tokio::test]
     async fn detects_opportunity_b_to_a() {
         let s = strategy();
@@ -387,12 +517,9 @@ mod tests {
         assert_eq!(opp.legs[1].side, Side::Sell);
     }
 
-    // When both directions are profitable, return the more profitable one.
     #[tokio::test]
     async fn picks_more_profitable_direction() {
         let s = strategy();
-        // a_to_b: buy at 100, sell at 102 => gross 2
-        // b_to_a: buy at 101, sell at 104 => gross 3
         let books = make_books(vec![
             orderbook(
                 Venue::Binance,
@@ -412,19 +539,16 @@ mod tests {
             ),
         ]);
         let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
-        // b_to_a is more profitable: buy on Bybit at 101, sell on Binance at 104
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
         assert_eq!(opp.legs[0].quote_price, dec!(101));
         assert_eq!(opp.legs[1].venue, Venue::Binance);
         assert_eq!(opp.legs[1].quote_price, dec!(104));
     }
 
-    // Spread exists but net_profit_bps < min after fees.
     #[tokio::test]
     async fn respects_min_net_profit_bps() {
         let mut s = strategy();
-        s.min_net_profit_bps = dec!(100); // require 100 bps = 1%
-        // Spread: buy at 100, sell at 100.5 => 0.5% gross, minus fees => below 1%
+        s.min_net_profit_bps = dec!(100);
         let books = make_books(vec![
             orderbook(
                 Venue::Binance,
@@ -446,7 +570,6 @@ mod tests {
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
     }
 
-    // Quantity capped at max_quantity even when more size is available.
     #[tokio::test]
     async fn respects_max_quantity() {
         let mut s = strategy();
@@ -473,7 +596,6 @@ mod tests {
         assert_eq!(opp.legs[0].quantity, dec!(1));
     }
 
-    // Quantity is min of bid_size, ask_size, and max_quantity.
     #[tokio::test]
     async fn quantity_is_min_of_available_sizes() {
         let mut s = strategy();
@@ -497,11 +619,9 @@ mod tests {
             ),
         ]);
         let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
-        // ask_size on A = 5, bid_size on B = 2, max_qty = 10 => quantity = 2
         assert_eq!(opp.legs[0].quantity, dec!(2));
     }
 
-    // Verify fees_total = (ask_price * qty * taker_fee_a) + (bid_price * qty * taker_fee_b).
     #[tokio::test]
     async fn fees_are_calculated_correctly() {
         let mut s = strategy();
@@ -527,12 +647,10 @@ mod tests {
             ),
         ]);
         let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
-        // fee_buy = 100 * 1 * 0.001 = 0.1, fee_sell = 105 * 1 * 0.002 = 0.21
         let expected_fees = dec!(100) * dec!(1) * dec!(0.001) + dec!(105) * dec!(1) * dec!(0.002);
         assert_eq!(opp.economics.fees_total, expected_fees);
     }
 
-    // Zero quantity on either side means no opportunity.
     #[tokio::test]
     async fn zero_quantity_returns_none() {
         let s = strategy();
@@ -628,5 +746,158 @@ mod tests {
         sell.local_timestamp = Utc::now();
         let books = make_books(vec![buy, sell]);
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_some());
+    }
+
+    // --- New tests ---
+
+    #[tokio::test]
+    async fn vwap_uses_multiple_levels() {
+        let mut s = strategy();
+        s.max_quantity = dec!(3);
+        s.lot_size_a = dec!(0.001);
+        s.lot_size_b = dec!(0.001);
+        // 3 ask levels: 100@1, 101@1, 102@1 => VWAP = (100+101+102)/3 = 101
+        let buy = multi_level_book(
+            Venue::Binance,
+            &s.instrument_a,
+            vec![(dec!(99), dec!(5))],
+            vec![
+                (dec!(100), dec!(1)),
+                (dec!(101), dec!(1)),
+                (dec!(102), dec!(1)),
+            ],
+        );
+        let sell = multi_level_book(
+            Venue::Bybit,
+            &s.instrument_b,
+            vec![
+                (dec!(106), dec!(1)),
+                (dec!(105), dec!(1)),
+                (dec!(104), dec!(1)),
+            ],
+            vec![(dec!(110), dec!(5))],
+        );
+        let books = make_books(vec![buy, sell]);
+        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        assert_eq!(opp.legs[0].quantity, dec!(3));
+        assert_eq!(opp.legs[0].quote_price, dec!(101));
+    }
+
+    #[tokio::test]
+    async fn vwap_partial_fill_from_last_level() {
+        let mut s = strategy();
+        s.max_quantity = dec!(1.5);
+        s.lot_size_a = dec!(0.001);
+        s.lot_size_b = dec!(0.001);
+        // asks: 100@1, 102@2 => need 1.5 => take 1@100 + 0.5@102 => VWAP = (100+51)/1.5 = 100.666...
+        let buy = multi_level_book(
+            Venue::Binance,
+            &s.instrument_a,
+            vec![(dec!(99), dec!(5))],
+            vec![(dec!(100), dec!(1)), (dec!(102), dec!(2))],
+        );
+        let sell = multi_level_book(
+            Venue::Bybit,
+            &s.instrument_b,
+            vec![(dec!(110), dec!(2))],
+            vec![(dec!(115), dec!(5))],
+        );
+        let books = make_books(vec![buy, sell]);
+        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        assert_eq!(opp.legs[0].quantity, dec!(1.5));
+        // VWAP = (1*100 + 0.5*102) / 1.5 = 151/1.5
+        let expected_vwap = dec!(151) / dec!(1.5);
+        assert_eq!(opp.legs[0].quote_price, expected_vwap);
+    }
+
+    #[test]
+    fn quantize_rounds_down() {
+        assert_eq!(quantize(dec!(0.0057), dec!(0.001)), dec!(0.005));
+        assert_eq!(quantize(dec!(1.999), dec!(0.01)), dec!(1.99));
+        assert_eq!(quantize(dec!(5.0), dec!(1)), dec!(5));
+    }
+
+    #[tokio::test]
+    async fn quantize_profit_recheck_rejects_when_rounding_kills_profit() {
+        let mut s = strategy();
+        s.min_net_profit_bps = dec!(1);
+        s.tick_size_a = dec!(1);
+        s.tick_size_b = dec!(1);
+        s.lot_size_a = dec!(0.001);
+        s.lot_size_b = dec!(0.001);
+        // ask=100.1, bid=100.9 => tiny spread.
+        // After tick quantize: ask rounds UP to 101, bid rounds DOWN to 100 => negative spread.
+        let books = make_books(vec![
+            orderbook(
+                Venue::Binance,
+                &s.instrument_a,
+                dec!(99),
+                dec!(1),
+                dec!(100.1),
+                dec!(1),
+            ),
+            orderbook(
+                Venue::Bybit,
+                &s.instrument_b,
+                dec!(100.9),
+                dec!(1),
+                dec!(103),
+                dec!(1),
+            ),
+        ]);
+        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn inventory_reduces_quantity_when_existing_position() {
+        let mut s = strategy();
+        s.max_quantity = dec!(1);
+        s.lot_size_a = dec!(0.001);
+        s.lot_size_b = dec!(0.001);
+
+        let books = make_books(vec![
+            orderbook(
+                Venue::Binance,
+                &s.instrument_a,
+                dec!(99),
+                dec!(1),
+                dec!(100),
+                dec!(1),
+            ),
+            orderbook(
+                Venue::Bybit,
+                &s.instrument_b,
+                dec!(105),
+                dec!(1),
+                dec!(106),
+                dec!(1),
+            ),
+        ]);
+
+        let mut portfolios = HashMap::new();
+        portfolios.insert(
+            "binance".to_string(),
+            PortfolioSnapshot {
+                venue: Venue::Binance,
+                positions: vec![Position {
+                    venue: Venue::Binance,
+                    instrument: s.instrument_a.clone(),
+                    quantity: dec!(0.8),
+                    average_cost: dec!(100),
+                    unrealized_pnl: Decimal::ZERO,
+                    realized_pnl: Decimal::ZERO,
+                }],
+                total_equity: dec!(10000),
+                available_balance: dec!(5000),
+                unrealized_pnl: Decimal::ZERO,
+                realized_pnl: Decimal::ZERO,
+            },
+        );
+
+        let opp = s.evaluate(&books, &portfolios).await.unwrap();
+        // max_quantity=1, half_max=0.5, existing=0.8 > 0.5, excess=0.3
+        // raw_qty=1, reduced=1-0.3=0.7
+        assert!(opp.legs[0].quantity < dec!(1));
+        assert_eq!(opp.legs[0].quantity, dec!(0.7));
     }
 }
