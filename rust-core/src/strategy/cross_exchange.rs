@@ -6,6 +6,7 @@ use rust_decimal::Decimal;
 use smallvec::smallvec;
 
 use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
+use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
 use crate::models::market::{OrderBook, book_key};
 use crate::models::order::Order;
@@ -23,8 +24,8 @@ pub struct CrossExchangeStrategy {
     pub instrument_b: Instrument,
     pub min_net_profit_bps: Decimal,
     pub max_quantity: Decimal,
-    pub fee_rate_a: Decimal,
-    pub fee_rate_b: Decimal,
+    pub fee_a: FeeSchedule,
+    pub fee_b: FeeSchedule,
 }
 
 struct DirectionParams<'a> {
@@ -141,8 +142,8 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 buy_instrument: &self.instrument_a,
                 sell_venue: self.venue_b,
                 sell_instrument: &self.instrument_b,
-                buy_fee: self.fee_rate_a,
-                sell_fee: self.fee_rate_b,
+                buy_fee: self.fee_a.taker(),
+                sell_fee: self.fee_b.taker(),
             },
         );
         let b_to_a = self.evaluate_direction(
@@ -152,8 +153,8 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 buy_instrument: &self.instrument_b,
                 sell_venue: self.venue_a,
                 sell_instrument: &self.instrument_a,
-                buy_fee: self.fee_rate_b,
-                sell_fee: self.fee_rate_a,
+                buy_fee: self.fee_b.taker(),
+                sell_fee: self.fee_a.taker(),
             },
         );
 
