@@ -143,3 +143,60 @@ impl OrderExecutor for OkxOrderExecutor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+
+    fn btc_usdt_spot() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    #[test]
+    fn side_to_okx_maps_correctly() {
+        assert_eq!(OkxOrderExecutor::side_str(Side::Buy), "buy");
+        assert_eq!(OkxOrderExecutor::side_str(Side::Sell), "sell");
+    }
+
+    #[test]
+    fn order_type_to_okx_maps_correctly() {
+        assert_eq!(OkxOrderExecutor::order_type_str(OrderType::Limit), "limit");
+        assert_eq!(
+            OkxOrderExecutor::order_type_str(OrderType::Market),
+            "market"
+        );
+    }
+
+    #[test]
+    fn instrument_to_inst_id_formats_correctly() {
+        let inst = btc_usdt_spot();
+        assert_eq!(OkxOrderExecutor::instrument_to_inst_id(&inst), "BTC-USDT");
+    }
+
+    #[test]
+    fn td_mode_spot_is_cash() {
+        let inst = btc_usdt_spot();
+        assert_eq!(OkxOrderExecutor::td_mode(&inst), "cash");
+    }
+
+    #[test]
+    fn td_mode_swap_is_cross() {
+        let inst = Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Swap,
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+        };
+        assert_eq!(OkxOrderExecutor::td_mode(&inst), "cross");
+    }
+}

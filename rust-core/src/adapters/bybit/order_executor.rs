@@ -167,3 +167,61 @@ impl OrderExecutor for BybitOrderExecutor {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+
+    fn btc_usdt_spot() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    #[test]
+    fn side_str_maps_correctly() {
+        assert_eq!(BybitOrderExecutor::side_str(Side::Buy), "Buy");
+        assert_eq!(BybitOrderExecutor::side_str(Side::Sell), "Sell");
+    }
+
+    #[test]
+    fn order_type_str_maps_correctly() {
+        assert_eq!(
+            BybitOrderExecutor::order_type_str(OrderType::Limit),
+            "Limit"
+        );
+        assert_eq!(
+            BybitOrderExecutor::order_type_str(OrderType::Market),
+            "Market"
+        );
+    }
+
+    #[test]
+    fn symbol_format() {
+        let inst = btc_usdt_spot();
+        assert_eq!(BybitOrderExecutor::instrument_to_symbol(&inst), "BTCUSDT");
+    }
+
+    #[test]
+    fn tif_to_string_defaults_to_gtc() {
+        assert_eq!(BybitOrderExecutor::tif_to_string(None), "GTC");
+        assert_eq!(
+            BybitOrderExecutor::tif_to_string(Some(TimeInForce::Rod)),
+            "GTC"
+        );
+        assert_eq!(
+            BybitOrderExecutor::tif_to_string(Some(TimeInForce::Ioc)),
+            "IOC"
+        );
+        assert_eq!(
+            BybitOrderExecutor::tif_to_string(Some(TimeInForce::Fok)),
+            "FOK"
+        );
+    }
+}

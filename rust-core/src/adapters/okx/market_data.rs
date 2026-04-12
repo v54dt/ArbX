@@ -229,3 +229,52 @@ impl MarketDataFeed for OkxMarketData {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn btc_usdt_spot() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    #[test]
+    fn parse_ticker_valid_json() {
+        let json = r#"{
+            "data": [{
+                "instId": "BTC-USDT",
+                "bidPx": "50000.5",
+                "bidSz": "1.2",
+                "askPx": "50001.0",
+                "askSz": "0.8"
+            }]
+        }"#;
+        let msg: WsMessage = serde_json::from_str(json).unwrap();
+        let data = msg.data.unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].inst_id, "BTC-USDT");
+        assert_eq!(data[0].bid_px, dec!(50000.5));
+        assert_eq!(data[0].ask_px, dec!(50001.0));
+        assert_eq!(data[0].bid_sz, dec!(1.2));
+        assert_eq!(data[0].ask_sz, dec!(0.8));
+    }
+
+    #[test]
+    fn register_instrument_stores_correctly() {
+        let mut md = OkxMarketData::new();
+        let inst = btc_usdt_spot();
+        md.register_instrument("btc-usdt", inst.clone());
+        assert_eq!(md.instruments.len(), 1);
+        assert!(md.instruments.contains_key("BTC-USDT"));
+        assert_eq!(md.instruments["BTC-USDT"], inst);
+    }
+}
