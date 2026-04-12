@@ -7,7 +7,7 @@ use smallvec::smallvec;
 
 use crate::models::enums::{OrderType, Side, Venue};
 use crate::models::instrument::Instrument;
-use crate::models::market::OrderBook;
+use crate::models::market::{OrderBook, book_key};
 use crate::models::order::Order;
 use crate::models::position::PortfolioSnapshot;
 
@@ -37,14 +37,6 @@ struct DirectionParams<'a> {
 }
 
 impl CrossExchangeStrategy {
-    fn book_key(venue: Venue, instrument: &Instrument) -> String {
-        format!(
-            "{:?}:{}-{}:{:?}",
-            venue, instrument.base, instrument.quote, instrument.instrument_type
-        )
-        .to_lowercase()
-    }
-
     /// Returns None if no profitable trade exists in this direction.
     fn evaluate_direction(
         &self,
@@ -59,8 +51,8 @@ impl CrossExchangeStrategy {
             buy_fee,
             sell_fee,
         } = params;
-        let buy_book = books.get(&Self::book_key(buy_venue, buy_instrument))?;
-        let sell_book = books.get(&Self::book_key(sell_venue, sell_instrument))?;
+        let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
+        let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
 
         let best_ask = buy_book.best_ask()?;
         let best_bid = sell_book.best_bid()?;

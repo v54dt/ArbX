@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
-use crate::models::market::{OrderBook, OrderBookLevel, Quote};
+use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::position::PortfolioSnapshot;
 use crate::strategy::base::ArbitrageStrategy;
 
@@ -56,7 +56,7 @@ impl ArbitrageEngine {
         drop(merged_tx);
 
         while let Some(quote) = merged_rx.recv().await {
-            let key = book_key(&quote);
+            let key = book_key(quote.venue, &quote.instrument);
             self.books.insert(key, quote_to_book(&quote));
 
             if let Some(opp) = self.strategy.evaluate(&self.books, &self.portfolios).await {
@@ -92,19 +92,6 @@ impl ArbitrageEngine {
         warn!("all quote streams ended");
         Ok(())
     }
-}
-
-/// Canonical book key used by strategies and the engine.
-/// Format: `"venue:base-quote:instrument_type"` all lowercase.
-fn book_key(quote: &Quote) -> String {
-    format!(
-        "{:?}:{}-{}:{:?}",
-        quote.venue,
-        quote.instrument.base,
-        quote.instrument.quote,
-        quote.instrument.instrument_type
-    )
-    .to_lowercase()
 }
 
 /// Convert a top-of-book Quote into a minimal OrderBook (single level each side).

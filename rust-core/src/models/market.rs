@@ -32,6 +32,16 @@ pub struct OrderBook {
     pub local_timestamp: DateTime<Utc>,
 }
 
+/// Canonical key for order book lookup. Used by engine and all strategies.
+/// Format: `"venue:base-quote:instrument_type"` all lowercase.
+pub fn book_key(venue: Venue, instrument: &Instrument) -> String {
+    format!(
+        "{:?}:{}-{}:{:?}",
+        venue, instrument.base, instrument.quote, instrument.instrument_type
+    )
+    .to_lowercase()
+}
+
 impl OrderBook {
     pub fn best_bid(&self) -> Option<&OrderBookLevel> {
         self.bids.first()
