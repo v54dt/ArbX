@@ -32,11 +32,43 @@ impl BinanceMarket {
         }
     }
 
+    fn ws_base_url_testnet(&self) -> &'static str {
+        match self {
+            BinanceMarket::Spot => "wss://testnet.binance.vision/ws",
+            BinanceMarket::UsdtFutures => "wss://stream.binancefuture.com/ws",
+            BinanceMarket::CoinFutures => "wss://dstream.binancefuture.com/ws",
+        }
+    }
+
     pub fn rest_base_url(&self) -> &'static str {
         match self {
             BinanceMarket::Spot => "https://api.binance.com",
             BinanceMarket::UsdtFutures => "https://fapi.binance.com",
             BinanceMarket::CoinFutures => "https://dapi.binance.com",
+        }
+    }
+
+    pub fn rest_base_url_testnet(&self) -> &'static str {
+        match self {
+            BinanceMarket::Spot => "https://testnet.binance.vision",
+            BinanceMarket::UsdtFutures => "https://testnet.binancefuture.com",
+            BinanceMarket::CoinFutures => "https://testnet.binancefuture.com",
+        }
+    }
+
+    pub fn ws_url(&self, testnet: bool) -> &'static str {
+        if testnet {
+            self.ws_base_url_testnet()
+        } else {
+            self.ws_base_url()
+        }
+    }
+
+    pub fn rest_url(&self, testnet: bool) -> &'static str {
+        if testnet {
+            self.rest_base_url_testnet()
+        } else {
+            self.rest_base_url()
         }
     }
 }
@@ -66,8 +98,7 @@ where
 
 pub struct BinanceMarketData {
     market: BinanceMarket,
-    /// Map of Binance symbol (e.g. "BTCUSDT") -> canonical Instrument.
-    /// Registered via `register_instrument()` before `connect()`.
+    testnet: bool,
     instruments: HashMap<String, Instrument>,
     ws_task: Option<JoinHandle<()>>,
     quote_tx: Option<mpsc::UnboundedSender<Quote>>,
@@ -78,8 +109,13 @@ pub struct BinanceMarketData {
 
 impl BinanceMarketData {
     pub fn new(market: BinanceMarket) -> Self {
+        Self::with_testnet(market, false)
+    }
+
+    pub fn with_testnet(market: BinanceMarket, testnet: bool) -> Self {
         Self {
             market,
+            testnet,
             instruments: HashMap::new(),
             ws_task: None,
             quote_tx: None,
@@ -121,7 +157,7 @@ impl MarketDataFeed for BinanceMarketData {
             anyhow::bail!("no symbols subscribed, call subscribe() before connect()");
         }
 
-        let base = self.market.ws_base_url();
+        let base = self.market.ws_url(self.testnet);
         let url = format!("{}/stream?streams={}", base, streams.join("/"));
 
         let (ws_stream, _) = connect_async(&url).await?;

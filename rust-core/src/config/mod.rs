@@ -37,6 +37,8 @@ pub struct VenueConfig {
     pub api_key: String,
     pub api_secret: String,
     pub paper_trading: bool,
+    #[serde(default)]
+    pub testnet: bool,
 }
 
 impl std::fmt::Debug for VenueConfig {
@@ -47,6 +49,7 @@ impl std::fmt::Debug for VenueConfig {
             .field("api_key", &"[REDACTED]")
             .field("api_secret", &"[REDACTED]")
             .field("paper_trading", &self.paper_trading)
+            .field("testnet", &self.testnet)
             .finish()
     }
 }
