@@ -5,23 +5,36 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
+use crate::adapters::order_executor::OrderExecutor;
+use crate::models::enums::Venue;
 use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::position::PortfolioSnapshot;
+use crate::risk::manager::RiskManager;
 use crate::strategy::base::ArbitrageStrategy;
+use rust_decimal::Decimal;
 
 /// Main loop: receive quote → update local book → evaluate strategy → log opportunity.
 pub struct ArbitrageEngine {
     feeds: Vec<Box<dyn MarketDataFeed>>,
     strategy: Box<dyn ArbitrageStrategy>,
+    risk_manager: RiskManager,
+    executor: Box<dyn OrderExecutor>,
     books: HashMap<String, OrderBook>,
     portfolios: HashMap<String, PortfolioSnapshot>,
 }
 
 impl ArbitrageEngine {
-    pub fn new(feeds: Vec<Box<dyn MarketDataFeed>>, strategy: Box<dyn ArbitrageStrategy>) -> Self {
+    pub fn new(
+        feeds: Vec<Box<dyn MarketDataFeed>>,
+        strategy: Box<dyn ArbitrageStrategy>,
+        risk_manager: RiskManager,
+        executor: Box<dyn OrderExecutor>,
+    ) -> Self {
         Self {
             feeds,
             strategy,
+            risk_manager,
+            executor,
             books: HashMap::new(),
             portfolios: HashMap::new(),
         }
@@ -86,6 +99,49 @@ impl ArbitrageEngine {
                     notional = %opp.economics.notional,
                     "opportunity detected"
                 );
+
+                // Compute hedge orders from the opportunity
+                let orders = self.strategy.compute_hedge_orders(&opp);
+
+                // Risk-check and submit each order
+                for mut order in orders {
+                    let empty_portfolio = PortfolioSnapshot {
+                        venue: Venue::Binance,
+                        positions: vec![],
+                        total_equity: Decimal::ZERO,
+                        available_balance: Decimal::ZERO,
+                        unrealized_pnl: Decimal::ZERO,
+                        realized_pnl: Decimal::ZERO,
+                    };
+                    let verdict = self.risk_manager.check_pre_trade(&order, &empty_portfolio);
+
+                    if !verdict.approved {
+                        warn!(
+                            reason = verdict.reason.as_deref().unwrap_or("unknown"),
+                            "order rejected by risk manager"
+                        );
+                        continue;
+                    }
+
+                    // Apply adjusted quantity if risk manager capped it
+                    if let Some(adj_qty) = verdict.adjusted_qty {
+                        order.quantity = adj_qty;
+                    }
+
+                    match self.executor.submit_order(&order).await {
+                        Ok(order_id) => {
+                            info!(
+                                order_id = order_id.as_str(),
+                                side = ?order.side,
+                                qty = %order.quantity,
+                                "order submitted"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "order submission failed");
+                        }
+                    }
+                }
             }
         }
 
