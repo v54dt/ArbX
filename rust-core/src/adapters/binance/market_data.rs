@@ -31,6 +31,14 @@ impl BinanceMarket {
             BinanceMarket::CoinFutures => "wss://dstream.binance.com",
         }
     }
+
+    pub fn rest_base_url(&self) -> &'static str {
+        match self {
+            BinanceMarket::Spot => "https://api.binance.com",
+            BinanceMarket::UsdtFutures => "https://fapi.binance.com",
+            BinanceMarket::CoinFutures => "https://dapi.binance.com",
+        }
+    }
 }
 
 /// Binance WebSocket book ticker message

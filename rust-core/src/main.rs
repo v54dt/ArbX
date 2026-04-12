@@ -8,9 +8,12 @@ mod models;
 mod risk;
 mod strategy;
 
+use adapters::binance::fee_provider::BinanceFeeProvider;
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
 use adapters::binance::order_executor::BinanceOrderExecutor;
 use adapters::binance::position_manager::BinancePositionManager;
+use adapters::binance::rest_client::BinanceRestClient;
+use adapters::fee_provider::FeeProvider;
 use adapters::market_data::MarketDataFeed;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
@@ -60,6 +63,38 @@ fn parse_instrument(cfg: &InstrumentConfig) -> anyhow::Result<Instrument> {
     })
 }
 
+async fn fetch_fee_schedule(
+    venue_cfg: &config::VenueConfig,
+    market: BinanceMarket,
+    venue: Venue,
+) -> FeeSchedule {
+    if venue_cfg.api_key.is_empty() || venue_cfg.api_secret.is_empty() {
+        tracing::warn!(?venue, "no API credentials, using default fee schedule");
+        return FeeSchedule::new(
+            venue,
+            rust_decimal_macros::dec!(0.001),
+            rust_decimal_macros::dec!(0.001),
+        );
+    }
+    let rest = BinanceRestClient::new(
+        market.rest_base_url(),
+        &venue_cfg.api_key,
+        &venue_cfg.api_secret,
+    );
+    let provider = BinanceFeeProvider::new(rest, market);
+    match provider.get_fee_schedule().await {
+        Ok(fee) => fee,
+        Err(e) => {
+            tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
+            FeeSchedule::new(
+                venue,
+                rust_decimal_macros::dec!(0.001),
+                rust_decimal_macros::dec!(0.001),
+            )
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config_path = std::env::args()
@@ -97,6 +132,12 @@ async fn main() -> anyhow::Result<()> {
     let mut feed_b = BinanceMarketData::new(parse_market(&cfg.venues[idx_b].market)?);
     feed_b.register_instrument(&symbol_b, instrument_b.clone());
 
+    let market_a = parse_market(&cfg.venues[0].market)?;
+    let market_b = parse_market(&cfg.venues[idx_b].market)?;
+
+    let fee_a = fetch_fee_schedule(&cfg.venues[0], market_a, venue_a).await;
+    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], market_b, venue_b).await;
+
     let strategy = CrossExchangeStrategy {
         venue_a,
         venue_b,
@@ -104,16 +145,8 @@ async fn main() -> anyhow::Result<()> {
         instrument_b,
         min_net_profit_bps: cfg.strategy.min_net_profit_bps,
         max_quantity: cfg.strategy.max_quantity,
-        fee_a: FeeSchedule::new(
-            venue_a,
-            rust_decimal_macros::dec!(0.0002),
-            rust_decimal_macros::dec!(0.001),
-        ),
-        fee_b: FeeSchedule::new(
-            venue_b,
-            rust_decimal_macros::dec!(0.0001),
-            rust_decimal_macros::dec!(0.0004),
-        ),
+        fee_a,
+        fee_b,
         max_quote_age_ms: cfg.strategy.max_quote_age_ms,
     };
 
