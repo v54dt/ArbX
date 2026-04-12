@@ -28,6 +28,7 @@ strategy:
   tick_size_b: "0.01"
   lot_size_a: "0.00001"
   lot_size_b: "0.00001"
+  max_book_depth: 10
 
 risk:
   max_position_size: "1"
