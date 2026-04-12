@@ -25,7 +25,21 @@ use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
 use risk::manager::RiskManager;
 use strategy::cross_exchange::CrossExchangeStrategy;
 
+use clap::Parser;
 use config::InstrumentConfig;
+
+#[derive(Parser)]
+#[command(name = "arbx", about = "Cross-market arbitrage engine")]
+struct Cli {
+    #[arg(short, long, default_value = "config/default.yaml")]
+    config: String,
+
+    #[arg(long)]
+    dry_run: bool,
+
+    #[arg(long)]
+    log_level: Option<String>,
+}
 
 fn parse_venue(name: &str) -> anyhow::Result<Venue> {
     match name.to_lowercase().as_str() {
@@ -101,16 +115,15 @@ async fn fetch_fee_schedule(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "config/default.yaml".into());
-    let cfg = config::load(&config_path)?;
+    let cli = Cli::parse();
+    let cfg = config::load(&cli.config)?;
 
     {
         use tracing_subscriber::prelude::*;
 
+        let log_level = cli.log_level.as_deref().unwrap_or(&cfg.logging.level);
         let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.logging.level));
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level));
 
         let file_appender = cfg.logging.log_file.as_ref().map(|path| {
             let parent = std::path::Path::new(path)
@@ -229,11 +242,12 @@ async fn main() -> anyhow::Result<()> {
         venue_cfg.api_key.clone(),
         venue_cfg.api_secret.clone(),
     )?;
-    let executor: Box<dyn adapters::order_executor::OrderExecutor> = if venue_cfg.paper_trading {
-        Box::new(PaperExecutor::new(Box::new(executor)))
-    } else {
-        Box::new(executor)
-    };
+    let executor: Box<dyn adapters::order_executor::OrderExecutor> =
+        if venue_cfg.paper_trading || cli.dry_run {
+            Box::new(PaperExecutor::new(Box::new(executor)))
+        } else {
+            Box::new(executor)
+        };
     let position_manager = BinancePositionManager::new(
         parse_market(&cfg.venues[idx_b].market)?,
         &cfg.venues[idx_b].api_key,
