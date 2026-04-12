@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
         max_quantity: dec!(0.01),
         fee_a: FeeSchedule::new(Venue::Binance, dec!(0.0002), dec!(0.001)),
         fee_b: FeeSchedule::new(Venue::Binance, dec!(0.0001), dec!(0.0004)),
+        max_quote_age_ms: 5000,
     };
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(spot_feed), Box::new(futures_feed)];

@@ -26,6 +26,7 @@ pub struct CrossExchangeStrategy {
     pub max_quantity: Decimal,
     pub fee_a: FeeSchedule,
     pub fee_b: FeeSchedule,
+    pub max_quote_age_ms: i64,
 }
 
 struct DirectionParams<'a> {
@@ -54,6 +55,12 @@ impl CrossExchangeStrategy {
         } = params;
         let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
         let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
+
+        let now = Utc::now();
+        let max_age = Duration::milliseconds(self.max_quote_age_ms);
+        if now - buy_book.local_timestamp > max_age || now - sell_book.local_timestamp > max_age {
+            return None;
+        }
 
         let best_ask = buy_book.best_ask()?;
         let best_bid = sell_book.best_bid()?;
@@ -231,6 +238,7 @@ mod tests {
             max_quantity: dec!(1),
             fee_a: fee(dec!(0.001), dec!(0.001)),
             fee_b: fee(dec!(0.001), dec!(0.001)),
+            max_quote_age_ms: 5000,
         }
     }
 
@@ -547,5 +555,78 @@ mod tests {
             ),
         ]);
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_buy_book_returns_none() {
+        let s = strategy();
+        let mut buy = orderbook(
+            Venue::Binance,
+            &s.instrument_a,
+            dec!(99),
+            dec!(1),
+            dec!(100),
+            dec!(1),
+        );
+        buy.local_timestamp = Utc::now() - Duration::seconds(10);
+        let sell = orderbook(
+            Venue::Bybit,
+            &s.instrument_b,
+            dec!(102),
+            dec!(1),
+            dec!(103),
+            dec!(1),
+        );
+        let books = make_books(vec![buy, sell]);
+        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_sell_book_returns_none() {
+        let s = strategy();
+        let buy = orderbook(
+            Venue::Binance,
+            &s.instrument_a,
+            dec!(99),
+            dec!(1),
+            dec!(100),
+            dec!(1),
+        );
+        let mut sell = orderbook(
+            Venue::Bybit,
+            &s.instrument_b,
+            dec!(102),
+            dec!(1),
+            dec!(103),
+            dec!(1),
+        );
+        sell.local_timestamp = Utc::now() - Duration::seconds(10);
+        let books = make_books(vec![buy, sell]);
+        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn fresh_books_still_detect_opportunity() {
+        let s = strategy();
+        let mut buy = orderbook(
+            Venue::Binance,
+            &s.instrument_a,
+            dec!(99),
+            dec!(1),
+            dec!(100),
+            dec!(1),
+        );
+        buy.local_timestamp = Utc::now();
+        let mut sell = orderbook(
+            Venue::Bybit,
+            &s.instrument_b,
+            dec!(102),
+            dec!(1),
+            dec!(103),
+            dec!(1),
+        );
+        sell.local_timestamp = Utc::now();
+        let books = make_books(vec![buy, sell]);
+        assert!(s.evaluate(&books, &empty_portfolios()).await.is_some());
     }
 }
