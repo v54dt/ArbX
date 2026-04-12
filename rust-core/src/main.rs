@@ -2,12 +2,11 @@
 #![allow(dead_code)]
 
 mod adapters;
+mod config;
 mod engine;
 mod models;
 mod risk;
 mod strategy;
-
-use rust_decimal_macros::dec;
 
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
 use adapters::binance::order_executor::BinanceOrderExecutor;
@@ -21,74 +20,119 @@ use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
 use risk::manager::RiskManager;
 use strategy::cross_exchange::CrossExchangeStrategy;
 
+use config::InstrumentConfig;
+
+fn parse_venue(name: &str) -> anyhow::Result<Venue> {
+    match name.to_lowercase().as_str() {
+        "binance" => Ok(Venue::Binance),
+        "bybit" => Ok(Venue::Bybit),
+        "okx" => Ok(Venue::Okx),
+        "fubon" => Ok(Venue::Fubon),
+        "shioaji" => Ok(Venue::Shioaji),
+        other => anyhow::bail!("unknown venue: {}", other),
+    }
+}
+
+fn parse_market(market: &str) -> anyhow::Result<BinanceMarket> {
+    match market.to_lowercase().as_str() {
+        "spot" => Ok(BinanceMarket::Spot),
+        "usdt_futures" => Ok(BinanceMarket::UsdtFutures),
+        "coin_futures" => Ok(BinanceMarket::CoinFutures),
+        other => anyhow::bail!("unknown market: {}", other),
+    }
+}
+
+fn parse_instrument(cfg: &InstrumentConfig) -> anyhow::Result<Instrument> {
+    let instrument_type = match cfg.instrument_type.to_lowercase().as_str() {
+        "spot" => InstrumentType::Spot,
+        "swap" => InstrumentType::Swap,
+        "futures" | "future" => InstrumentType::Futures,
+        "option" => InstrumentType::Option,
+        other => anyhow::bail!("unknown instrument type: {}", other),
+    };
+    Ok(Instrument {
+        asset_class: AssetClass::Crypto,
+        instrument_type,
+        base: cfg.base.clone(),
+        quote: cfg.quote.clone(),
+        settle_currency: cfg.settle_currency.clone(),
+        expiry: None,
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let config_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config/default.yaml".into());
+    let cfg = config::load(&config_path)?;
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.logging.level)),
         )
         .init();
 
-    // Spot form on Binance spot, perpetual swap form on Binance USDT futures.
-    let spot_instrument = Instrument {
-        asset_class: AssetClass::Crypto,
-        instrument_type: InstrumentType::Spot,
-        base: "BTC".into(),
-        quote: "USDT".into(),
-        settle_currency: None,
-        expiry: None,
-    };
+    let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
+    let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
 
-    let perp_instrument = Instrument {
-        asset_class: AssetClass::Crypto,
-        instrument_type: InstrumentType::Swap,
-        base: "BTC".into(),
-        quote: "USDT".into(),
-        settle_currency: Some("USDT".into()),
-        expiry: None,
-    };
+    let venue_a = parse_venue(&cfg.venues[0].name)?;
+    let venue_b = parse_venue(&cfg.venues[1 % cfg.venues.len()].name)?;
 
-    // Binance spot adapter
-    let mut spot_feed = BinanceMarketData::new(BinanceMarket::Spot);
-    spot_feed.register_instrument("BTCUSDT", spot_instrument.clone());
+    let idx_b = 1 % cfg.venues.len();
 
-    // Binance USDT-M futures adapter
-    let mut futures_feed = BinanceMarketData::new(BinanceMarket::UsdtFutures);
-    futures_feed.register_instrument("BTCUSDT", perp_instrument.clone());
+    let symbol_a = format!(
+        "{}{}",
+        cfg.strategy.instrument_a.base, cfg.strategy.instrument_a.quote
+    );
+    let symbol_b = format!(
+        "{}{}",
+        cfg.strategy.instrument_b.base, cfg.strategy.instrument_b.quote
+    );
 
-    // Strategy: cross between spot and perp on the same venue
+    let mut feed_a = BinanceMarketData::new(parse_market(&cfg.venues[0].market)?);
+    feed_a.register_instrument(&symbol_a, instrument_a.clone());
+
+    let mut feed_b = BinanceMarketData::new(parse_market(&cfg.venues[idx_b].market)?);
+    feed_b.register_instrument(&symbol_b, instrument_b.clone());
+
     let strategy = CrossExchangeStrategy {
-        venue_a: Venue::Binance,
-        venue_b: Venue::Binance,
-        instrument_a: spot_instrument,
-        instrument_b: perp_instrument,
-        min_net_profit_bps: dec!(1),
-        max_quantity: dec!(0.01),
-        fee_a: FeeSchedule::new(Venue::Binance, dec!(0.0002), dec!(0.001)),
-        fee_b: FeeSchedule::new(Venue::Binance, dec!(0.0001), dec!(0.0004)),
-        max_quote_age_ms: 5000,
+        venue_a,
+        venue_b,
+        instrument_a,
+        instrument_b,
+        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+        max_quantity: cfg.strategy.max_quantity,
+        fee_a: FeeSchedule::new(
+            venue_a,
+            rust_decimal_macros::dec!(0.0002),
+            rust_decimal_macros::dec!(0.001),
+        ),
+        fee_b: FeeSchedule::new(
+            venue_b,
+            rust_decimal_macros::dec!(0.0001),
+            rust_decimal_macros::dec!(0.0004),
+        ),
+        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
     };
 
-    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(spot_feed), Box::new(futures_feed)];
+    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(feed_a), Box::new(feed_b)];
 
-    // Risk limits
     let risk_manager = RiskManager::new(vec![
         Box::new(MaxPositionSize {
-            max_quantity: dec!(1),
+            max_quantity: cfg.risk.max_position_size,
         }),
         Box::new(MaxDailyLoss {
-            max_loss: dec!(1000),
+            max_loss: cfg.risk.max_daily_loss,
         }),
         Box::new(MaxNotionalExposure {
-            max_notional: dec!(100000),
+            max_notional: cfg.risk.max_notional_exposure,
         }),
     ]);
 
-    // Order executor (stub — logs but doesn't send real orders)
-    let executor = BinanceOrderExecutor::new(BinanceMarket::UsdtFutures);
-
-    let position_manager = BinancePositionManager::new(BinanceMarket::UsdtFutures);
+    let executor = BinanceOrderExecutor::new(parse_market(&cfg.venues[idx_b].market)?);
+    let position_manager = BinancePositionManager::new(parse_market(&cfg.venues[idx_b].market)?);
 
     let mut engine = ArbitrageEngine::new(
         feeds,

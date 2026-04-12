@@ -1,0 +1,34 @@
+venues:
+  - name: binance
+    market: usdt_futures
+    api_key: ""
+    api_secret: ""
+    paper_trading: true
+  - name: binance
+    market: spot
+    api_key: ""
+    api_secret: ""
+    paper_trading: true
+
+strategy:
+  name: cross_exchange
+  instrument_a:
+    base: BTC
+    quote: USDT
+    instrument_type: spot
+  instrument_b:
+    base: BTC
+    quote: USDT
+    instrument_type: swap
+    settle_currency: USDT
+  min_net_profit_bps: "1"
+  max_quantity: "0.01"
+  max_quote_age_ms: 5000
+
+risk:
+  max_position_size: "1"
+  max_daily_loss: "1000"
+  max_notional_exposure: "100000"
+
+logging:
+  level: info
