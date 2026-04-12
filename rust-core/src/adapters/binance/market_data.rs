@@ -243,3 +243,60 @@ impl MarketDataFeed for BinanceMarketData {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::instrument::{AssetClass, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn make_instrument(base: &str, quote: &str) -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: base.to_string(),
+            quote: quote.to_string(),
+            settle_currency: None,
+            expiry: None,
+        }
+    }
+
+    #[test]
+    fn parse_book_ticker_valid_json() {
+        let json = r#"{
+            "s": "BTCUSDT",
+            "b": "50000.10",
+            "B": "1.5",
+            "a": "50001.20",
+            "A": "2.3"
+        }"#;
+        let msg: BookTickerMsg = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.symbol, "BTCUSDT");
+        assert_eq!(msg.bid_price, dec!(50000.10));
+        assert_eq!(msg.bid_qty, dec!(1.5));
+        assert_eq!(msg.ask_price, dec!(50001.20));
+        assert_eq!(msg.ask_qty, dec!(2.3));
+    }
+
+    #[test]
+    fn parse_book_ticker_missing_field_fails() {
+        let json = r#"{"s": "BTCUSDT", "b": "50000.10"}"#;
+        let result = serde_json::from_str::<BookTickerMsg>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn register_instrument_stores_correctly() {
+        let mut md = BinanceMarketData::new(BinanceMarket::Spot);
+        let inst = make_instrument("BTC", "USDT");
+        md.register_instrument("btcusdt", inst.clone());
+
+        assert_eq!(md.instruments.len(), 1);
+        assert_eq!(md.instruments.get("BTCUSDT"), Some(&inst));
+
+        let inst2 = make_instrument("ETH", "USDT");
+        md.register_instrument("ETHUSDT", inst2.clone());
+        assert_eq!(md.instruments.len(), 2);
+        assert_eq!(md.instruments.get("ETHUSDT"), Some(&inst2));
+    }
+}
