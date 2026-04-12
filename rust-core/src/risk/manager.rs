@@ -1,7 +1,7 @@
 use rust_decimal::Decimal;
 use tracing::{info, warn};
 
-use crate::models::order::Order;
+use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
 use super::limits::RiskLimit;
@@ -54,7 +54,11 @@ impl RiskManager {
         }
     }
 
-    pub fn check_pre_trade(&self, order: &Order, portfolio: &PortfolioSnapshot) -> RiskVerdict {
+    pub fn check_pre_trade(
+        &self,
+        order: &OrderRequest,
+        portfolio: &PortfolioSnapshot,
+    ) -> RiskVerdict {
         if self.halted {
             return RiskVerdict::rejected("risk manager halted (circuit breaker)");
         }
@@ -107,10 +111,9 @@ mod tests {
     use super::*;
     use crate::models::enums::{OrderType, Side, Venue};
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-    use crate::models::order::Order;
+    use crate::models::order::OrderRequest;
     use crate::models::position::PortfolioSnapshot;
     use crate::risk::limits::{MaxDailyLoss, MaxPositionSize};
-    use chrono::Utc;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
@@ -125,9 +128,8 @@ mod tests {
         }
     }
 
-    fn buy_order(qty: Decimal, price: Option<Decimal>) -> Order {
-        Order {
-            id: "test-order".to_string(),
+    fn buy_order(qty: Decimal, price: Option<Decimal>) -> OrderRequest {
+        OrderRequest {
             venue: Venue::Binance,
             instrument: test_instrument(),
             side: Side::Buy,
@@ -135,7 +137,6 @@ mod tests {
             time_in_force: None,
             price,
             quantity: qty,
-            created_at: Utc::now(),
         }
     }
 

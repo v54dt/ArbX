@@ -9,6 +9,7 @@ use smallvec::SmallVec;
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
+use crate::adapters::position_manager::PositionManager;
 use crate::models::enums::Venue;
 use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::position::PortfolioSnapshot;
@@ -23,6 +24,7 @@ pub struct ArbitrageEngine {
     strategy: Box<dyn ArbitrageStrategy>,
     risk_manager: RiskManager,
     executor: Box<dyn OrderExecutor>,
+    position_manager: Box<dyn PositionManager>,
     books: HashMap<String, OrderBook>,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
@@ -34,12 +36,14 @@ impl ArbitrageEngine {
         strategy: Box<dyn ArbitrageStrategy>,
         risk_manager: RiskManager,
         executor: Box<dyn OrderExecutor>,
+        position_manager: Box<dyn PositionManager>,
     ) -> Self {
         Self {
             feeds,
             strategy,
             risk_manager,
             executor,
+            position_manager,
             books: HashMap::new(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
@@ -115,17 +119,23 @@ impl ArbitrageEngine {
                 let mut risk_rejected_count: usize = 0;
                 let total_orders = orders.len();
 
-                // Risk-check and submit each order
-                for mut order in orders {
-                    let empty_portfolio = PortfolioSnapshot {
+                // Get portfolio snapshot from position manager
+                let portfolio = self
+                    .position_manager
+                    .get_portfolio()
+                    .await
+                    .unwrap_or_else(|_| PortfolioSnapshot {
                         venue: Venue::Binance,
                         positions: vec![],
                         total_equity: Decimal::ZERO,
                         available_balance: Decimal::ZERO,
                         unrealized_pnl: Decimal::ZERO,
                         realized_pnl: Decimal::ZERO,
-                    };
-                    let verdict = self.risk_manager.check_pre_trade(&order, &empty_portfolio);
+                    });
+
+                // Risk-check and submit each order
+                for mut req in orders {
+                    let verdict = self.risk_manager.check_pre_trade(&req, &portfolio);
 
                     if !verdict.approved {
                         warn!(
@@ -134,22 +144,22 @@ impl ArbitrageEngine {
                         );
                         risk_rejected_count += 1;
                         trade_legs.push(TradeLeg {
-                            venue: order.venue,
-                            instrument: order.instrument.clone(),
-                            side: order.side,
-                            intended_price: order.price.unwrap_or(Decimal::ZERO),
-                            intended_quantity: order.quantity,
+                            venue: req.venue,
+                            instrument: req.instrument.clone(),
+                            side: req.side,
+                            intended_price: req.price.unwrap_or(Decimal::ZERO),
+                            intended_quantity: req.quantity,
                             order_id: None,
                             submitted_at: Utc::now(),
                         });
                         continue;
                     }
 
-                    // Apply adjusted quantity if risk manager capped it
                     if let Some(adj_qty) = verdict.adjusted_qty {
-                        order.quantity = adj_qty;
+                        req.quantity = adj_qty;
                     }
 
+                    let order = req.into_order();
                     match self.executor.submit_order(&order).await {
                         Ok(order_id) => {
                             info!(
@@ -159,6 +169,7 @@ impl ArbitrageEngine {
                                 "order submitted"
                             );
                             submitted_count += 1;
+                            // TODO: apply fills from executor's fill stream to position_manager
                             trade_legs.push(TradeLeg {
                                 venue: order.venue,
                                 instrument: order.instrument.clone(),

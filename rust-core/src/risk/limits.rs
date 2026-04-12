@@ -1,12 +1,12 @@
 use rust_decimal::Decimal;
 
-use crate::models::order::Order;
+use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
 use super::manager::RiskVerdict;
 
 pub trait RiskLimit: Send + Sync {
-    fn check(&self, order: &Order, portfolio: &PortfolioSnapshot) -> RiskVerdict;
+    fn check(&self, order: &OrderRequest, portfolio: &PortfolioSnapshot) -> RiskVerdict;
     fn name(&self) -> &str;
 }
 
@@ -15,7 +15,7 @@ pub struct MaxPositionSize {
 }
 
 impl RiskLimit for MaxPositionSize {
-    fn check(&self, order: &Order, portfolio: &PortfolioSnapshot) -> RiskVerdict {
+    fn check(&self, order: &OrderRequest, portfolio: &PortfolioSnapshot) -> RiskVerdict {
         let current = portfolio
             .positions
             .iter()
@@ -47,7 +47,7 @@ pub struct MaxDailyLoss {
 }
 
 impl RiskLimit for MaxDailyLoss {
-    fn check(&self, _order: &Order, portfolio: &PortfolioSnapshot) -> RiskVerdict {
+    fn check(&self, _order: &OrderRequest, portfolio: &PortfolioSnapshot) -> RiskVerdict {
         if portfolio.realized_pnl < -self.max_loss {
             RiskVerdict::rejected("daily loss limit breached")
         } else {
@@ -65,7 +65,7 @@ pub struct MaxNotionalExposure {
 }
 
 impl RiskLimit for MaxNotionalExposure {
-    fn check(&self, order: &Order, portfolio: &PortfolioSnapshot) -> RiskVerdict {
+    fn check(&self, order: &OrderRequest, portfolio: &PortfolioSnapshot) -> RiskVerdict {
         let current_notional: Decimal = portfolio
             .positions
             .iter()
@@ -91,9 +91,8 @@ mod tests {
     use super::*;
     use crate::models::enums::{OrderType, Side, Venue};
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-    use crate::models::order::Order;
+    use crate::models::order::OrderRequest;
     use crate::models::position::{PortfolioSnapshot, Position};
-    use chrono::Utc;
     use rust_decimal::Decimal;
     use rust_decimal_macros::dec;
 
@@ -108,9 +107,8 @@ mod tests {
         }
     }
 
-    fn buy_order(qty: Decimal, price: Option<Decimal>) -> Order {
-        Order {
-            id: "test-order".to_string(),
+    fn buy_order(qty: Decimal, price: Option<Decimal>) -> OrderRequest {
+        OrderRequest {
             venue: Venue::Binance,
             instrument: test_instrument(),
             side: Side::Buy,
@@ -118,7 +116,6 @@ mod tests {
             time_in_force: None,
             price,
             quantity: qty,
-            created_at: Utc::now(),
         }
     }
 

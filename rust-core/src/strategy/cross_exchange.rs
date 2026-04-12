@@ -9,7 +9,7 @@ use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
 use crate::models::market::{OrderBook, book_key};
-use crate::models::order::Order;
+use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
 use super::base::ArbitrageStrategy;
@@ -172,12 +172,10 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
         }
     }
 
-    fn compute_hedge_orders(&self, opp: &Opportunity) -> Vec<Order> {
-        let now = Utc::now();
+    fn compute_hedge_orders(&self, opp: &Opportunity) -> Vec<OrderRequest> {
         opp.legs
             .iter()
-            .map(|leg| Order {
-                id: String::new(),
+            .map(|leg| OrderRequest {
                 venue: leg.venue,
                 instrument: leg.instrument.clone(),
                 side: leg.side,
@@ -185,7 +183,6 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 time_in_force: Some(TimeInForce::Ioc),
                 price: Some(leg.order_price),
                 quantity: leg.quantity,
-                created_at: now,
             })
             .collect()
     }

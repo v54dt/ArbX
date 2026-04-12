@@ -11,6 +11,7 @@ use rust_decimal_macros::dec;
 
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
 use adapters::binance::order_executor::BinanceOrderExecutor;
+use adapters::binance::position_manager::BinancePositionManager;
 use adapters::market_data::MarketDataFeed;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
@@ -86,8 +87,15 @@ async fn main() -> anyhow::Result<()> {
     // Order executor (stub — logs but doesn't send real orders)
     let executor = BinanceOrderExecutor::new(BinanceMarket::UsdtFutures);
 
-    let mut engine =
-        ArbitrageEngine::new(feeds, Box::new(strategy), risk_manager, Box::new(executor));
+    let position_manager = BinancePositionManager::new(BinanceMarket::UsdtFutures);
+
+    let mut engine = ArbitrageEngine::new(
+        feeds,
+        Box::new(strategy),
+        risk_manager,
+        Box::new(executor),
+        Box::new(position_manager),
+    );
     engine.run().await?;
 
     Ok(())
