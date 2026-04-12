@@ -69,6 +69,13 @@ impl FeeProvider for OkxFeeProvider {
             Ok(resp) if resp.status == 200 => {
                 let parsed: OkxFeeResponse = serde_json::from_str(&resp.body)?;
                 if let Some(rate) = parsed.data.first() {
+                    if rate.maker < Decimal::ZERO || rate.taker < Decimal::ZERO {
+                        tracing::debug!(
+                            maker = %rate.maker,
+                            taker = %rate.taker,
+                            "OKX rebate detected, using absolute value"
+                        );
+                    }
                     Ok(FeeSchedule::new(
                         Venue::Okx,
                         rate.maker.abs(),

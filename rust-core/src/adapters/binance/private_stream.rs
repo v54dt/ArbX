@@ -34,14 +34,14 @@ impl BinancePrivateStream {
         rest_base_url: &str,
         api_key: &str,
         api_secret: &str,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let ws_base_url = match &market {
             BinanceMarket::Spot => "wss://stream.binance.com:9443/ws/".to_string(),
             BinanceMarket::UsdtFutures => "wss://fstream.binance.com/ws/".to_string(),
             BinanceMarket::CoinFutures => "wss://dstream.binance.com/ws/".to_string(),
         };
-        let rest_client = BinanceRestClient::new(rest_base_url, api_key, api_secret);
-        Self {
+        let rest_client = BinanceRestClient::new(rest_base_url, api_key, api_secret)?;
+        Ok(Self {
             market,
             rest_client,
             rest_base_url: rest_base_url.to_string(),
@@ -51,7 +51,7 @@ impl BinancePrivateStream {
             ws_base_url,
             ws_task: None,
             keepalive_task: None,
-        }
+        })
     }
 
     fn listen_key_path(&self) -> &'static str {
@@ -194,7 +194,7 @@ impl PrivateStream for BinancePrivateStream {
         let keepalive_path = self.listen_key_path().to_string();
         let keepalive_key = listen_key;
         let keepalive_rest =
-            BinanceRestClient::new(&self.rest_base_url, &self.api_key, &self.api_secret);
+            BinanceRestClient::new(&self.rest_base_url, &self.api_key, &self.api_secret)?;
         let keepalive_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(25 * 60));
             interval.tick().await;

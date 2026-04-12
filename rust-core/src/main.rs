@@ -68,30 +68,30 @@ async fn fetch_fee_schedule(
     venue_cfg: &config::VenueConfig,
     market: BinanceMarket,
     venue: Venue,
-) -> FeeSchedule {
+) -> anyhow::Result<FeeSchedule> {
     if venue_cfg.api_key.is_empty() || venue_cfg.api_secret.is_empty() {
         tracing::warn!(?venue, "no API credentials, using default fee schedule");
-        return FeeSchedule::new(
+        return Ok(FeeSchedule::new(
             venue,
             rust_decimal_macros::dec!(0.001),
             rust_decimal_macros::dec!(0.001),
-        );
+        ));
     }
     let rest = BinanceRestClient::new(
         market.rest_base_url(),
         &venue_cfg.api_key,
         &venue_cfg.api_secret,
-    );
+    )?;
     let provider = BinanceFeeProvider::new(rest, market);
     match provider.get_fee_schedule().await {
-        Ok(fee) => fee,
+        Ok(fee) => Ok(fee),
         Err(e) => {
             tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
-            FeeSchedule::new(
+            Ok(FeeSchedule::new(
                 venue,
                 rust_decimal_macros::dec!(0.001),
                 rust_decimal_macros::dec!(0.001),
-            )
+            ))
         }
     }
 }
@@ -174,8 +174,8 @@ async fn main() -> anyhow::Result<()> {
     let market_a = parse_market(&cfg.venues[0].market)?;
     let market_b = parse_market(&cfg.venues[idx_b].market)?;
 
-    let fee_a = fetch_fee_schedule(&cfg.venues[0], market_a, venue_a).await;
-    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], market_b, venue_b).await;
+    let fee_a = fetch_fee_schedule(&cfg.venues[0], market_a, venue_a).await?;
+    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], market_b, venue_b).await?;
 
     let strategy = CrossExchangeStrategy {
         venue_a,
@@ -224,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
         parse_market(&venue_cfg.market)?,
         venue_cfg.api_key.clone(),
         venue_cfg.api_secret.clone(),
-    );
+    )?;
     let executor: Box<dyn adapters::order_executor::OrderExecutor> = if venue_cfg.paper_trading {
         Box::new(PaperExecutor::new(Box::new(executor)))
     } else {
@@ -234,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
         parse_market(&cfg.venues[idx_b].market)?,
         &cfg.venues[idx_b].api_key,
         &cfg.venues[idx_b].api_secret,
-    );
+    )?;
 
     let mut engine = ArbitrageEngine::new(
         feeds,

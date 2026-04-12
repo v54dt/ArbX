@@ -20,15 +20,15 @@ pub struct BybitOrderExecutor {
 }
 
 impl BybitOrderExecutor {
-    pub fn new(market: BybitMarket, api_key: String, api_secret: String) -> Self {
-        let rest_client = BybitRestClient::new("https://api.bybit.com", &api_key, &api_secret);
+    pub fn new(market: BybitMarket, api_key: String, api_secret: String) -> anyhow::Result<Self> {
+        let rest_client = BybitRestClient::new("https://api.bybit.com", &api_key, &api_secret)?;
 
-        Self {
+        Ok(Self {
             market,
             rest_client,
             fills_tx: None,
             updates_tx: None,
-        }
+        })
     }
 
     fn category(&self) -> &'static str {
@@ -135,10 +135,10 @@ impl OrderExecutor for BybitOrderExecutor {
         }
 
         let json: serde_json::Value = serde_json::from_str(&response.body)?;
-        let order_id = json["result"]["orderId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let order_id = match json["result"]["orderId"].as_str() {
+            Some(id) if !id.is_empty() => id.to_string(),
+            _ => anyhow::bail!("missing orderId in response: {}", response.body),
+        };
 
         tracing::info!(
             order_id,
