@@ -140,7 +140,11 @@ mod tests {
     }
 
     fn make_paper() -> PaperExecutor {
-        let inner = Box::new(BinanceOrderExecutor::new(BinanceMarket::Spot));
+        let inner = Box::new(BinanceOrderExecutor::new(
+            BinanceMarket::Spot,
+            String::new(),
+            String::new(),
+        ));
         PaperExecutor::new(inner)
     }
 

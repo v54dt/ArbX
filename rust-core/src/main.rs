@@ -15,6 +15,7 @@ use adapters::binance::position_manager::BinancePositionManager;
 use adapters::binance::rest_client::BinanceRestClient;
 use adapters::fee_provider::FeeProvider;
 use adapters::market_data::MarketDataFeed;
+use adapters::paper_executor::PaperExecutor;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
 use models::fee::FeeSchedule;
@@ -164,14 +165,24 @@ async fn main() -> anyhow::Result<()> {
         }),
     ]);
 
-    let executor = BinanceOrderExecutor::new(parse_market(&cfg.venues[idx_b].market)?);
+    let venue_cfg = &cfg.venues[idx_b];
+    let executor = BinanceOrderExecutor::new(
+        parse_market(&venue_cfg.market)?,
+        venue_cfg.api_key.clone(),
+        venue_cfg.api_secret.clone(),
+    );
+    let executor: Box<dyn adapters::order_executor::OrderExecutor> = if venue_cfg.paper_trading {
+        Box::new(PaperExecutor::new(Box::new(executor)))
+    } else {
+        Box::new(executor)
+    };
     let position_manager = BinancePositionManager::new(parse_market(&cfg.venues[idx_b].market)?);
 
     let mut engine = ArbitrageEngine::new(
         feeds,
         Box::new(strategy),
         risk_manager,
-        Box::new(executor),
+        executor,
         Box::new(position_manager),
     );
     engine.run().await?;
