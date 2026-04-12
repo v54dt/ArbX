@@ -33,3 +33,29 @@ impl FeeSchedule {
         self.maker_rate
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+
+    #[test]
+    fn fee_schedule_new_sets_fields() {
+        let fs = FeeSchedule::new(Venue::Binance, dec!(0.001), dec!(0.002));
+        assert_eq!(fs.venue, Venue::Binance);
+        assert_eq!(fs.maker_rate, dec!(0.001));
+        assert_eq!(fs.taker_rate, dec!(0.002));
+    }
+
+    #[test]
+    fn fee_schedule_taker_returns_taker_rate() {
+        let fs = FeeSchedule::new(Venue::Binance, dec!(0.001), dec!(0.002));
+        assert_eq!(fs.taker(), dec!(0.002));
+    }
+
+    #[test]
+    fn fee_schedule_maker_returns_maker_rate() {
+        let fs = FeeSchedule::new(Venue::Binance, dec!(0.001), dec!(0.002));
+        assert_eq!(fs.maker(), dec!(0.001));
+    }
+}
