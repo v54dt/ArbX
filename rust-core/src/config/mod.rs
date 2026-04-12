@@ -8,6 +8,26 @@ pub struct AppConfig {
     pub strategy: StrategyConfig,
     pub risk: RiskConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub engine: EngineConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EngineConfig {
+    #[serde(default = "default_reconcile_interval")]
+    pub reconcile_interval_secs: u64,
+}
+
+fn default_reconcile_interval() -> u64 {
+    30
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            reconcile_interval_secs: default_reconcile_interval(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
