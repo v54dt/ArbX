@@ -29,6 +29,7 @@ pub struct CrossExchangeStrategy {
     pub tick_size_b: Decimal,
     pub lot_size_a: Decimal,
     pub lot_size_b: Decimal,
+    pub max_book_depth: usize,
 }
 
 struct DirectionParams<'a> {
@@ -57,11 +58,11 @@ fn quantize_up(value: Decimal, step: Decimal) -> Decimal {
     (value / step).ceil() * step
 }
 
-fn vwap_ask(book: &OrderBook, qty: Decimal) -> Option<(Decimal, Decimal)> {
+fn vwap_ask(book: &OrderBook, qty: Decimal, max_depth: usize) -> Option<(Decimal, Decimal)> {
     let mut remaining = qty;
     let mut total_cost = Decimal::ZERO;
     let mut filled = Decimal::ZERO;
-    for level in &book.asks {
+    for level in book.asks.iter().take(max_depth) {
         let take = remaining.min(level.size);
         total_cost += take * level.price;
         filled += take;
@@ -77,11 +78,11 @@ fn vwap_ask(book: &OrderBook, qty: Decimal) -> Option<(Decimal, Decimal)> {
     }
 }
 
-fn vwap_bid(book: &OrderBook, qty: Decimal) -> Option<(Decimal, Decimal)> {
+fn vwap_bid(book: &OrderBook, qty: Decimal, max_depth: usize) -> Option<(Decimal, Decimal)> {
     let mut remaining = qty;
     let mut total_cost = Decimal::ZERO;
     let mut filled = Decimal::ZERO;
-    for level in &book.bids {
+    for level in book.bids.iter().take(max_depth) {
         let take = remaining.min(level.size);
         total_cost += take * level.price;
         filled += take;
@@ -151,8 +152,10 @@ impl CrossExchangeStrategy {
             return None;
         }
 
-        let (vwap_ask_price, ask_fill) = vwap_ask(buy_book, self.max_quantity)?;
-        let (vwap_bid_price, bid_fill) = vwap_bid(sell_book, self.max_quantity)?;
+        let (vwap_ask_price, ask_fill) =
+            vwap_ask(buy_book, self.max_quantity, self.max_book_depth)?;
+        let (vwap_bid_price, bid_fill) =
+            vwap_bid(sell_book, self.max_quantity, self.max_book_depth)?;
 
         if vwap_bid_price <= vwap_ask_price {
             return None;
@@ -168,8 +171,8 @@ impl CrossExchangeStrategy {
             return None;
         }
 
-        let (final_ask, _) = vwap_ask(buy_book, quantity)?;
-        let (final_bid, _) = vwap_bid(sell_book, quantity)?;
+        let (final_ask, _) = vwap_ask(buy_book, quantity, self.max_book_depth)?;
+        let (final_bid, _) = vwap_bid(sell_book, quantity, self.max_book_depth)?;
 
         let order_ask = quantize_up(final_ask, tick_size_buy);
         let order_bid = quantize(final_bid, tick_size_sell);
@@ -350,6 +353,7 @@ mod tests {
             tick_size_b: dec!(0.01),
             lot_size_a: dec!(0.001),
             lot_size_b: dec!(0.001),
+            max_book_depth: 10,
         }
     }
 

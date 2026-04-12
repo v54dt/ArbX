@@ -1,11 +1,12 @@
-// TODO: remove once scaffold phase is complete and all modules are wired up
-#![allow(dead_code)]
-
+#[allow(dead_code)] // Phase 3: bybit/okx adapters + trait scaffolding
 mod adapters;
 mod config;
 mod engine;
+#[allow(dead_code)] // Phase 3: not all model fields/methods used yet
 mod models;
+#[allow(dead_code)] // Phase 3: risk trait scaffolding
 mod risk;
+#[allow(dead_code)] // Phase 3: strategy enum variants + type aliases
 mod strategy;
 
 use adapters::binance::fee_provider::BinanceFeeProvider;
@@ -203,6 +204,7 @@ async fn main() -> anyhow::Result<()> {
             .strategy
             .lot_size_b
             .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+        max_book_depth: cfg.strategy.max_book_depth,
     };
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(feed_a), Box::new(feed_b)];

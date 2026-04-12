@@ -30,7 +30,7 @@ impl Default for EngineConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct VenueConfig {
     pub name: String,
     pub market: String,
@@ -39,8 +39,21 @@ pub struct VenueConfig {
     pub paper_trading: bool,
 }
 
+impl std::fmt::Debug for VenueConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VenueConfig")
+            .field("name", &self.name)
+            .field("market", &self.market)
+            .field("api_key", &"[REDACTED]")
+            .field("api_secret", &"[REDACTED]")
+            .field("paper_trading", &self.paper_trading)
+            .finish()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct StrategyConfig {
+    #[allow(dead_code)] // used for config identification
     pub name: String,
     pub instrument_a: InstrumentConfig,
     pub instrument_b: InstrumentConfig,
@@ -55,6 +68,12 @@ pub struct StrategyConfig {
     pub lot_size_a: Option<Decimal>,
     #[serde(default)]
     pub lot_size_b: Option<Decimal>,
+    #[serde(default = "default_max_book_depth")]
+    pub max_book_depth: usize,
+}
+
+fn default_max_book_depth() -> usize {
+    10
 }
 
 #[derive(Debug, Deserialize)]
