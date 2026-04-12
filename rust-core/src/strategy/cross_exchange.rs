@@ -27,6 +27,15 @@ pub struct CrossExchangeStrategy {
     pub fee_rate_b: Decimal,
 }
 
+struct DirectionParams<'a> {
+    buy_venue: Venue,
+    buy_instrument: &'a Instrument,
+    sell_venue: Venue,
+    sell_instrument: &'a Instrument,
+    buy_fee: Decimal,
+    sell_fee: Decimal,
+}
+
 impl CrossExchangeStrategy {
     fn book_key(venue: Venue, instrument: &Instrument) -> String {
         format!(
@@ -40,13 +49,16 @@ impl CrossExchangeStrategy {
     fn evaluate_direction(
         &self,
         books: &HashMap<String, OrderBook>,
-        buy_venue: Venue,
-        buy_instrument: &Instrument,
-        sell_venue: Venue,
-        sell_instrument: &Instrument,
-        buy_fee: Decimal,
-        sell_fee: Decimal,
+        params: DirectionParams<'_>,
     ) -> Option<Opportunity> {
+        let DirectionParams {
+            buy_venue,
+            buy_instrument,
+            sell_venue,
+            sell_instrument,
+            buy_fee,
+            sell_fee,
+        } = params;
         let buy_book = books.get(&Self::book_key(buy_venue, buy_instrument))?;
         let sell_book = books.get(&Self::book_key(sell_venue, sell_instrument))?;
 
@@ -132,21 +144,25 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
     ) -> Option<Opportunity> {
         let a_to_b = self.evaluate_direction(
             books,
-            self.venue_a,
-            &self.instrument_a,
-            self.venue_b,
-            &self.instrument_b,
-            self.fee_rate_a,
-            self.fee_rate_b,
+            DirectionParams {
+                buy_venue: self.venue_a,
+                buy_instrument: &self.instrument_a,
+                sell_venue: self.venue_b,
+                sell_instrument: &self.instrument_b,
+                buy_fee: self.fee_rate_a,
+                sell_fee: self.fee_rate_b,
+            },
         );
         let b_to_a = self.evaluate_direction(
             books,
-            self.venue_b,
-            &self.instrument_b,
-            self.venue_a,
-            &self.instrument_a,
-            self.fee_rate_b,
-            self.fee_rate_a,
+            DirectionParams {
+                buy_venue: self.venue_b,
+                buy_instrument: &self.instrument_b,
+                sell_venue: self.venue_a,
+                sell_instrument: &self.instrument_a,
+                buy_fee: self.fee_rate_b,
+                sell_fee: self.fee_rate_a,
+            },
         );
 
         match (a_to_b, b_to_a) {
