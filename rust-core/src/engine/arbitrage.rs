@@ -4,11 +4,15 @@ use anyhow::Result;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use chrono::Utc;
+use smallvec::SmallVec;
+
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::models::enums::Venue;
 use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::position::PortfolioSnapshot;
+use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
 use crate::risk::manager::RiskManager;
 use crate::strategy::base::ArbitrageStrategy;
 use rust_decimal::Decimal;
@@ -21,6 +25,7 @@ pub struct ArbitrageEngine {
     executor: Box<dyn OrderExecutor>,
     books: HashMap<String, OrderBook>,
     portfolios: HashMap<String, PortfolioSnapshot>,
+    trade_logs: Vec<TradeLog>,
 }
 
 impl ArbitrageEngine {
@@ -37,6 +42,7 @@ impl ArbitrageEngine {
             executor,
             books: HashMap::new(),
             portfolios: HashMap::new(),
+            trade_logs: vec![],
         }
     }
 
@@ -103,6 +109,12 @@ impl ArbitrageEngine {
                 // Compute hedge orders from the opportunity
                 let orders = self.strategy.compute_hedge_orders(&opp);
 
+                // Track trade legs for the TradeLog
+                let mut trade_legs: SmallVec<[TradeLeg; 4]> = SmallVec::new();
+                let mut submitted_count: usize = 0;
+                let mut risk_rejected_count: usize = 0;
+                let total_orders = orders.len();
+
                 // Risk-check and submit each order
                 for mut order in orders {
                     let empty_portfolio = PortfolioSnapshot {
@@ -120,6 +132,16 @@ impl ArbitrageEngine {
                             reason = verdict.reason.as_deref().unwrap_or("unknown"),
                             "order rejected by risk manager"
                         );
+                        risk_rejected_count += 1;
+                        trade_legs.push(TradeLeg {
+                            venue: order.venue,
+                            instrument: order.instrument.clone(),
+                            side: order.side,
+                            intended_price: order.price.unwrap_or(Decimal::ZERO),
+                            intended_quantity: order.quantity,
+                            order_id: None,
+                            submitted_at: Utc::now(),
+                        });
                         continue;
                     }
 
@@ -136,12 +158,63 @@ impl ArbitrageEngine {
                                 qty = %order.quantity,
                                 "order submitted"
                             );
+                            submitted_count += 1;
+                            trade_legs.push(TradeLeg {
+                                venue: order.venue,
+                                instrument: order.instrument.clone(),
+                                side: order.side,
+                                intended_price: order.price.unwrap_or(Decimal::ZERO),
+                                intended_quantity: order.quantity,
+                                order_id: Some(order_id),
+                                submitted_at: Utc::now(),
+                            });
                         }
                         Err(e) => {
                             warn!(error = %e, "order submission failed");
+                            trade_legs.push(TradeLeg {
+                                venue: order.venue,
+                                instrument: order.instrument.clone(),
+                                side: order.side,
+                                intended_price: order.price.unwrap_or(Decimal::ZERO),
+                                intended_quantity: order.quantity,
+                                order_id: None,
+                                submitted_at: Utc::now(),
+                            });
                         }
                     }
                 }
+
+                // Determine outcome and record the trade log
+                let outcome = if risk_rejected_count == total_orders {
+                    TradeOutcome::RiskRejected
+                } else if submitted_count == total_orders {
+                    TradeOutcome::AllSubmitted
+                } else {
+                    TradeOutcome::PartialFailure
+                };
+
+                let trade_log = TradeLog {
+                    id: opp.id.clone(),
+                    strategy_id: opp.meta.strategy_id.clone(),
+                    outcome,
+                    legs: trade_legs,
+                    expected_gross_profit: opp.economics.gross_profit,
+                    expected_fees: opp.economics.fees_total,
+                    expected_net_profit: opp.economics.net_profit,
+                    expected_net_profit_bps: opp.economics.net_profit_bps,
+                    notional: opp.economics.notional,
+                    created_at: Utc::now(),
+                };
+
+                info!(
+                    trade_id = trade_log.id.as_str(),
+                    outcome = ?trade_log.outcome,
+                    legs = trade_log.legs.len(),
+                    expected_net = %trade_log.expected_net_profit,
+                    "trade log recorded"
+                );
+
+                self.trade_logs.push(trade_log);
             }
         }
 
