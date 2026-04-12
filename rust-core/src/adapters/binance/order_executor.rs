@@ -21,12 +21,16 @@ pub struct BinanceOrderExecutor {
 
 impl BinanceOrderExecutor {
     pub fn new(market: BinanceMarket, api_key: String, api_secret: String) -> anyhow::Result<Self> {
-        let base_url = match market {
-            BinanceMarket::Spot => "https://api.binance.com",
-            BinanceMarket::UsdtFutures => "https://fapi.binance.com",
-            BinanceMarket::CoinFutures => "https://dapi.binance.com",
-        };
+        Self::with_testnet(market, api_key, api_secret, false)
+    }
 
+    pub fn with_testnet(
+        market: BinanceMarket,
+        api_key: String,
+        api_secret: String,
+        testnet: bool,
+    ) -> anyhow::Result<Self> {
+        let base_url = market.rest_url(testnet);
         let rest_client = BinanceRestClient::new(base_url, &api_key, &api_secret)?;
 
         Ok(Self {
