@@ -1,3 +1,6 @@
+// TODO: remove once scaffold phase is complete and all modules are wired up
+#![allow(dead_code)]
+
 mod adapters;
 mod engine;
 mod models;
