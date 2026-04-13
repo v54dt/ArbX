@@ -114,6 +114,42 @@ fn format_symbol(venue_name: &str, base: &str, quote: &str) -> String {
     }
 }
 
+fn register_venue_instruments(
+    venue_cfg: &VenueConfig,
+    feed: &mut dyn RegisterInstrument,
+) -> anyhow::Result<()> {
+    if let Some(ref instruments) = venue_cfg.instruments {
+        for icfg in instruments {
+            let inst = parse_instrument(icfg)?;
+            let sym = format_symbol(&venue_cfg.name, &icfg.base, &icfg.quote);
+            feed.register_instrument(&sym, inst);
+        }
+    }
+    Ok(())
+}
+
+trait RegisterInstrument {
+    fn register_instrument(&mut self, symbol: &str, instrument: Instrument);
+}
+
+impl RegisterInstrument for BinanceMarketData {
+    fn register_instrument(&mut self, symbol: &str, instrument: Instrument) {
+        BinanceMarketData::register_instrument(self, symbol, instrument);
+    }
+}
+
+impl RegisterInstrument for OkxMarketData {
+    fn register_instrument(&mut self, symbol: &str, instrument: Instrument) {
+        OkxMarketData::register_instrument(self, symbol, instrument);
+    }
+}
+
+impl RegisterInstrument for BybitMarketData {
+    fn register_instrument(&mut self, symbol: &str, instrument: Instrument) {
+        BybitMarketData::register_instrument(self, symbol, instrument);
+    }
+}
+
 fn build_market_data(
     venue_cfg: &VenueConfig,
     symbol: &str,
@@ -124,17 +160,20 @@ fn build_market_data(
             let market = parse_binance_market(&venue_cfg.market)?;
             let mut feed = BinanceMarketData::new(market);
             feed.register_instrument(symbol, instrument);
+            register_venue_instruments(venue_cfg, &mut feed)?;
             Ok(Box::new(feed))
         }
         "okx" => {
             let mut feed = OkxMarketData::new();
             feed.register_instrument(symbol, instrument);
+            register_venue_instruments(venue_cfg, &mut feed)?;
             Ok(Box::new(feed))
         }
         "bybit" => {
             let market = parse_bybit_market(&venue_cfg.market)?;
             let mut feed = BybitMarketData::new(market);
             feed.register_instrument(symbol, instrument);
+            register_venue_instruments(venue_cfg, &mut feed)?;
             Ok(Box::new(feed))
         }
         other => anyhow::bail!("unsupported venue for market data: {}", other),
@@ -202,6 +241,12 @@ fn build_position_manager(
 }
 
 async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Result<FeeSchedule> {
+    if let (Some(maker), Some(taker)) = (venue_cfg.fee_maker_override, venue_cfg.fee_taker_override)
+    {
+        tracing::info!(?venue, %maker, %taker, "using fee overrides from config");
+        return Ok(FeeSchedule::new(venue, maker, taker));
+    }
+
     if venue_cfg.api_key.is_empty() || venue_cfg.api_secret.is_empty() {
         tracing::warn!(?venue, "no API credentials, using default fee schedule");
         return Ok(FeeSchedule::new(

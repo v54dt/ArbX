@@ -8,8 +8,8 @@ venues:
     api_key: ""
     api_secret: ""
     paper_trading: true
-    fee_taker_override: "0.0001"
-    fee_maker_override: "0.00005"
+    fee_taker_override: "0.0004"
+    fee_maker_override: "0.0002"
   - name: binance
     market: spot
     instruments:
@@ -19,11 +19,11 @@ venues:
     api_key: ""
     api_secret: ""
     paper_trading: true
-    fee_taker_override: "0.0001"
-    fee_maker_override: "0.00005"
+    fee_taker_override: "0.001"
+    fee_maker_override: "0.001"
 
 strategy:
-  name: cross_exchange
+  name: funding_rate
   instrument_a:
     base: BTC
     quote: USDT
@@ -33,23 +33,18 @@ strategy:
     quote: USDT
     instrument_type: swap
     settle_currency: USDT
-  min_net_profit_bps: "1"
-  max_quantity: "0.01"
+  min_net_profit_bps: "50"
+  max_quantity: "0.1"
   max_quote_age_ms: 5000
-  tick_size_a: "0.01"
-  tick_size_b: "0.01"
-  lot_size_a: "0.00001"
-  lot_size_b: "0.00001"
-  max_book_depth: 10
 
 risk:
   max_position_size: "1"
-  max_daily_loss: "1000"
-  max_notional_exposure: "100000"
+  max_daily_loss: "500"
+  max_notional_exposure: "50000"
   circuit_breaker:
-    max_drawdown: "500"
-    max_orders_per_minute: 100
-    max_consecutive_failures: 5
+    max_drawdown: "250"
+    max_orders_per_minute: 20
+    max_consecutive_failures: 3
 
 engine:
   reconcile_interval_secs: 30

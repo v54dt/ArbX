@@ -41,6 +41,12 @@ pub struct VenueConfig {
     pub paper_trading: bool,
     #[serde(default)]
     pub testnet: bool,
+    #[serde(default)]
+    pub fee_maker_override: Option<Decimal>,
+    #[serde(default)]
+    pub fee_taker_override: Option<Decimal>,
+    #[serde(default)]
+    pub instruments: Option<Vec<InstrumentConfig>>,
 }
 
 impl std::fmt::Debug for VenueConfig {
@@ -56,6 +62,9 @@ impl std::fmt::Debug for VenueConfig {
             )
             .field("paper_trading", &self.paper_trading)
             .field("testnet", &self.testnet)
+            .field("fee_maker_override", &self.fee_maker_override)
+            .field("fee_taker_override", &self.fee_taker_override)
+            .field("instruments", &self.instruments)
             .finish()
     }
 }
