@@ -18,7 +18,8 @@ pub struct Position {
 }
 
 impl Position {
-    // Compares against UTC date; TW settlement is in Asia/Taipei timezone
+    // settlement_date is stored as UTC NaiveDate (converted at write time).
+    // Taiwan does not observe DST, so UTC+8 offset is constant.
     pub fn is_settled(&self) -> bool {
         match self.settlement_date {
             Some(date) => Utc::now().date_naive() >= date,

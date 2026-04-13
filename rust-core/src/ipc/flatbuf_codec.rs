@@ -276,6 +276,7 @@ pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
         instrument: make_instrument(base, quote_cur, inst_type)?,
         side: side_from_i8(side_i8)?,
         order_type: order_type_from_i8(ot_i8)?,
+        // Lossy: encode maps None → 0 (Rod), so decode always returns Some.
         time_in_force: Some(tif_from_i8(tif_i8)?),
         price,
         quantity: f64_to_dec(quantity_f)?,
