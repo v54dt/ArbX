@@ -1,6 +1,7 @@
 pub mod base;
 pub mod cross_exchange;
 pub mod funding_rate;
+pub mod triangular_arb;
 pub mod tw_etf_futures;
 
 use chrono::{DateTime, Duration, Utc};
