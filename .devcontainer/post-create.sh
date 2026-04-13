@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Setting up Arbitrageur development environment ==="
+echo "=== Setting up ArbX development environment ==="
 
 # --- Rust setup ---
 echo "[1/4] Installing Rust tools..."
@@ -9,21 +9,21 @@ rustup component add clippy rustfmt
 cargo install cargo-watch 2>/dev/null || true
 
 # --- Python setup ---
-echo "[2/4] Setting up Python environment..."
-cd /workspaces/Arbitrageur
-python -m venv .venv
-source .venv/bin/activate
-
-pip install --upgrade pip
-pip install -r python-sidecar/requirements.txt 2>/dev/null || echo "requirements.txt not found, skipping"
+echo "[2/4] Setting up Python environment with uv..."
+cd /workspaces/ArbX
+if [ -f "python-sidecar/pyproject.toml" ]; then
+    cd python-sidecar
+    uv sync
+    cd ..
+fi
 
 # --- FlatBuffers codegen ---
 echo "[3/4] Generating FlatBuffers stubs..."
 if [ -f "schemas/messages.fbs" ]; then
     mkdir -p rust-core/src/generated
     mkdir -p python-sidecar/src/generated
-    flatc --rust -o rust-core/src/generated/ schemas/messages.fbs 2>/dev/null || echo "flatc Rust generation skipped"
-    flatc --python -o python-sidecar/src/generated/ schemas/messages.fbs 2>/dev/null || echo "flatc Python generation skipped"
+    flatc --rust -o rust-core/src/generated/ schemas/messages.fbs
+    flatc --python -o python-sidecar/src/generated/ schemas/messages.fbs
 fi
 
 # --- Rust build check ---
