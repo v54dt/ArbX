@@ -5,10 +5,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
@@ -88,10 +89,8 @@ impl MarketDataFeed for OkxMarketData {
         }
 
         let url = "wss://ws.okx.com:8443/ws/v5/public";
-        let (ws_stream, _) = connect_async(url).await?;
-        info!(url, "connected to OKX WebSocket");
 
-        let args: Vec<serde_json::Value> = self
+        let sub_args: Vec<serde_json::Value> = self
             .instruments
             .keys()
             .map(|id| {
@@ -104,71 +103,92 @@ impl MarketDataFeed for OkxMarketData {
 
         let sub_msg = serde_json::json!({
             "op": "subscribe",
-            "args": args
+            "args": sub_args
         })
         .to_string();
 
-        let (ws_write_tx, mut ws_write_rx) = mpsc::unbounded_channel::<String>();
+        let (ws_write_tx, ws_write_rx) = mpsc::unbounded_channel::<String>();
         self.ws_write_tx = Some(ws_write_tx);
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
         let task = tokio::spawn(async move {
-            let (mut write, mut read) = ws_stream.split();
-
             use futures_util::SinkExt;
 
-            let ws_msg = tokio_tungstenite::tungstenite::Message::Text(sub_msg.into());
-            if let Err(e) = write.send(ws_msg).await {
-                error!(error = %e, "OKX WebSocket subscribe error");
-                return;
-            }
+            let mut backoff = Duration::from_secs(1);
+            let max_backoff = Duration::from_secs(60);
+            let mut ws_write_rx = ws_write_rx;
 
             loop {
-                tokio::select! {
-                    Some(msg) = read.next() => {
-                        match msg {
-                            Ok(msg) => {
-                                if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                                    let text = text.to_string();
-                                    if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text)
-                                        && let Some(data) = ws_msg.data
-                                    {
-                                        for ticker in data {
-                                            if let Some(instrument) = instruments.get(&ticker.inst_id) {
-                                                let quote = Quote {
-                                                    venue: Venue::Okx,
-                                                    instrument: instrument.clone(),
-                                                    bid: ticker.bid_px,
-                                                    ask: ticker.ask_px,
-                                                    bid_size: ticker.bid_sz,
-                                                    ask_size: ticker.ask_sz,
-                                                    timestamp: chrono::Utc::now(),
-                                                };
-                                                if tx.send(quote).is_err() {
-                                                    return;
+                match connect_async(url).await {
+                    Ok((ws_stream, _)) => {
+                        backoff = Duration::from_secs(1);
+                        info!(url, "connected to OKX WebSocket");
+                        let (mut write, mut read) = ws_stream.split();
+
+                        let ws_sub =
+                            tokio_tungstenite::tungstenite::Message::Text(sub_msg.clone().into());
+                        if let Err(e) = write.send(ws_sub).await {
+                            error!(error = %e, "OKX WS subscribe error");
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(max_backoff);
+                            continue;
+                        }
+
+                        'msg: loop {
+                            tokio::select! {
+                                Some(msg) = read.next() => {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                let text = text.to_string();
+                                                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text)
+                                                    && let Some(data) = ws_msg.data
+                                                {
+                                                    for ticker in data {
+                                                        if let Some(instrument) = instruments.get(&ticker.inst_id) {
+                                                            let quote = Quote {
+                                                                venue: Venue::Okx,
+                                                                instrument: instrument.clone(),
+                                                                bid: ticker.bid_px,
+                                                                ask: ticker.ask_px,
+                                                                bid_size: ticker.bid_sz,
+                                                                ask_size: ticker.ask_sz,
+                                                                timestamp: chrono::Utc::now(),
+                                                            };
+                                                            if tx.send(quote).is_err() {
+                                                                return;
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
+                                        Err(e) => {
+                                            warn!(error = %e, "OKX WS error, will reconnect");
+                                            break 'msg;
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "OKX WebSocket error");
-                                break;
-                            }
-                        }
-                    }
 
-                    Some(msg) = ws_write_rx.recv() => {
-                        let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
-                        if let Err(e) = write.send(ws_msg).await {
-                            error!(error = %e, "OKX WebSocket write error");
-                            break;
+                                Some(msg) = ws_write_rx.recv() => {
+                                    let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
+                                    if let Err(e) = write.send(ws_msg).await {
+                                        warn!(error = %e, "OKX WS write error, will reconnect");
+                                        break 'msg;
+                                    }
+                                }
+                                else => return,
+                            }
                         }
+                        info!("OKX WS disconnected, reconnecting");
                     }
-                    else => break,
+                    Err(e) => {
+                        warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "OKX WS connect failed");
+                    }
                 }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
             }
         });
 
