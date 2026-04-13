@@ -1,5 +1,7 @@
 #[allow(dead_code)] // Phase 3: bybit/okx adapters + trait scaffolding
 mod adapters;
+#[allow(dead_code)]
+mod backtest;
 mod config;
 mod engine;
 #[allow(dead_code)]
