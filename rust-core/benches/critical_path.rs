@@ -6,7 +6,7 @@ use arbx_core::ipc::flatbuf_codec::{decode_quote, encode_quote};
 use arbx_core::models::enums::{OrderType, Side, Venue};
 use arbx_core::models::fee::FeeSchedule;
 use arbx_core::models::instrument::{AssetClass, Instrument, InstrumentType};
-use arbx_core::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
+use arbx_core::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use arbx_core::models::order::OrderRequest;
 use arbx_core::models::position::PortfolioSnapshot;
 use arbx_core::risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
@@ -82,7 +82,7 @@ fn bench_strategy_evaluate(c: &mut Criterion) {
 
     let book_a = make_orderbook(Venue::Binance, &inst_a, dec!(99), dec!(100));
     let book_b = make_orderbook(Venue::Bybit, &inst_b, dec!(102), dec!(103));
-    let mut books = HashMap::new();
+    let mut books = BookMap::default();
     books.insert(book_key(Venue::Binance, &inst_a), book_a);
     books.insert(book_key(Venue::Bybit, &inst_b), book_b);
     let portfolios: HashMap<String, PortfolioSnapshot> = HashMap::new();

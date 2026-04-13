@@ -125,6 +125,7 @@ dependencies = [
  "reqwest",
  "rust_decimal",
  "rust_decimal_macros",
+ "rustc-hash",
  "rusteron-client",
  "serde",
  "serde_json",

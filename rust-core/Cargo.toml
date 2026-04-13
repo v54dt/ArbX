@@ -31,6 +31,7 @@ metrics-exporter-prometheus = "0.16"
 clap = { version = "4", features = ["derive"] }
 flatbuffers = "25"
 rusteron-client = "0.1"
+rustc-hash = "2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
