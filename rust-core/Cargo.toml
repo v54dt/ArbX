@@ -27,6 +27,7 @@ base64 = "0.22"
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
 flatbuffers = "25"
+rusteron-client = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

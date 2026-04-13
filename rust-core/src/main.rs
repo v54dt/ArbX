@@ -2,6 +2,8 @@
 mod adapters;
 mod config;
 mod engine;
+#[allow(dead_code)]
+mod ipc;
 #[allow(dead_code)] // Phase 3: not all model fields/methods used yet
 mod models;
 #[allow(dead_code)] // Phase 3: risk trait scaffolding
