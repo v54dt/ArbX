@@ -1,4 +1,4 @@
-#[allow(dead_code)] // Phase 3: bybit/okx adapters + trait scaffolding
+#[allow(dead_code)]
 mod adapters;
 #[allow(dead_code)]
 mod backtest;
@@ -7,11 +7,11 @@ mod engine;
 #[allow(dead_code)]
 mod ipc;
 mod metrics;
-#[allow(dead_code)] // Phase 3: not all model fields/methods used yet
+#[allow(dead_code)]
 mod models;
-#[allow(dead_code)] // Phase 3: risk trait scaffolding
+#[allow(dead_code)]
 mod risk;
-#[allow(dead_code)] // Phase 3: strategy enum variants + type aliases
+#[allow(dead_code)]
 mod strategy;
 
 use adapters::binance::fee_provider::BinanceFeeProvider;
@@ -19,8 +19,18 @@ use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
 use adapters::binance::order_executor::BinanceOrderExecutor;
 use adapters::binance::position_manager::BinancePositionManager;
 use adapters::binance::rest_client::BinanceRestClient;
+use adapters::bybit::fee_provider::BybitFeeProvider;
+use adapters::bybit::market_data::{BybitMarket, BybitMarketData};
+use adapters::bybit::order_executor::BybitOrderExecutor;
+use adapters::bybit::position_manager::BybitPositionManager;
+use adapters::bybit::rest_client::BybitRestClient;
 use adapters::fee_provider::FeeProvider;
 use adapters::market_data::MarketDataFeed;
+use adapters::okx::fee_provider::OkxFeeProvider;
+use adapters::okx::market_data::OkxMarketData;
+use adapters::okx::order_executor::OkxOrderExecutor;
+use adapters::okx::position_manager::OkxPositionManager;
+use adapters::okx::rest_client::OkxRestClient;
 use adapters::paper_executor::PaperExecutor;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
@@ -33,7 +43,7 @@ use risk::state::RiskState;
 use strategy::cross_exchange::CrossExchangeStrategy;
 
 use clap::Parser;
-use config::InstrumentConfig;
+use config::{InstrumentConfig, VenueConfig};
 
 #[derive(Parser)]
 #[command(name = "arbx", about = "Cross-market arbitrage engine")]
@@ -59,12 +69,21 @@ fn parse_venue(name: &str) -> anyhow::Result<Venue> {
     }
 }
 
-fn parse_market(market: &str) -> anyhow::Result<BinanceMarket> {
+fn parse_binance_market(market: &str) -> anyhow::Result<BinanceMarket> {
     match market.to_lowercase().as_str() {
         "spot" => Ok(BinanceMarket::Spot),
         "usdt_futures" => Ok(BinanceMarket::UsdtFutures),
         "coin_futures" => Ok(BinanceMarket::CoinFutures),
-        other => anyhow::bail!("unknown market: {}", other),
+        other => anyhow::bail!("unknown binance market: {}", other),
+    }
+}
+
+fn parse_bybit_market(market: &str) -> anyhow::Result<BybitMarket> {
+    match market.to_lowercase().as_str() {
+        "spot" => Ok(BybitMarket::Spot),
+        "linear" | "usdt_futures" => Ok(BybitMarket::Linear),
+        "inverse" | "coin_futures" => Ok(BybitMarket::Inverse),
+        other => anyhow::bail!("unknown bybit market: {}", other),
     }
 }
 
@@ -88,11 +107,101 @@ fn parse_instrument(cfg: &InstrumentConfig) -> anyhow::Result<Instrument> {
     })
 }
 
-async fn fetch_fee_schedule(
-    venue_cfg: &config::VenueConfig,
-    market: BinanceMarket,
-    venue: Venue,
-) -> anyhow::Result<FeeSchedule> {
+fn format_symbol(venue_name: &str, base: &str, quote: &str) -> String {
+    match venue_name.to_lowercase().as_str() {
+        "okx" => format!("{}-{}", base, quote).to_uppercase(),
+        _ => format!("{}{}", base, quote).to_uppercase(),
+    }
+}
+
+fn build_market_data(
+    venue_cfg: &VenueConfig,
+    symbol: &str,
+    instrument: Instrument,
+) -> anyhow::Result<Box<dyn MarketDataFeed>> {
+    match venue_cfg.name.to_lowercase().as_str() {
+        "binance" => {
+            let market = parse_binance_market(&venue_cfg.market)?;
+            let mut feed = BinanceMarketData::new(market);
+            feed.register_instrument(symbol, instrument);
+            Ok(Box::new(feed))
+        }
+        "okx" => {
+            let mut feed = OkxMarketData::new();
+            feed.register_instrument(symbol, instrument);
+            Ok(Box::new(feed))
+        }
+        "bybit" => {
+            let market = parse_bybit_market(&venue_cfg.market)?;
+            let mut feed = BybitMarketData::new(market);
+            feed.register_instrument(symbol, instrument);
+            Ok(Box::new(feed))
+        }
+        other => anyhow::bail!("unsupported venue for market data: {}", other),
+    }
+}
+
+fn build_executor(
+    venue_cfg: &VenueConfig,
+) -> anyhow::Result<Box<dyn adapters::order_executor::OrderExecutor>> {
+    match venue_cfg.name.to_lowercase().as_str() {
+        "binance" => {
+            let market = parse_binance_market(&venue_cfg.market)?;
+            let exec = BinanceOrderExecutor::new(
+                market,
+                venue_cfg.api_key.clone(),
+                venue_cfg.api_secret.clone(),
+            )?;
+            Ok(Box::new(exec))
+        }
+        "okx" => {
+            let passphrase = venue_cfg.passphrase.clone().unwrap_or_default();
+            let exec = OkxOrderExecutor::new(
+                venue_cfg.api_key.clone(),
+                venue_cfg.api_secret.clone(),
+                passphrase,
+            )?;
+            Ok(Box::new(exec))
+        }
+        "bybit" => {
+            let market = parse_bybit_market(&venue_cfg.market)?;
+            let exec = BybitOrderExecutor::new(
+                market,
+                venue_cfg.api_key.clone(),
+                venue_cfg.api_secret.clone(),
+            )?;
+            Ok(Box::new(exec))
+        }
+        other => anyhow::bail!("unsupported venue for executor: {}", other),
+    }
+}
+
+fn build_position_manager(
+    venue_cfg: &VenueConfig,
+) -> anyhow::Result<Box<dyn adapters::position_manager::PositionManager>> {
+    match venue_cfg.name.to_lowercase().as_str() {
+        "binance" => {
+            let market = parse_binance_market(&venue_cfg.market)?;
+            let pm =
+                BinancePositionManager::new(market, &venue_cfg.api_key, &venue_cfg.api_secret)?;
+            Ok(Box::new(pm))
+        }
+        "okx" => {
+            let passphrase = venue_cfg.passphrase.as_deref().unwrap_or_default();
+            let pm =
+                OkxPositionManager::new(&venue_cfg.api_key, &venue_cfg.api_secret, passphrase)?;
+            Ok(Box::new(pm))
+        }
+        "bybit" => {
+            let market = parse_bybit_market(&venue_cfg.market)?;
+            let pm = BybitPositionManager::new(market, &venue_cfg.api_key, &venue_cfg.api_secret)?;
+            Ok(Box::new(pm))
+        }
+        other => anyhow::bail!("unsupported venue for position manager: {}", other),
+    }
+}
+
+async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Result<FeeSchedule> {
     if venue_cfg.api_key.is_empty() || venue_cfg.api_secret.is_empty() {
         tracing::warn!(?venue, "no API credentials, using default fee schedule");
         return Ok(FeeSchedule::new(
@@ -101,22 +210,74 @@ async fn fetch_fee_schedule(
             rust_decimal_macros::dec!(0.001),
         ));
     }
-    let rest = BinanceRestClient::new(
-        market.rest_base_url(),
-        &venue_cfg.api_key,
-        &venue_cfg.api_secret,
-    )?;
-    let provider = BinanceFeeProvider::new(rest, market);
-    match provider.get_fee_schedule().await {
-        Ok(fee) => Ok(fee),
-        Err(e) => {
-            tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
-            Ok(FeeSchedule::new(
-                venue,
-                rust_decimal_macros::dec!(0.001),
-                rust_decimal_macros::dec!(0.001),
-            ))
+
+    match venue_cfg.name.to_lowercase().as_str() {
+        "binance" => {
+            let market = parse_binance_market(&venue_cfg.market)?;
+            let rest = BinanceRestClient::new(
+                market.rest_base_url(),
+                &venue_cfg.api_key,
+                &venue_cfg.api_secret,
+            )?;
+            let provider = BinanceFeeProvider::new(rest, market);
+            match provider.get_fee_schedule().await {
+                Ok(fee) => Ok(fee),
+                Err(e) => {
+                    tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
+                    Ok(FeeSchedule::new(
+                        venue,
+                        rust_decimal_macros::dec!(0.001),
+                        rust_decimal_macros::dec!(0.001),
+                    ))
+                }
+            }
         }
+        "okx" => {
+            let passphrase = venue_cfg.passphrase.as_deref().unwrap_or_default();
+            let rest = OkxRestClient::new(
+                "https://www.okx.com",
+                &venue_cfg.api_key,
+                &venue_cfg.api_secret,
+                passphrase,
+            )?;
+            let inst_type = match venue_cfg.market.to_lowercase().as_str() {
+                "spot" => "SPOT",
+                _ => "SWAP",
+            };
+            let provider = OkxFeeProvider::new(rest, inst_type);
+            match provider.get_fee_schedule().await {
+                Ok(fee) => Ok(fee),
+                Err(e) => {
+                    tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
+                    Ok(FeeSchedule::new(
+                        venue,
+                        rust_decimal_macros::dec!(0.001),
+                        rust_decimal_macros::dec!(0.001),
+                    ))
+                }
+            }
+        }
+        "bybit" => {
+            let market = parse_bybit_market(&venue_cfg.market)?;
+            let rest = BybitRestClient::new(
+                "https://api.bybit.com",
+                &venue_cfg.api_key,
+                &venue_cfg.api_secret,
+            )?;
+            let provider = BybitFeeProvider::new(rest, market);
+            match provider.get_fee_schedule().await {
+                Ok(fee) => Ok(fee),
+                Err(e) => {
+                    tracing::warn!(%e, ?venue, "fee provider failed, using defaults");
+                    Ok(FeeSchedule::new(
+                        venue,
+                        rust_decimal_macros::dec!(0.001),
+                        rust_decimal_macros::dec!(0.001),
+                    ))
+                }
+            }
+        }
+        other => anyhow::bail!("unsupported venue for fees: {}", other),
     }
 }
 
@@ -181,26 +342,22 @@ async fn main() -> anyhow::Result<()> {
 
     let idx_b = 1 % cfg.venues.len();
 
-    let symbol_a = format!(
-        "{}{}",
-        cfg.strategy.instrument_a.base, cfg.strategy.instrument_a.quote
+    let symbol_a = format_symbol(
+        &cfg.venues[0].name,
+        &cfg.strategy.instrument_a.base,
+        &cfg.strategy.instrument_a.quote,
     );
-    let symbol_b = format!(
-        "{}{}",
-        cfg.strategy.instrument_b.base, cfg.strategy.instrument_b.quote
+    let symbol_b = format_symbol(
+        &cfg.venues[idx_b].name,
+        &cfg.strategy.instrument_b.base,
+        &cfg.strategy.instrument_b.quote,
     );
 
-    let mut feed_a = BinanceMarketData::new(parse_market(&cfg.venues[0].market)?);
-    feed_a.register_instrument(&symbol_a, instrument_a.clone());
+    let feed_a = build_market_data(&cfg.venues[0], &symbol_a, instrument_a.clone())?;
+    let feed_b = build_market_data(&cfg.venues[idx_b], &symbol_b, instrument_b.clone())?;
 
-    let mut feed_b = BinanceMarketData::new(parse_market(&cfg.venues[idx_b].market)?);
-    feed_b.register_instrument(&symbol_b, instrument_b.clone());
-
-    let market_a = parse_market(&cfg.venues[0].market)?;
-    let market_b = parse_market(&cfg.venues[idx_b].market)?;
-
-    let fee_a = fetch_fee_schedule(&cfg.venues[0], market_a, venue_a).await?;
-    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], market_b, venue_b).await?;
+    let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a).await?;
+    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b).await?;
 
     let strategy = CrossExchangeStrategy {
         venue_a,
@@ -231,7 +388,7 @@ async fn main() -> anyhow::Result<()> {
         max_book_depth: cfg.strategy.max_book_depth,
     };
 
-    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![Box::new(feed_a), Box::new(feed_b)];
+    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a, feed_b];
 
     let risk_manager = RiskManager::new(vec![
         Box::new(MaxPositionSize {
@@ -258,22 +415,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let venue_cfg = &cfg.venues[idx_b];
-    let executor = BinanceOrderExecutor::new(
-        parse_market(&venue_cfg.market)?,
-        venue_cfg.api_key.clone(),
-        venue_cfg.api_secret.clone(),
-    )?;
+    let executor = build_executor(venue_cfg)?;
     let executor: Box<dyn adapters::order_executor::OrderExecutor> =
         if venue_cfg.paper_trading || cli.dry_run {
-            Box::new(PaperExecutor::new(Box::new(executor)))
+            Box::new(PaperExecutor::new(executor))
         } else {
-            Box::new(executor)
+            executor
         };
-    let position_manager = BinancePositionManager::new(
-        parse_market(&cfg.venues[idx_b].market)?,
-        &cfg.venues[idx_b].api_key,
-        &cfg.venues[idx_b].api_secret,
-    )?;
+    let position_manager = build_position_manager(&cfg.venues[idx_b])?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -284,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
         risk_state,
         circuit_breaker,
         executor,
-        Box::new(position_manager),
+        position_manager,
         cfg.engine.reconcile_interval_secs,
         shutdown_rx,
     );
