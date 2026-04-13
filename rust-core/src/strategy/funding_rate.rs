@@ -240,8 +240,8 @@ mod tests {
         OrderBook {
             venue: Venue::Binance,
             instrument: instrument.clone(),
-            bids: vec![OrderBookLevel { price: bid, size }],
-            asks: vec![OrderBookLevel { price: ask, size }],
+            bids: smallvec::smallvec![OrderBookLevel { price: bid, size }],
+            asks: smallvec::smallvec![OrderBookLevel { price: ask, size }],
             timestamp: now,
             local_timestamp: now,
         }

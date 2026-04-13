@@ -141,11 +141,11 @@ impl ArbitrageEngine {
                         crate::models::enums::Side::Sell => -fill.quantity,
                     };
                     let notional = fill.price * fill.quantity;
-                    self.risk_state.apply_fill(&fill_key, signed_qty, notional, Decimal::ZERO);
+                    self.risk_state.apply_fill(fill_key.as_str(), signed_qty, notional, Decimal::ZERO);
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received();
-                    let pos = self.risk_state.position_by_instrument.get(&fill_key).copied().unwrap_or(Decimal::ZERO);
-                    crate::metrics::set_position(&fill_key, pos.to_string().parse::<f64>().unwrap_or(0.0));
+                    let pos = self.risk_state.position_by_instrument.get(fill_key.as_str()).copied().unwrap_or(Decimal::ZERO);
+                    crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
                     crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
 
                     self.position_manager.apply_fill(&fill).await?;
@@ -189,7 +189,11 @@ impl ArbitrageEngine {
         tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
         crate::metrics::record_quote_received();
         crate::metrics::record_quote_age_ms(quote_age_ms as f64);
-        self.books.insert(key, quote_to_book(&quote));
+        // In-place update reuses existing SmallVec allocation — no heap alloc on the hot path.
+        self.books
+            .entry(key)
+            .and_modify(|b| b.update_from_quote(&quote))
+            .or_insert_with(|| quote_to_book(&quote));
 
         let eval_start = std::time::Instant::now();
         let eval_result = self.strategy.evaluate(&self.books, &self.portfolios).await;
@@ -268,7 +272,7 @@ impl ArbitrageEngine {
                 let order_notional = req.quantity * req.price.unwrap_or(Decimal::ZERO);
                 let fast_verdict =
                     self.risk_state
-                        .check_order(&inst_key, req.quantity, order_notional);
+                        .check_order(inst_key.as_str(), req.quantity, order_notional);
 
                 if !fast_verdict.approved {
                     warn!(
@@ -413,15 +417,16 @@ impl ArbitrageEngine {
 }
 
 /// Convert a top-of-book Quote into a minimal OrderBook (single level each side).
+/// Used only on first-seen instruments; hot-path uses update_from_quote instead.
 pub(crate) fn quote_to_book(q: &Quote) -> OrderBook {
     OrderBook {
         venue: q.venue,
         instrument: q.instrument.clone(),
-        bids: vec![OrderBookLevel {
+        bids: smallvec::smallvec![OrderBookLevel {
             price: q.bid,
             size: q.bid_size,
         }],
-        asks: vec![OrderBookLevel {
+        asks: smallvec::smallvec![OrderBookLevel {
             price: q.ask,
             size: q.ask_size,
         }],

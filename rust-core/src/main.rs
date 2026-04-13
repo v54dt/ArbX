@@ -379,6 +379,15 @@ async fn main() -> anyhow::Result<()> {
 
     metrics::setup_metrics_server(9090);
 
+    // Pin main thread to a dedicated core to reduce OS context-switch jitter.
+    if let Some(cores) = core_affinity::get_core_ids() {
+        // Prefer core 1 (leave core 0 to the OS / interrupt handlers).
+        let target = if cores.len() > 1 { cores[1] } else { cores[0] };
+        if core_affinity::set_for_current(target) {
+            tracing::info!(core = target.id, "engine thread pinned to CPU core");
+        }
+    }
+
     let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
     let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
 
