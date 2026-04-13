@@ -5,10 +5,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
@@ -98,70 +99,96 @@ impl MarketDataFeed for BybitMarketData {
         }
 
         let url = self.market.ws_base_url().to_string();
-        let (ws_stream, _) = connect_async(&url).await?;
-        info!(url = url.as_str(), "connected to Bybit WebSocket");
 
-        let args: Vec<String> = self
+        let sub_args: Vec<String> = self
             .instruments
             .keys()
             .map(|s| format!("tickers.{s}"))
             .collect();
         let sub_msg = serde_json::json!({
             "op": "subscribe",
-            "args": args,
-        });
+            "args": sub_args,
+        })
+        .to_string();
 
-        let (ws_write_tx, mut ws_write_rx) = mpsc::unbounded_channel::<String>();
-        ws_write_tx.send(sub_msg.to_string())?;
+        let (ws_write_tx, ws_write_rx) = mpsc::unbounded_channel::<String>();
         self.ws_write_tx = Some(ws_write_tx);
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
         let task = tokio::spawn(async move {
             use futures_util::{SinkExt, StreamExt};
-            let (mut write, mut read) = ws_stream.split();
+
+            let mut backoff = Duration::from_secs(1);
+            let max_backoff = Duration::from_secs(60);
+            let mut ws_write_rx = ws_write_rx;
 
             loop {
-                tokio::select! {
-                    Some(msg) = read.next() => {
-                        match msg {
-                            Ok(msg) => {
-                                if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                                    let text = text.to_string();
-                                    if let Ok(ticker_msg) = serde_json::from_str::<TickerMessage>(&text)
-                                        && let Some(instrument) = instruments.get(&ticker_msg.data.symbol)
-                                    {
-                                        let quote = Quote {
-                                            venue: Venue::Bybit,
-                                            instrument: instrument.clone(),
-                                            bid: ticker_msg.data.bid_price,
-                                            ask: ticker_msg.data.ask_price,
-                                            bid_size: ticker_msg.data.bid_size,
-                                            ask_size: ticker_msg.data.ask_size,
-                                            timestamp: chrono::Utc::now(),
-                                        };
-                                        if tx.send(quote).is_err() {
-                                            break;
+                match connect_async(&url).await {
+                    Ok((ws_stream, _)) => {
+                        backoff = Duration::from_secs(1);
+                        info!(url = url.as_str(), "connected to Bybit WebSocket");
+                        let (mut write, mut read) = ws_stream.split();
+
+                        let ws_sub =
+                            tokio_tungstenite::tungstenite::Message::Text(sub_msg.clone().into());
+                        if let Err(e) = write.send(ws_sub).await {
+                            error!(error = %e, "Bybit WS subscribe error");
+                            tokio::time::sleep(backoff).await;
+                            backoff = (backoff * 2).min(max_backoff);
+                            continue;
+                        }
+
+                        'msg: loop {
+                            tokio::select! {
+                                Some(msg) = read.next() => {
+                                    match msg {
+                                        Ok(msg) => {
+                                            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                let text = text.to_string();
+                                                if let Ok(ticker_msg) = serde_json::from_str::<TickerMessage>(&text)
+                                                    && let Some(instrument) = instruments.get(&ticker_msg.data.symbol)
+                                                {
+                                                    let quote = Quote {
+                                                        venue: Venue::Bybit,
+                                                        instrument: instrument.clone(),
+                                                        bid: ticker_msg.data.bid_price,
+                                                        ask: ticker_msg.data.ask_price,
+                                                        bid_size: ticker_msg.data.bid_size,
+                                                        ask_size: ticker_msg.data.ask_size,
+                                                        timestamp: chrono::Utc::now(),
+                                                    };
+                                                    if tx.send(quote).is_err() {
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Bybit WS error, will reconnect");
+                                            break 'msg;
                                         }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Bybit WebSocket error");
-                                break;
-                            }
-                        }
-                    }
 
-                    Some(msg) = ws_write_rx.recv() => {
-                        let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
-                        if let Err(e) = write.send(ws_msg).await {
-                            error!(error = %e, "Bybit WebSocket write error");
-                            break;
+                                Some(msg) = ws_write_rx.recv() => {
+                                    let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
+                                    if let Err(e) = write.send(ws_msg).await {
+                                        warn!(error = %e, "Bybit WS write error, will reconnect");
+                                        break 'msg;
+                                    }
+                                }
+                                else => return,
+                            }
                         }
+                        info!("Bybit WS disconnected, reconnecting");
                     }
-                    else => break,
+                    Err(e) => {
+                        warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "Bybit WS connect failed");
+                    }
                 }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
             }
         });
 

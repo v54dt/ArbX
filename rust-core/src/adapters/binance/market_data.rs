@@ -6,10 +6,11 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info};
+use tracing::{info, warn};
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
@@ -160,63 +161,82 @@ impl MarketDataFeed for BinanceMarketData {
         let base = self.market.ws_url(self.testnet);
         let url = format!("{}/stream?streams={}", base, streams.join("/"));
 
-        let (ws_stream, _) = connect_async(&url).await?;
-        info!(url = url.as_str(), "connected to Binance WebSocket");
-
-        let (ws_write_tx, mut ws_write_rx) = mpsc::unbounded_channel::<String>();
+        let (ws_write_tx, ws_write_rx) = mpsc::unbounded_channel::<String>();
         self.ws_write_tx = Some(ws_write_tx);
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
         let task = tokio::spawn(async move {
-            let (mut write, mut read) = ws_stream.split();
-
             use futures_util::SinkExt;
 
+            let mut backoff = Duration::from_secs(1);
+            let max_backoff = Duration::from_secs(60);
+            let mut ws_write_rx = ws_write_rx;
+
             loop {
-                tokio::select! {
-                    Some(msg) = read.next() => {
-                        match msg {
-                            Ok(msg) => {
-                                if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
-                                    let text = text.to_string();
-                                    if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
-                                        let data = wrapper.get("data").unwrap_or(&wrapper);
-                                        if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone())
-                                            && let Some(instrument) = instruments.get(&ticker.symbol)
-                                        {
-                                            let quote = Quote {
-                                                venue: Venue::Binance,
-                                                instrument: instrument.clone(),
-                                                bid: ticker.bid_price,
-                                                ask: ticker.ask_price,
-                                                bid_size: ticker.bid_qty,
-                                                ask_size: ticker.ask_qty,
-                                                timestamp: chrono::Utc::now(),
-                                            };
-                                            if tx.send(quote).is_err() {
-                                                break;
+                match connect_async(&url).await {
+                    Ok((ws_stream, _)) => {
+                        backoff = Duration::from_secs(1);
+                        info!(url = url.as_str(), "connected to Binance WebSocket");
+                        let (mut write, mut read) = ws_stream.split();
+
+                        'msg: loop {
+                            tokio::select! {
+                                Some(msg) = read.next() => {
+                                    match msg {
+                                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                                            info!("Binance sent close frame (24h limit), reconnecting");
+                                            break 'msg;
+                                        }
+                                        Ok(msg) => {
+                                            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                let text = text.to_string();
+                                                if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                    let data = wrapper.get("data").unwrap_or(&wrapper);
+                                                    if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone())
+                                                        && let Some(instrument) = instruments.get(&ticker.symbol)
+                                                    {
+                                                        let quote = Quote {
+                                                            venue: Venue::Binance,
+                                                            instrument: instrument.clone(),
+                                                            bid: ticker.bid_price,
+                                                            ask: ticker.ask_price,
+                                                            bid_size: ticker.bid_qty,
+                                                            ask_size: ticker.ask_qty,
+                                                            timestamp: chrono::Utc::now(),
+                                                        };
+                                                        if tx.send(quote).is_err() {
+                                                            return;
+                                                        }
+                                                    }
+                                                }
                                             }
+                                        }
+                                        Err(e) => {
+                                            warn!(error = %e, "Binance WS error, will reconnect");
+                                            break 'msg;
                                         }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Binance WebSocket error");
-                                break;
-                            }
-                        }
-                    }
 
-                    Some(msg) = ws_write_rx.recv() => {
-                        let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
-                        if let Err(e) = write.send(ws_msg).await {
-                            error!(error = %e, "Binance WebSocket write error");
-                            break;
+                                Some(msg) = ws_write_rx.recv() => {
+                                    let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
+                                    if let Err(e) = write.send(ws_msg).await {
+                                        warn!(error = %e, "Binance WS write error, will reconnect");
+                                        break 'msg;
+                                    }
+                                }
+                                else => return,
+                            }
                         }
+                        info!("Binance WS disconnected, reconnecting");
                     }
-                    else => break,
+                    Err(e) => {
+                        warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "Binance WS connect failed");
+                    }
                 }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
             }
         });
 
