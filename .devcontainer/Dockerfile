@@ -41,3 +41,9 @@ RUN git clone --depth 1 https://github.com/real-logic/aeron.git /tmp/aeron && \
     make install && \
     ldconfig && \
     rm -rf /tmp/aeron
+
+# uv (fast Python package manager)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Python 3.13 via uv
+RUN uv python install 3.13
