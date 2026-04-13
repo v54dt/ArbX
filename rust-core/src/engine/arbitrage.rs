@@ -78,26 +78,33 @@ impl ArbitrageEngine {
             "starting arbitrage engine"
         );
 
-        // Merge all feed quote streams into a single channel.
         let (merged_tx, mut merged_rx) = mpsc::unbounded_channel::<Quote>();
+        let (merged_book_tx, mut merged_book_rx) = mpsc::unbounded_channel::<OrderBook>();
 
         for feed in self.feeds.iter_mut() {
             let MarketDataReceivers {
                 mut quotes,
-                order_books: _,
+                mut order_books,
             } = feed.connect().await?;
             let tx = merged_tx.clone();
+            let btx = merged_book_tx.clone();
             tokio::spawn(async move {
-                while let Some(q) = quotes.recv().await {
-                    if tx.send(q).is_err() {
-                        break;
+                loop {
+                    tokio::select! {
+                        Some(q) = quotes.recv() => {
+                            if tx.send(q).is_err() { break; }
+                        }
+                        Some(ob) = order_books.recv() => {
+                            if btx.send(ob).is_err() { break; }
+                        }
+                        else => break,
                     }
                 }
             });
         }
 
-        // Drop our own sender so the channel closes when all feeds end.
         drop(merged_tx);
+        drop(merged_book_tx);
 
         // Connect executor and forward fills into a merged channel.
         let exec_receivers = self.executor.connect().await?;
@@ -121,6 +128,11 @@ impl ArbitrageEngine {
             tokio::select! {
                 Some(quote) = merged_rx.recv() => {
                     self.handle_quote(quote).await?;
+                }
+                Some(book) = merged_book_rx.recv() => {
+                    let key = book_key(book.venue, &book.instrument);
+                    tracing::debug!(key = key.as_str(), levels = book.bids.len(), "L2 order book update");
+                    self.books.insert(key, book);
                 }
                 Some(fill) = fill_rx.recv() => {
                     let fill_key = make_book_key(fill.venue, &fill.instrument);

@@ -15,8 +15,8 @@ use std::time::Duration;
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::models::enums::Venue;
 use crate::models::instrument::Instrument;
-use crate::models::market::OrderBook;
 use crate::models::market::Quote;
+use crate::models::market::{OrderBook, OrderBookLevel};
 
 pub enum BinanceMarket {
     Spot,
@@ -97,6 +97,37 @@ where
     s.parse().map_err(serde::de::Error::custom)
 }
 
+#[derive(Debug, Deserialize)]
+struct DepthMsg {
+    #[serde(rename = "lastUpdateId")]
+    #[allow(dead_code)]
+    last_update_id: u64,
+    bids: Vec<[String; 2]>,
+    asks: Vec<[String; 2]>,
+}
+
+fn depth_msg_to_orderbook(msg: &DepthMsg, venue: Venue, instrument: Instrument) -> OrderBook {
+    let parse_levels = |levels: &[[String; 2]]| -> Vec<OrderBookLevel> {
+        levels
+            .iter()
+            .filter_map(|[p, q]| {
+                Some(OrderBookLevel {
+                    price: p.parse().ok()?,
+                    size: q.parse().ok()?,
+                })
+            })
+            .collect()
+    };
+    OrderBook {
+        venue,
+        instrument,
+        bids: parse_levels(&msg.bids),
+        asks: parse_levels(&msg.asks),
+        timestamp: chrono::Utc::now(),
+        local_timestamp: chrono::Utc::now(),
+    }
+}
+
 pub struct BinanceMarketData {
     market: BinanceMarket,
     testnet: bool,
@@ -146,12 +177,19 @@ impl MarketDataFeed for BinanceMarketData {
         let (book_tx, book_rx) = mpsc::unbounded_channel();
 
         self.quote_tx = Some(quote_tx.clone());
+        let book_tx_clone = book_tx.clone();
         self.book_tx = Some(book_tx);
 
         let streams: Vec<String> = self
             .instruments
             .keys()
-            .map(|s| format!("{}@bookTicker", s.to_lowercase()))
+            .flat_map(|s| {
+                let lower = s.to_lowercase();
+                vec![
+                    format!("{lower}@bookTicker"),
+                    format!("{lower}@depth20@100ms"),
+                ]
+            })
             .collect();
 
         if streams.is_empty() {
@@ -166,6 +204,7 @@ impl MarketDataFeed for BinanceMarketData {
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
+        let btx = book_tx_clone;
         let task = tokio::spawn(async move {
             use futures_util::SinkExt;
 
@@ -192,21 +231,35 @@ impl MarketDataFeed for BinanceMarketData {
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                                                 let text = text.to_string();
                                                 if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
+                                                    let stream_name = wrapper.get("stream").and_then(|v| v.as_str()).unwrap_or("");
                                                     let data = wrapper.get("data").unwrap_or(&wrapper);
-                                                    if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone())
-                                                        && let Some(instrument) = instruments.get(&ticker.symbol)
-                                                    {
-                                                        let quote = Quote {
-                                                            venue: Venue::Binance,
-                                                            instrument: instrument.clone(),
-                                                            bid: ticker.bid_price,
-                                                            ask: ticker.ask_price,
-                                                            bid_size: ticker.bid_qty,
-                                                            ask_size: ticker.ask_qty,
-                                                            timestamp: chrono::Utc::now(),
-                                                        };
-                                                        if tx.send(quote).is_err() {
-                                                            return;
+
+                                                    if stream_name.ends_with("@bookTicker") || stream_name.is_empty() {
+                                                        if let Ok(ticker) = serde_json::from_value::<BookTickerMsg>(data.clone())
+                                                            && let Some(instrument) = instruments.get(&ticker.symbol)
+                                                        {
+                                                            let quote = Quote {
+                                                                venue: Venue::Binance,
+                                                                instrument: instrument.clone(),
+                                                                bid: ticker.bid_price,
+                                                                ask: ticker.ask_price,
+                                                                bid_size: ticker.bid_qty,
+                                                                ask_size: ticker.ask_qty,
+                                                                timestamp: chrono::Utc::now(),
+                                                            };
+                                                            if tx.send(quote).is_err() {
+                                                                return;
+                                                            }
+                                                        }
+                                                    } else if stream_name.contains("@depth") {
+                                                        let symbol = stream_name.split('@').next().unwrap_or("").to_uppercase();
+                                                        if let Ok(depth) = serde_json::from_value::<DepthMsg>(data.clone())
+                                                            && let Some(instrument) = instruments.get(&symbol)
+                                                        {
+                                                            let book = depth_msg_to_orderbook(&depth, Venue::Binance, instrument.clone());
+                                                            if btx.send(book).is_err() {
+                                                                return;
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -266,7 +319,13 @@ impl MarketDataFeed for BinanceMarketData {
         if let Some(tx) = &self.ws_write_tx {
             let params: Vec<String> = symbols
                 .iter()
-                .map(|s| format!("{}@bookTicker", s.to_lowercase()))
+                .flat_map(|s| {
+                    let lower = s.to_lowercase();
+                    vec![
+                        format!("{lower}@bookTicker"),
+                        format!("{lower}@depth20@100ms"),
+                    ]
+                })
                 .collect();
             let msg = serde_json::json!({
                 "method": "SUBSCRIBE",
@@ -287,7 +346,13 @@ impl MarketDataFeed for BinanceMarketData {
         if let Some(tx) = &self.ws_write_tx {
             let params: Vec<String> = symbols
                 .iter()
-                .map(|s| format!("{}@bookTicker", s.to_lowercase()))
+                .flat_map(|s| {
+                    let lower = s.to_lowercase();
+                    vec![
+                        format!("{lower}@bookTicker"),
+                        format!("{lower}@depth20@100ms"),
+                    ]
+                })
                 .collect();
             let msg = serde_json::json!({
                 "method": "UNSUBSCRIBE",
@@ -341,6 +406,43 @@ mod tests {
         let json = r#"{"s": "BTCUSDT", "b": "50000.10"}"#;
         let result = serde_json::from_str::<BookTickerMsg>(json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_depth_msg_valid() {
+        let json = r#"{
+            "lastUpdateId": 123456,
+            "bids": [["50000.10", "1.5"], ["49999.00", "2.0"]],
+            "asks": [["50001.20", "0.8"], ["50002.00", "1.2"]]
+        }"#;
+        let msg: DepthMsg = serde_json::from_str(json).unwrap();
+        assert_eq!(msg.last_update_id, 123456);
+        assert_eq!(msg.bids.len(), 2);
+        assert_eq!(msg.asks.len(), 2);
+        assert_eq!(msg.bids[0][0], "50000.10");
+        assert_eq!(msg.bids[0][1], "1.5");
+    }
+
+    #[test]
+    fn depth_msg_to_orderbook_has_20_levels() {
+        let bids: Vec<[String; 2]> = (0..20)
+            .map(|i| [format!("{}", 50000 - i), format!("{}.{}", 1 + i % 3, i)])
+            .collect();
+        let asks: Vec<[String; 2]> = (0..20)
+            .map(|i| [format!("{}", 50001 + i), format!("{}.{}", 1 + i % 3, i)])
+            .collect();
+        let msg = DepthMsg {
+            last_update_id: 999,
+            bids,
+            asks,
+        };
+        let inst = make_instrument("BTC", "USDT");
+        let book = depth_msg_to_orderbook(&msg, Venue::Binance, inst);
+        assert_eq!(book.bids.len(), 20);
+        assert_eq!(book.asks.len(), 20);
+        assert_eq!(book.bids[0].price, dec!(50000));
+        assert_eq!(book.asks[0].price, dec!(50001));
+        assert_eq!(book.venue, Venue::Binance);
     }
 
     #[test]
