@@ -52,6 +52,12 @@ pub struct OkxMarketData {
     ws_write_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
+impl Default for OkxMarketData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OkxMarketData {
     pub fn new() -> Self {
         Self {
