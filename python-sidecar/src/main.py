@@ -49,9 +49,10 @@ async def run(config_path: str) -> None:
         adapters.append(adapter)
 
     quote_queue: asyncio.Queue[Quote] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
 
     def on_quote(quote: Quote) -> None:
-        quote_queue.put_nowait(quote)
+        loop.call_soon_threadsafe(quote_queue.put_nowait, quote)
 
     for adapter, venue_cfg in zip(adapters, cfg.get("venues", [])):
         symbols = venue_cfg.get("symbols", [])

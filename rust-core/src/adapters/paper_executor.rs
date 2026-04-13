@@ -61,8 +61,8 @@ impl OrderExecutor for PaperExecutor {
         let fill_price = match order.price {
             Some(p) => p,
             None => {
-                tracing::warn!("market order fill simulated at placeholder price ZERO");
-                Decimal::ZERO
+                tracing::warn!("paper fill: no price on order, using placeholder");
+                Decimal::ONE
             }
         };
 
