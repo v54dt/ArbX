@@ -54,6 +54,7 @@ class Fill:
     venue: Venue
     base: str
     quote_currency: str
+    instrument_type: str
     side: Side
     price: float
     quantity: float
