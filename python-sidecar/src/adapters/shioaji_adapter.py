@@ -99,13 +99,24 @@ class ShioajiAdapter(BaseAdapter):
         if contract is None:
             return OrderResponse(order_id="", status="contract_not_found")
 
+        price_type_map = {
+            "limit": StockPriceType.LMT,
+            "market": StockPriceType.MKT,
+        }
+        tif_map = {
+            "rod": OrderType.ROD,
+            "ioc": OrderType.IOC,
+            "fok": OrderType.FOK,
+        }
         action = Action.Buy if request.side == Side.BUY else Action.Sell
+        price_type = price_type_map.get(request.order_type, StockPriceType.LMT)
+        order_type = tif_map.get(request.time_in_force, OrderType.ROD)
         order = self._api.Order(
             price=request.price,
             quantity=int(request.quantity),
             action=action,
-            price_type=StockPriceType.LMT,
-            order_type=OrderType.ROD,
+            price_type=price_type,
+            order_type=order_type,
         )
         trade = self._api.place_order(contract, order)
         return OrderResponse(
