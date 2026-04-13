@@ -4,6 +4,7 @@ mod config;
 mod engine;
 #[allow(dead_code)]
 mod ipc;
+mod metrics;
 #[allow(dead_code)] // Phase 3: not all model fields/methods used yet
 mod models;
 #[allow(dead_code)] // Phase 3: risk trait scaffolding
@@ -167,6 +168,8 @@ async fn main() -> anyhow::Result<()> {
                 .init();
         }
     }
+
+    metrics::setup_metrics_server(9090);
 
     let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
     let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
