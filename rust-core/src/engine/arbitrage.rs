@@ -143,6 +143,10 @@ impl ArbitrageEngine {
                     let notional = fill.price * fill.quantity;
                     self.risk_state.apply_fill(&fill_key, signed_qty, notional, Decimal::ZERO);
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
+                    crate::metrics::record_fill_received();
+                    let pos = self.risk_state.position_by_instrument.get(&fill_key).copied().unwrap_or(Decimal::ZERO);
+                    crate::metrics::set_position(&fill_key, pos.to_string().parse::<f64>().unwrap_or(0.0));
+                    crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
 
                     self.position_manager.apply_fill(&fill).await?;
                     let key = format!("{:?}", fill.venue).to_lowercase();
@@ -183,14 +187,19 @@ impl ArbitrageEngine {
         let key = book_key(quote.venue, &quote.instrument);
         let quote_age_ms = (chrono::Utc::now() - quote.timestamp).num_milliseconds();
         tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
+        crate::metrics::record_quote_received();
+        crate::metrics::record_quote_age_ms(quote_age_ms as f64);
         self.books.insert(key, quote_to_book(&quote));
 
         let eval_start = std::time::Instant::now();
         let eval_result = self.strategy.evaluate(&self.books, &self.portfolios).await;
         let eval_us = eval_start.elapsed().as_micros();
 
+        crate::metrics::record_eval_latency_us(eval_us as f64);
+
         if let Some(opp) = eval_result {
             tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
+            crate::metrics::record_opportunity_detected();
             let direction = opp
                 .legs
                 .iter()
@@ -240,6 +249,8 @@ impl ArbitrageEngine {
                         reason = self.circuit_breaker.trip_reason().unwrap_or("unknown"),
                         "order skipped: circuit breaker tripped"
                     );
+                    crate::metrics::record_circuit_breaker_trip();
+                    crate::metrics::record_order_rejected();
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -264,6 +275,7 @@ impl ArbitrageEngine {
                         reason = fast_verdict.reason.as_deref().unwrap_or("unknown"),
                         "order rejected by risk state (O(1))"
                     );
+                    crate::metrics::record_order_rejected();
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -288,6 +300,7 @@ impl ArbitrageEngine {
                         reason = verdict.reason.as_deref().unwrap_or("unknown"),
                         "order rejected by risk manager"
                     );
+                    crate::metrics::record_order_rejected();
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -323,6 +336,7 @@ impl ArbitrageEngine {
                             qty = %order.quantity,
                             "order submitted"
                         );
+                        crate::metrics::record_order_submitted();
                         self.circuit_breaker.record_success();
                         self.circuit_breaker.record_order();
                         submitted_count += 1;
@@ -338,6 +352,7 @@ impl ArbitrageEngine {
                     }
                     Err(e) => {
                         warn!(error = %e, "order submission failed");
+                        crate::metrics::record_order_failed();
                         self.circuit_breaker.record_failure();
                         self.circuit_breaker.record_order();
                         trade_legs.push(TradeLeg {
@@ -354,6 +369,7 @@ impl ArbitrageEngine {
             }
 
             let submit_us = submit_start.elapsed().as_micros();
+            crate::metrics::record_submit_latency_us(submit_us as f64);
             tracing::info!(
                 submit_latency_us = submit_us,
                 orders = total_orders,
