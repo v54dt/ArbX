@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use futures_util::future::join_all;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -219,6 +220,8 @@ impl ArbitrageEngine {
                 .await
                 .unwrap_or_default();
 
+            let mut approved_orders: Vec<crate::models::order::Order> = Vec::new();
+
             for mut req in orders {
                 if self.circuit_breaker.is_tripped() {
                     warn!(
@@ -290,8 +293,17 @@ impl ArbitrageEngine {
                     req.quantity = adj_qty;
                 }
 
-                let order = req.into_order();
-                match self.executor.submit_order(&order).await {
+                approved_orders.push(req.into_order());
+            }
+
+            let futures: Vec<_> = approved_orders
+                .iter()
+                .map(|order| self.executor.submit_order(order))
+                .collect();
+            let results = join_all(futures).await;
+
+            for (order, result) in approved_orders.iter().zip(results.iter()) {
+                match result {
                     Ok(order_id) => {
                         info!(
                             order_id = order_id.as_str(),
@@ -308,7 +320,7 @@ impl ArbitrageEngine {
                             side: order.side,
                             intended_price: order.price.unwrap_or(Decimal::ZERO),
                             intended_quantity: order.quantity,
-                            order_id: Some(order_id),
+                            order_id: Some(order_id.clone()),
                             submitted_at: Utc::now(),
                         });
                     }
