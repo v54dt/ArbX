@@ -116,7 +116,10 @@ fn tif_from_i8(v: i8) -> anyhow::Result<DomainTimeInForce> {
 }
 
 fn dec_to_f64(d: Decimal) -> f64 {
-    d.to_f64().unwrap_or(0.0)
+    d.to_f64().unwrap_or_else(|| {
+        tracing::warn!(decimal = %d, "Decimal->f64 overflow, falling back to 0.0");
+        0.0
+    })
 }
 
 fn f64_to_dec(v: f64) -> anyhow::Result<Decimal> {
@@ -157,6 +160,18 @@ fn make_instrument(
         last_trade_time: None,
         settlement_time: None,
     })
+}
+
+const MIN_FLATBUF_SIZE: usize = 8; // root offset (4) + vtable offset (4)
+
+fn checked_root_as_table<'a>(data: &'a [u8], label: &str) -> anyhow::Result<Table<'a>> {
+    if data.len() < MIN_FLATBUF_SIZE {
+        bail!(
+            "flatbuffer too short for {label}: {} bytes (min {MIN_FLATBUF_SIZE})",
+            data.len()
+        );
+    }
+    Ok(unsafe { flatbuffers::root_unchecked::<Table>(data) })
 }
 
 // Helper to read a field from a FlatBuffer table.
@@ -201,7 +216,7 @@ pub fn encode_quote(quote: &Quote) -> Vec<u8> {
 }
 
 pub fn decode_quote(data: &[u8]) -> anyhow::Result<Quote> {
-    let table = unsafe { flatbuffers::root_unchecked::<Table>(data) };
+    let table = checked_root_as_table(data, "quote")?;
     let venue_i8 = unsafe { get_field::<i8>(&table, vt::QUOTE_VENUE, 0) };
     let base = unsafe { get_str(&table, vt::QUOTE_BASE) }.unwrap_or("");
     let quote_cur = unsafe { get_str(&table, vt::QUOTE_QUOTE_CURRENCY) }.unwrap_or("");
@@ -254,7 +269,7 @@ pub fn encode_order_request(req: &OrderRequest) -> Vec<u8> {
 }
 
 pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
-    let table = unsafe { flatbuffers::root_unchecked::<Table>(data) };
+    let table = checked_root_as_table(data, "order_request")?;
     let venue_i8 = unsafe { get_field::<i8>(&table, vt::OR_VENUE, 0) };
     let base = unsafe { get_str(&table, vt::OR_BASE) }.unwrap_or("");
     let quote_cur = unsafe { get_str(&table, vt::OR_QUOTE_CURRENCY) }.unwrap_or("");
@@ -307,7 +322,7 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
 }
 
 pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
-    let table = unsafe { flatbuffers::root_unchecked::<Table>(data) };
+    let table = checked_root_as_table(data, "fill")?;
     let order_id = unsafe { get_str(&table, vt::FILL_ORDER_ID) }.unwrap_or("");
     let venue_i8 = unsafe { get_field::<i8>(&table, vt::FILL_VENUE, 0) };
     let base = unsafe { get_str(&table, vt::FILL_BASE) }.unwrap_or("");

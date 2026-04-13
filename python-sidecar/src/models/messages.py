@@ -28,6 +28,9 @@ class Quote:
     ask_size: float
     timestamp_ms: int
 
+    def __post_init__(self) -> None:
+        self.timestamp_ms = int(self.timestamp_ms)
+
 
 @dataclass
 class OrderRequest:
@@ -61,3 +64,6 @@ class Fill:
     fee: float
     fee_currency: str
     timestamp_ms: int
+
+    def __post_init__(self) -> None:
+        self.timestamp_ms = int(self.timestamp_ms)
