@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 use super::market_data::BinanceMarket;
 use super::rest_client::BinanceRestClient;
@@ -12,11 +13,18 @@ use crate::models::enums::{OrderStatus, OrderType, Side, TimeInForce};
 use crate::models::instrument::Instrument;
 use crate::models::order::{Fill, Order, OrderUpdate};
 
+struct BinanceOrderEntry {
+    symbol: String,
+    #[allow(dead_code)]
+    instrument: Instrument,
+}
+
 pub struct BinanceOrderExecutor {
     market: BinanceMarket,
     rest_client: BinanceRestClient,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
+    order_map: Arc<RwLock<HashMap<String, BinanceOrderEntry>>>,
 }
 
 impl BinanceOrderExecutor {
@@ -38,6 +46,7 @@ impl BinanceOrderExecutor {
             rest_client,
             fills_tx: None,
             updates_tx: None,
+            order_map: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -82,6 +91,17 @@ impl BinanceOrderExecutor {
             Some(TimeInForce::Rod) | None => "GTC",
         }
     }
+
+    fn parse_status(s: &str) -> OrderStatus {
+        match s {
+            "NEW" => OrderStatus::Pending,
+            "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
+            "FILLED" => OrderStatus::Filled,
+            "CANCELED" => OrderStatus::Cancelled,
+            "REJECTED" => OrderStatus::Rejected,
+            _ => OrderStatus::Pending,
+        }
+    }
 }
 
 #[async_trait]
@@ -109,7 +129,7 @@ impl OrderExecutor for BinanceOrderExecutor {
         let symbol = Self::instrument_to_symbol(&order.instrument);
 
         let mut params = HashMap::new();
-        params.insert("symbol".to_string(), symbol);
+        params.insert("symbol".to_string(), symbol.clone());
         params.insert("side".to_string(), Self::side_str(order.side).to_string());
         params.insert(
             "type".to_string(),
@@ -154,6 +174,14 @@ impl OrderExecutor for BinanceOrderExecutor {
             _ => anyhow::bail!("missing orderId in response: {}", response.body),
         };
 
+        self.order_map.write().await.insert(
+            order_id.clone(),
+            BinanceOrderEntry {
+                symbol,
+                instrument: order.instrument.clone(),
+            },
+        );
+
         tracing::info!(
             order_id,
             market = self.market_label(),
@@ -166,19 +194,90 @@ impl OrderExecutor for BinanceOrderExecutor {
     }
 
     async fn cancel_order(&self, order_id: &str) -> anyhow::Result<bool> {
-        // TODO: need symbol for cancel, consider storing order->symbol mapping
-        tracing::info!(order_id, "cancel_order (stub — needs symbol)");
+        let symbol = self
+            .order_map
+            .read()
+            .await
+            .get(order_id)
+            .map(|e| e.symbol.clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol);
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Delete,
+            path: self.order_path().to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "binance cancel rejected ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
         Ok(true)
     }
 
     async fn get_order_status(&self, order_id: &str) -> anyhow::Result<OrderUpdate> {
-        // TODO: need symbol for status query, consider storing order->symbol mapping
+        let symbol = self
+            .order_map
+            .read()
+            .await
+            .get(order_id)
+            .map(|e| e.symbol.clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+
+        let mut params = HashMap::new();
+        params.insert("symbol".to_string(), symbol);
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Get,
+            path: self.order_path().to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "binance order status error ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&response.body)?;
+        let status = Self::parse_status(json["status"].as_str().unwrap_or(""));
+        let filled_quantity = json["executedQty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let orig_qty = json["origQty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let remaining_quantity = orig_qty - filled_quantity;
+        let average_price = json["avgPrice"]
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .filter(|p| !p.is_zero());
+
         Ok(OrderUpdate {
             order_id: order_id.to_string(),
-            status: OrderStatus::Pending,
-            filled_quantity: Decimal::ZERO,
-            remaining_quantity: Decimal::ZERO,
-            average_price: None,
+            status,
+            filled_quantity,
+            remaining_quantity,
+            average_price,
             updated_at: chrono::Utc::now(),
         })
     }
@@ -280,5 +379,57 @@ mod tests {
             BinanceMarket::CoinFutures.rest_base_url(),
             "https://dapi.binance.com"
         );
+    }
+
+    #[test]
+    fn parse_status_maps_all_states() {
+        assert_eq!(BinanceOrderExecutor::parse_status("NEW"), OrderStatus::Pending);
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("PARTIALLY_FILLED"),
+            OrderStatus::PartiallyFilled
+        );
+        assert_eq!(BinanceOrderExecutor::parse_status("FILLED"), OrderStatus::Filled);
+        assert_eq!(BinanceOrderExecutor::parse_status("CANCELED"), OrderStatus::Cancelled);
+        assert_eq!(BinanceOrderExecutor::parse_status("REJECTED"), OrderStatus::Rejected);
+        assert_eq!(BinanceOrderExecutor::parse_status("EXPIRED"), OrderStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn order_map_starts_empty() {
+        let executor = make_executor(BinanceMarket::Spot);
+        assert!(executor.order_map.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_order_status_unknown_order_returns_error() {
+        let executor = make_executor(BinanceMarket::Spot);
+        let result = executor.get_order_status("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn cancel_order_unknown_order_returns_error() {
+        let executor = make_executor(BinanceMarket::Spot);
+        let result = executor.cancel_order("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn order_entry_stores_correct_symbol() {
+        let executor = make_executor(BinanceMarket::Spot);
+        let inst = make_instrument("BTC", "USDT");
+        let symbol = BinanceOrderExecutor::instrument_to_symbol(&inst);
+        executor.order_map.write().await.insert(
+            "test-order-1".to_string(),
+            BinanceOrderEntry {
+                symbol: symbol.clone(),
+                instrument: inst,
+            },
+        );
+        let stored = executor.order_map.read().await;
+        let entry = stored.get("test-order-1").unwrap();
+        assert_eq!(entry.symbol, "BTCUSDT");
     }
 }
