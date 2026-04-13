@@ -8,7 +8,7 @@ use smallvec::smallvec;
 use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
-use crate::models::market::{OrderBook, book_key};
+use crate::models::market::{BookMap, book_key};
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
@@ -48,7 +48,7 @@ impl FundingRateStrategy {
 impl ArbitrageStrategy for FundingRateStrategy {
     async fn evaluate(
         &self,
-        books: &HashMap<String, OrderBook>,
+        books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
     ) -> Option<Opportunity> {
         let perp_book = books.get(&book_key(self.venue, &self.instrument_perp))?;
@@ -192,7 +192,7 @@ mod tests {
     use crate::models::enums::Venue;
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-    use crate::models::market::{OrderBook, OrderBookLevel, book_key};
+    use crate::models::market::{BookMap, OrderBook, OrderBookLevel, book_key};
     use chrono::Utc;
     use rust_decimal_macros::dec;
 
@@ -247,8 +247,8 @@ mod tests {
         }
     }
 
-    fn make_books(perp: OrderBook, spot: OrderBook) -> HashMap<String, OrderBook> {
-        let mut m = HashMap::new();
+    fn make_books(perp: OrderBook, spot: OrderBook) -> BookMap {
+        let mut m = BookMap::default();
         m.insert(book_key(perp.venue, &perp.instrument), perp);
         m.insert(book_key(spot.venue, &spot.instrument), spot);
         m

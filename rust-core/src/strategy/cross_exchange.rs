@@ -8,7 +8,7 @@ use smallvec::smallvec;
 use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
-use crate::models::market::{OrderBook, book_key};
+use crate::models::market::{BookMap, OrderBook, book_key};
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
@@ -128,7 +128,7 @@ impl CrossExchangeStrategy {
 
     fn evaluate_direction(
         &self,
-        books: &HashMap<String, OrderBook>,
+        books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
         params: DirectionParams<'_>,
     ) -> Option<Opportunity> {
@@ -241,7 +241,7 @@ impl CrossExchangeStrategy {
 impl ArbitrageStrategy for CrossExchangeStrategy {
     async fn evaluate(
         &self,
-        books: &HashMap<String, OrderBook>,
+        books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
     ) -> Option<Opportunity> {
         let a_to_b = self.evaluate_direction(
@@ -315,7 +315,7 @@ mod tests {
     use crate::models::enums::{Side, Venue};
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-    use crate::models::market::{OrderBook, OrderBookLevel, book_key};
+    use crate::models::market::{BookMap, OrderBook, OrderBookLevel, book_key};
     use crate::models::position::{PortfolioSnapshot, Position};
     use crate::strategy::base::ArbitrageStrategy;
     use chrono::Utc;
@@ -411,7 +411,7 @@ mod tests {
         HashMap::new()
     }
 
-    fn make_books(books: Vec<OrderBook>) -> HashMap<String, OrderBook> {
+    fn make_books(books: Vec<OrderBook>) -> BookMap {
         books
             .into_iter()
             .map(|b| (book_key(b.venue, &b.instrument), b))

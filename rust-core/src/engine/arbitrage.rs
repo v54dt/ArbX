@@ -12,7 +12,7 @@ use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::models::market::book_key as make_book_key;
-use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
+use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
 use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
@@ -31,7 +31,7 @@ pub struct ArbitrageEngine {
     circuit_breaker: CircuitBreaker,
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
-    books: HashMap<String, OrderBook>,
+    books: BookMap,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
     reconcile_interval_secs: u64,
@@ -59,7 +59,7 @@ impl ArbitrageEngine {
             circuit_breaker,
             executor,
             position_manager,
-            books: HashMap::new(),
+            books: BookMap::default(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
             reconcile_interval_secs,

@@ -1,9 +1,12 @@
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use super::enums::Venue;
 use super::instrument::Instrument;
+
+pub type BookMap = FxHashMap<String, OrderBook>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {

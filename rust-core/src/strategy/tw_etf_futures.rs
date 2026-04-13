@@ -8,7 +8,7 @@ use smallvec::smallvec;
 use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
-use crate::models::market::{OrderBook, book_key};
+use crate::models::market::{BookMap, book_key};
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
@@ -33,7 +33,7 @@ pub struct TwEtfFuturesStrategy {
 impl ArbitrageStrategy for TwEtfFuturesStrategy {
     async fn evaluate(
         &self,
-        books: &HashMap<String, OrderBook>,
+        books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
     ) -> Option<Opportunity> {
         let etf_book = books.get(&book_key(self.venue, &self.etf_instrument))?;
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use crate::models::enums::Venue;
     use crate::models::instrument::{AssetClass, InstrumentType};
-    use crate::models::market::{OrderBook, OrderBookLevel, book_key};
+    use crate::models::market::{BookMap, OrderBook, OrderBookLevel, book_key};
     use chrono::Utc;
     use rust_decimal_macros::dec;
 
@@ -241,10 +241,10 @@ mod tests {
         etf_ask: Decimal,
         fut_bid: Decimal,
         fut_ask: Decimal,
-    ) -> HashMap<String, OrderBook> {
+    ) -> BookMap {
         let etf = etf_instrument();
         let fut = futures_instrument();
-        let mut m = HashMap::new();
+        let mut m = BookMap::default();
         m.insert(
             book_key(Venue::Fubon, &etf),
             orderbook(&etf, etf_bid, etf_ask),
@@ -341,7 +341,7 @@ mod tests {
         let mut etf_book = orderbook(&etf, dec!(149), dec!(151));
         etf_book.local_timestamp = now - Duration::seconds(10);
         let fut_book = orderbook(&fut, dec!(155), dec!(156));
-        let mut m = HashMap::new();
+        let mut m = BookMap::default();
         m.insert(book_key(Venue::Fubon, &etf), etf_book);
         m.insert(book_key(Venue::Fubon, &fut), fut_book);
         assert!(s.evaluate(&m, &empty_portfolios()).await.is_none());
