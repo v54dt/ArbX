@@ -36,6 +36,8 @@ pub struct VenueConfig {
     pub market: String,
     pub api_key: String,
     pub api_secret: String,
+    #[serde(default)]
+    pub passphrase: Option<String>,
     pub paper_trading: bool,
     #[serde(default)]
     pub testnet: bool,
@@ -48,6 +50,10 @@ impl std::fmt::Debug for VenueConfig {
             .field("market", &self.market)
             .field("api_key", &"[REDACTED]")
             .field("api_secret", &"[REDACTED]")
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("paper_trading", &self.paper_trading)
             .field("testnet", &self.testnet)
             .finish()
@@ -153,6 +159,9 @@ pub fn load(path: &str) -> anyhow::Result<AppConfig> {
     for venue in &mut config.venues {
         venue.api_key = resolve_env_var(&venue.api_key);
         venue.api_secret = resolve_env_var(&venue.api_secret);
+        if let Some(ref pp) = venue.passphrase {
+            venue.passphrase = Some(resolve_env_var(pp));
+        }
     }
     Ok(config)
 }
