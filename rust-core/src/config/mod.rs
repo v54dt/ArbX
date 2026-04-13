@@ -92,6 +92,40 @@ pub struct RiskConfig {
     pub max_position_size: Decimal,
     pub max_daily_loss: Decimal,
     pub max_notional_exposure: Decimal,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CircuitBreakerConfig {
+    #[serde(default = "default_max_drawdown")]
+    pub max_drawdown: Decimal,
+    #[serde(default = "default_max_orders_per_minute")]
+    pub max_orders_per_minute: u32,
+    #[serde(default = "default_max_consecutive_failures")]
+    pub max_consecutive_failures: u32,
+}
+
+fn default_max_drawdown() -> Decimal {
+    Decimal::new(500, 0)
+}
+
+fn default_max_orders_per_minute() -> u32 {
+    100
+}
+
+fn default_max_consecutive_failures() -> u32 {
+    5
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            max_drawdown: default_max_drawdown(),
+            max_orders_per_minute: default_max_orders_per_minute(),
+            max_consecutive_failures: default_max_consecutive_failures(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -23,6 +23,7 @@ use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
 use models::fee::FeeSchedule;
 use models::instrument::{AssetClass, Instrument, InstrumentType};
+use risk::circuit_breaker::CircuitBreaker;
 use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
 use risk::manager::RiskManager;
 use risk::state::RiskState;
@@ -245,6 +246,12 @@ async fn main() -> anyhow::Result<()> {
         cfg.risk.max_daily_loss,
     );
 
+    let circuit_breaker = CircuitBreaker::new(
+        cfg.risk.circuit_breaker.max_drawdown,
+        cfg.risk.circuit_breaker.max_orders_per_minute,
+        cfg.risk.circuit_breaker.max_consecutive_failures,
+    );
+
     let venue_cfg = &cfg.venues[idx_b];
     let executor = BinanceOrderExecutor::new(
         parse_market(&venue_cfg.market)?,
@@ -270,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
         Box::new(strategy),
         risk_manager,
         risk_state,
+        circuit_breaker,
         executor,
         Box::new(position_manager),
         cfg.engine.reconcile_interval_secs,
