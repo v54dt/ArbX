@@ -58,7 +58,11 @@ fn quantize_up(value: Decimal, step: Decimal) -> Decimal {
     (value / step).ceil() * step
 }
 
-fn vwap_ask(book: &OrderBook, qty: Decimal, max_depth: usize) -> Option<(Decimal, Decimal)> {
+pub(crate) fn vwap_ask(
+    book: &OrderBook,
+    qty: Decimal,
+    max_depth: usize,
+) -> Option<(Decimal, Decimal)> {
     let mut remaining = qty;
     let mut total_cost = Decimal::ZERO;
     let mut filled = Decimal::ZERO;
@@ -78,7 +82,11 @@ fn vwap_ask(book: &OrderBook, qty: Decimal, max_depth: usize) -> Option<(Decimal
     }
 }
 
-fn vwap_bid(book: &OrderBook, qty: Decimal, max_depth: usize) -> Option<(Decimal, Decimal)> {
+pub(crate) fn vwap_bid(
+    book: &OrderBook,
+    qty: Decimal,
+    max_depth: usize,
+) -> Option<(Decimal, Decimal)> {
     let mut remaining = qty;
     let mut total_cost = Decimal::ZERO;
     let mut filled = Decimal::ZERO;
