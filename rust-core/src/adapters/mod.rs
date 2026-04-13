@@ -2,6 +2,7 @@ pub mod binance;
 pub mod bybit;
 pub mod fee_provider;
 pub mod market_data;
+pub mod mock_exchange;
 pub mod okx;
 pub mod order_executor;
 pub mod paper_executor;
