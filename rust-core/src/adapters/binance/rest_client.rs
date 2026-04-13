@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::time::Duration;
+use tracing::warn;
 
+use crate::adapters::rate_limiter::RateLimiter;
 use crate::adapters::rest_client::{ExchangeRestClient, HttpMethod, RestRequest, RestResponse};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -12,6 +15,7 @@ pub struct BinanceRestClient {
     base_url: String,
     api_key: String,
     api_secret: String,
+    rate_limiter: RateLimiter,
 }
 
 impl BinanceRestClient {
@@ -32,6 +36,7 @@ impl BinanceRestClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
+            rate_limiter: RateLimiter::new(20),
         })
     }
 
@@ -77,6 +82,8 @@ impl BinanceRestClient {
 #[async_trait]
 impl ExchangeRestClient for BinanceRestClient {
     async fn send(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let qs = self.build_signed_params(&request.params);
         let url = format!("{}{}?{}", self.base_url, request.path, qs);
 
@@ -88,6 +95,18 @@ impl ExchangeRestClient for BinanceRestClient {
 
         let resp = req.header("X-MBX-APIKEY", &self.api_key).send().await?;
 
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send(request).await;
+        }
+
         Ok(RestResponse {
             status: resp.status().as_u16(),
             body: resp.text().await?,
@@ -95,6 +114,8 @@ impl ExchangeRestClient for BinanceRestClient {
     }
 
     async fn send_public(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let qs = Self::build_query_string(&request.params);
         let url = if qs.is_empty() {
             format!("{}{}", self.base_url, request.path)
@@ -109,6 +130,18 @@ impl ExchangeRestClient for BinanceRestClient {
         };
 
         let resp = req.send().await?;
+
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send_public(request).await;
+        }
 
         Ok(RestResponse {
             status: resp.status().as_u16(),

@@ -2,7 +2,10 @@ use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::time::Duration;
+use tracing::warn;
 
+use crate::adapters::rate_limiter::RateLimiter;
 use crate::adapters::rest_client::{ExchangeRestClient, HttpMethod, RestRequest, RestResponse};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -14,6 +17,7 @@ pub struct BybitRestClient {
     base_url: String,
     api_key: String,
     api_secret: String,
+    rate_limiter: RateLimiter,
 }
 
 impl BybitRestClient {
@@ -31,6 +35,7 @@ impl BybitRestClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
+            rate_limiter: RateLimiter::new(10),
         })
     }
 
@@ -62,9 +67,11 @@ impl BybitRestClient {
 #[async_trait]
 impl ExchangeRestClient for BybitRestClient {
     async fn send(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let ts = Self::timestamp_ms();
 
-        match request.method {
+        let resp = match request.method {
             HttpMethod::Get | HttpMethod::Delete => {
                 let qs = Self::build_query_string(&request.params);
                 let sign_payload = format!("{}{}{}{}", ts, self.api_key, RECV_WINDOW, qs);
@@ -82,18 +89,13 @@ impl ExchangeRestClient for BybitRestClient {
                     _ => unreachable!(),
                 };
 
-                let resp = builder
+                builder
                     .header("X-BAPI-API-KEY", &self.api_key)
                     .header("X-BAPI-SIGN", &signature)
                     .header("X-BAPI-TIMESTAMP", &ts)
                     .header("X-BAPI-RECV-WINDOW", RECV_WINDOW)
                     .send()
-                    .await?;
-
-                Ok(RestResponse {
-                    status: resp.status().as_u16(),
-                    body: resp.text().await?,
-                })
+                    .await?
             }
             HttpMethod::Post => {
                 let body = serde_json::to_string(&request.params)?;
@@ -102,8 +104,7 @@ impl ExchangeRestClient for BybitRestClient {
 
                 let url = format!("{}{}", self.base_url, request.path);
 
-                let resp = self
-                    .http
+                self.http
                     .post(&url)
                     .header("X-BAPI-API-KEY", &self.api_key)
                     .header("X-BAPI-SIGN", &signature)
@@ -111,17 +112,31 @@ impl ExchangeRestClient for BybitRestClient {
                     .header("X-BAPI-RECV-WINDOW", RECV_WINDOW)
                     .body(body)
                     .send()
-                    .await?;
-
-                Ok(RestResponse {
-                    status: resp.status().as_u16(),
-                    body: resp.text().await?,
-                })
+                    .await?
             }
+        };
+
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send(request).await;
         }
+
+        Ok(RestResponse {
+            status: resp.status().as_u16(),
+            body: resp.text().await?,
+        })
     }
 
     async fn send_public(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let qs = Self::build_query_string(&request.params);
         let url = if qs.is_empty() {
             format!("{}{}", self.base_url, request.path)
@@ -136,6 +151,18 @@ impl ExchangeRestClient for BybitRestClient {
         };
 
         let resp = req.send().await?;
+
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send_public(request).await;
+        }
 
         Ok(RestResponse {
             status: resp.status().as_u16(),

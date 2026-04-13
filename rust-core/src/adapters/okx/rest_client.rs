@@ -3,7 +3,10 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::collections::HashMap;
+use std::time::Duration;
+use tracing::warn;
 
+use crate::adapters::rate_limiter::RateLimiter;
 use crate::adapters::rest_client::{ExchangeRestClient, HttpMethod, RestRequest, RestResponse};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -14,6 +17,7 @@ pub struct OkxRestClient {
     api_key: String,
     api_secret: String,
     passphrase: String,
+    rate_limiter: RateLimiter,
 }
 
 impl OkxRestClient {
@@ -37,6 +41,7 @@ impl OkxRestClient {
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
             passphrase: passphrase.to_string(),
+            rate_limiter: RateLimiter::new(10),
         })
     }
 
@@ -82,6 +87,8 @@ impl OkxRestClient {
 #[async_trait]
 impl ExchangeRestClient for OkxRestClient {
     async fn send(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let method_str = Self::method_str(request.method);
         let qs = Self::build_query_string(&request.params);
         let request_path = if qs.is_empty() {
@@ -115,6 +122,18 @@ impl ExchangeRestClient for OkxRestClient {
 
         let resp = req.send().await?;
 
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send(request).await;
+        }
+
         Ok(RestResponse {
             status: resp.status().as_u16(),
             body: resp.text().await?,
@@ -122,6 +141,8 @@ impl ExchangeRestClient for OkxRestClient {
     }
 
     async fn send_public(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
+        self.rate_limiter.acquire().await;
+
         let qs = Self::build_query_string(&request.params);
         let url = if qs.is_empty() {
             format!("{}{}", self.base_url, request.path)
@@ -136,6 +157,18 @@ impl ExchangeRestClient for OkxRestClient {
         };
 
         let resp = req.send().await?;
+
+        if resp.status() == 429 {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(5);
+            warn!(retry_after_secs = retry_after, "rate limited by exchange");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            return self.send_public(request).await;
+        }
 
         Ok(RestResponse {
             status: resp.status().as_u16(),
