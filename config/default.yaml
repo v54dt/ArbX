@@ -34,6 +34,10 @@ risk:
   max_position_size: "1"
   max_daily_loss: "1000"
   max_notional_exposure: "100000"
+  circuit_breaker:
+    max_drawdown: "500"
+    max_orders_per_minute: 100
+    max_consecutive_failures: 5
 
 engine:
   reconcile_interval_secs: 30

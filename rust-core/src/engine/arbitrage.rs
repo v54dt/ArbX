@@ -15,6 +15,7 @@ use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
 use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
+use crate::risk::circuit_breaker::CircuitBreaker;
 use crate::risk::manager::RiskManager;
 use crate::risk::state::RiskState;
 use crate::strategy::base::ArbitrageStrategy;
@@ -26,6 +27,7 @@ pub struct ArbitrageEngine {
     strategy: Box<dyn ArbitrageStrategy>,
     risk_manager: RiskManager,
     risk_state: RiskState,
+    circuit_breaker: CircuitBreaker,
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
     books: HashMap<String, OrderBook>,
@@ -42,6 +44,7 @@ impl ArbitrageEngine {
         strategy: Box<dyn ArbitrageStrategy>,
         risk_manager: RiskManager,
         risk_state: RiskState,
+        circuit_breaker: CircuitBreaker,
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
         reconcile_interval_secs: u64,
@@ -52,6 +55,7 @@ impl ArbitrageEngine {
             strategy,
             risk_manager,
             risk_state,
+            circuit_breaker,
             executor,
             position_manager,
             books: HashMap::new(),
@@ -125,6 +129,7 @@ impl ArbitrageEngine {
                     };
                     let notional = fill.price * fill.quantity;
                     self.risk_state.apply_fill(&fill_key, signed_qty, notional, Decimal::ZERO);
+                    self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
 
                     self.position_manager.apply_fill(&fill).await?;
                     let key = format!("{:?}", fill.venue).to_lowercase();
@@ -215,6 +220,24 @@ impl ArbitrageEngine {
                 .unwrap_or_default();
 
             for mut req in orders {
+                if self.circuit_breaker.is_tripped() {
+                    warn!(
+                        reason = self.circuit_breaker.trip_reason().unwrap_or("unknown"),
+                        "order skipped: circuit breaker tripped"
+                    );
+                    risk_rejected_count += 1;
+                    trade_legs.push(TradeLeg {
+                        venue: req.venue,
+                        instrument: req.instrument.clone(),
+                        side: req.side,
+                        intended_price: req.price.unwrap_or(Decimal::ZERO),
+                        intended_quantity: req.quantity,
+                        order_id: None,
+                        submitted_at: Utc::now(),
+                    });
+                    continue;
+                }
+
                 let inst_key = make_book_key(req.venue, &req.instrument);
                 let order_notional = req.quantity * req.price.unwrap_or(Decimal::ZERO);
                 let fast_verdict =
@@ -276,6 +299,8 @@ impl ArbitrageEngine {
                             qty = %order.quantity,
                             "order submitted"
                         );
+                        self.circuit_breaker.record_success();
+                        self.circuit_breaker.record_order();
                         submitted_count += 1;
                         trade_legs.push(TradeLeg {
                             venue: order.venue,
@@ -289,6 +314,8 @@ impl ArbitrageEngine {
                     }
                     Err(e) => {
                         warn!(error = %e, "order submission failed");
+                        self.circuit_breaker.record_failure();
+                        self.circuit_breaker.record_order();
                         trade_legs.push(TradeLeg {
                             venue: order.venue,
                             instrument: order.instrument.clone(),
