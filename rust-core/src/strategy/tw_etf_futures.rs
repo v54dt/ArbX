@@ -29,15 +29,6 @@ pub struct TwEtfFuturesStrategy {
     pub days_to_expiry: i64,
 }
 
-impl TwEtfFuturesStrategy {
-    fn fair_futures_price(&self, etf_price: Decimal) -> Decimal {
-        let carry = self.cost_of_carry_bps / Decimal::from(10_000)
-            * Decimal::from(self.days_to_expiry)
-            / Decimal::from(365);
-        etf_price * (Decimal::ONE + carry)
-    }
-}
-
 #[async_trait]
 impl ArbitrageStrategy for TwEtfFuturesStrategy {
     async fn evaluate(
@@ -60,11 +51,10 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
         let fut_ask = fut_book.best_ask()?;
 
         let etf_mid = (etf_ask.price + etf_bid.price) / Decimal::TWO;
-        let fair_value = self.fair_futures_price(etf_mid);
-
         let carry_rate = self.cost_of_carry_bps / Decimal::from(10_000)
             * Decimal::from(self.days_to_expiry)
             / Decimal::from(365);
+        let fair_value = etf_mid * (Decimal::ONE + carry_rate);
         let threshold = fair_value * self.min_net_profit_bps / Decimal::from(10_000);
 
         let (fut_side, fut_price, etf_side, etf_price, basis_bps) =
