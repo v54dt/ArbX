@@ -25,6 +25,7 @@ use models::fee::FeeSchedule;
 use models::instrument::{AssetClass, Instrument, InstrumentType};
 use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
 use risk::manager::RiskManager;
+use risk::state::RiskState;
 use strategy::cross_exchange::CrossExchangeStrategy;
 
 use clap::Parser;
@@ -238,6 +239,12 @@ async fn main() -> anyhow::Result<()> {
         }),
     ]);
 
+    let risk_state = RiskState::new(
+        cfg.risk.max_position_size,
+        cfg.risk.max_notional_exposure,
+        cfg.risk.max_daily_loss,
+    );
+
     let venue_cfg = &cfg.venues[idx_b];
     let executor = BinanceOrderExecutor::new(
         parse_market(&venue_cfg.market)?,
@@ -262,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
         feeds,
         Box::new(strategy),
         risk_manager,
+        risk_state,
         executor,
         Box::new(position_manager),
         cfg.engine.reconcile_interval_secs,

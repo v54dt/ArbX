@@ -10,11 +10,13 @@ use smallvec::SmallVec;
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
+use crate::models::market::book_key as make_book_key;
 use crate::models::market::{OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
 use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
 use crate::risk::manager::RiskManager;
+use crate::risk::state::RiskState;
 use crate::strategy::base::ArbitrageStrategy;
 use rust_decimal::Decimal;
 
@@ -23,6 +25,7 @@ pub struct ArbitrageEngine {
     feeds: Vec<Box<dyn MarketDataFeed>>,
     strategy: Box<dyn ArbitrageStrategy>,
     risk_manager: RiskManager,
+    risk_state: RiskState,
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
     books: HashMap<String, OrderBook>,
@@ -33,10 +36,12 @@ pub struct ArbitrageEngine {
 }
 
 impl ArbitrageEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         feeds: Vec<Box<dyn MarketDataFeed>>,
         strategy: Box<dyn ArbitrageStrategy>,
         risk_manager: RiskManager,
+        risk_state: RiskState,
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
         reconcile_interval_secs: u64,
@@ -46,6 +51,7 @@ impl ArbitrageEngine {
             feeds,
             strategy,
             risk_manager,
+            risk_state,
             executor,
             position_manager,
             books: HashMap::new(),
@@ -112,6 +118,14 @@ impl ArbitrageEngine {
                     self.handle_quote(quote).await?;
                 }
                 Some(fill) = fill_rx.recv() => {
+                    let fill_key = make_book_key(fill.venue, &fill.instrument);
+                    let signed_qty = match fill.side {
+                        crate::models::enums::Side::Buy => fill.quantity,
+                        crate::models::enums::Side::Sell => -fill.quantity,
+                    };
+                    let notional = fill.price * fill.quantity;
+                    self.risk_state.apply_fill(&fill_key, signed_qty, notional, Decimal::ZERO);
+
                     self.position_manager.apply_fill(&fill).await?;
                     let key = format!("{:?}", fill.venue).to_lowercase();
                     if let Ok(snapshot) = self.position_manager.get_portfolio().await {
@@ -201,6 +215,34 @@ impl ArbitrageEngine {
                 .unwrap_or_default();
 
             for mut req in orders {
+                let inst_key = make_book_key(req.venue, &req.instrument);
+                let order_notional = req.quantity * req.price.unwrap_or(Decimal::ZERO);
+                let fast_verdict =
+                    self.risk_state
+                        .check_order(&inst_key, req.quantity, order_notional);
+
+                if !fast_verdict.approved {
+                    warn!(
+                        reason = fast_verdict.reason.as_deref().unwrap_or("unknown"),
+                        "order rejected by risk state (O(1))"
+                    );
+                    risk_rejected_count += 1;
+                    trade_legs.push(TradeLeg {
+                        venue: req.venue,
+                        instrument: req.instrument.clone(),
+                        side: req.side,
+                        intended_price: req.price.unwrap_or(Decimal::ZERO),
+                        intended_quantity: req.quantity,
+                        order_id: None,
+                        submitted_at: Utc::now(),
+                    });
+                    continue;
+                }
+
+                if let Some(adj_qty) = fast_verdict.adjusted_qty {
+                    req.quantity = adj_qty;
+                }
+
                 let verdict = self.risk_manager.check_pre_trade(&req, &portfolio);
 
                 if !verdict.approved {
