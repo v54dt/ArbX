@@ -30,4 +30,9 @@ flatbuffers = "25"
 rusteron-client = "0.1"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
+
+[[bench]]
+name = "critical_path"
+harness = false
