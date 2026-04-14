@@ -65,6 +65,7 @@ pub fn record_ws_message(venue: &str) {
     counter!("arbx_ws_messages_received_total", "venue" => venue.to_string()).increment(1);
 }
 
+#[allow(dead_code)]
 pub fn record_ws_private_reconnect(venue: &str) {
     counter!("arbx_ws_private_reconnects_total", "venue" => venue.to_string()).increment(1);
 }
