@@ -299,11 +299,11 @@ mod tests {
         OrderBook {
             venue,
             instrument: instrument.clone(),
-            bids: vec![OrderBookLevel {
+            bids: smallvec::smallvec![OrderBookLevel {
                 price: bid,
                 size: dec!(100),
             }],
-            asks: vec![OrderBookLevel {
+            asks: smallvec::smallvec![OrderBookLevel {
                 price: ask,
                 size: dec!(100),
             }],
