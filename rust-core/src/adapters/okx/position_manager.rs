@@ -12,20 +12,51 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
+// ── Balance deserialization ───────────────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
-struct OkxPosition {
+struct OkxBalanceDetail {
+    ccy: String,
+    #[serde(rename = "cashBal")]
+    cash_bal: String,
+    #[serde(default)]
+    upl: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkxBalanceData {
+    #[serde(rename = "totalEq")]
+    total_eq: String,
+    #[serde(rename = "availEq")]
+    avail_eq: String,
+    details: Vec<OkxBalanceDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OkxBalanceResponse {
+    data: Vec<OkxBalanceData>,
+}
+
+// ── Positions deserialization ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct OkxPositionEntry {
     #[serde(rename = "instId")]
     inst_id: String,
     pos: String,
     #[serde(rename = "avgPx")]
     avg_px: String,
     upl: String,
+    #[serde(rename = "instType")]
+    inst_type: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct OkxPositionResponse {
-    data: Vec<OkxPosition>,
+    data: Vec<OkxPositionEntry>,
 }
+
+// ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct OkxPositionManager {
     rest_client: Option<OkxRestClient>,
@@ -113,52 +144,58 @@ impl OkxPositionManager {
             "okx apply_fill: position updated"
         );
     }
-}
 
-#[async_trait]
-impl PositionManager for OkxPositionManager {
-    async fn get_position(&self, symbol: &str) -> anyhow::Result<Option<Position>> {
-        let position = self.positions.get(symbol).cloned();
-        tracing::info!(symbol, found = position.is_some(), "okx get_position");
-        Ok(position)
-    }
+    // ── Parsing helpers (pub(crate) for unit tests) ───────────────────────────
 
-    async fn get_portfolio(&self) -> anyhow::Result<PortfolioSnapshot> {
-        let positions: Vec<Position> = self.positions.values().cloned().collect();
-        let unrealized_pnl = positions.iter().map(|p| p.unrealized_pnl).sum();
-        let realized_pnl = positions.iter().map(|p| p.realized_pnl).sum();
+    pub(crate) fn parse_balance_response(
+        balance_json: &str,
+        positions_json: &str,
+        venue: Venue,
+    ) -> anyhow::Result<PortfolioSnapshot> {
+        let bal_resp: OkxBalanceResponse = serde_json::from_str(balance_json)
+            .map_err(|e| anyhow::anyhow!("okx balance parse error: {e}"))?;
+        let pos_resp: OkxPositionResponse = serde_json::from_str(positions_json)
+            .map_err(|e| anyhow::anyhow!("okx positions parse error: {e}"))?;
 
-        Ok(PortfolioSnapshot {
-            venue: Venue::Okx,
-            positions,
-            total_equity: Decimal::ZERO,
-            available_balance: Decimal::ZERO,
-            unrealized_pnl,
-            realized_pnl,
-        })
-    }
+        let (total_equity, available_balance, balance_positions) =
+            if let Some(data) = bal_resp.data.into_iter().next() {
+                let total_eq: Decimal = data.total_eq.parse().unwrap_or(Decimal::ZERO);
+                let avail_eq: Decimal = data.avail_eq.parse().unwrap_or(Decimal::ZERO);
 
-    async fn sync_positions(&mut self) -> anyhow::Result<()> {
-        let rest = match &self.rest_client {
-            Some(r) => r,
-            None => {
-                tracing::warn!("okx: no credentials, skipping sync");
-                return Ok(());
-            }
-        };
+                let mut bal_positions = Vec::new();
+                for d in data.details {
+                    let cash: Decimal = d.cash_bal.parse().unwrap_or(Decimal::ZERO);
+                    if cash <= Decimal::ZERO {
+                        continue;
+                    }
+                    let upnl: Decimal = d.upl.parse().unwrap_or(Decimal::ZERO);
+                    bal_positions.push(Position {
+                        venue,
+                        instrument: Instrument {
+                            asset_class: AssetClass::Crypto,
+                            instrument_type: InstrumentType::Spot,
+                            base: d.ccy,
+                            quote: "USDT".into(),
+                            settle_currency: None,
+                            expiry: None,
+                            last_trade_time: None,
+                            settlement_time: None,
+                        },
+                        quantity: cash,
+                        average_cost: Decimal::ZERO,
+                        unrealized_pnl: upnl,
+                        realized_pnl: Decimal::ZERO,
+                        settlement_date: None,
+                    });
+                }
+                (total_eq, avail_eq, bal_positions)
+            } else {
+                (Decimal::ZERO, Decimal::ZERO, Vec::new())
+            };
 
-        let req = RestRequest {
-            method: HttpMethod::Get,
-            path: "/api/v5/account/positions".to_string(),
-            params: HashMap::new(),
-        };
-        let resp = rest.send(req).await?;
-        if resp.status != 200 {
-            anyhow::bail!("okx positions returned {}: {}", resp.status, resp.body);
-        }
-
-        let parsed: OkxPositionResponse = serde_json::from_str(&resp.body)?;
-        for p in parsed.data {
+        // Merge in open derivative positions from /account/positions
+        let mut positions = balance_positions;
+        for p in pos_resp.data {
             let amt: Decimal = p.pos.parse().unwrap_or(Decimal::ZERO);
             if amt == Decimal::ZERO {
                 continue;
@@ -173,34 +210,170 @@ impl PositionManager for OkxPositionManager {
                 (p.inst_id.clone(), "USDT".to_string())
             };
 
-            let key = format!("{}-{}", base, quote);
-            let pos = self.positions.entry(key).or_insert_with(|| Position {
-                venue: Venue::Okx,
+            let instrument_type = if p.inst_type == "SPOT" {
+                InstrumentType::Spot
+            } else {
+                InstrumentType::Swap
+            };
+
+            positions.push(Position {
+                venue,
                 instrument: Instrument {
                     asset_class: AssetClass::Crypto,
-                    instrument_type: InstrumentType::Swap,
-                    base: base.clone(),
-                    quote: quote.clone(),
+                    instrument_type,
+                    base,
+                    quote,
                     settle_currency: Some("USDT".into()),
                     expiry: None,
                     last_trade_time: None,
                     settlement_time: None,
                 },
-                quantity: Decimal::ZERO,
-                average_cost: Decimal::ZERO,
-                unrealized_pnl: Decimal::ZERO,
+                quantity: amt.abs(),
+                average_cost: avg,
+                unrealized_pnl: upnl,
                 realized_pnl: Decimal::ZERO,
                 settlement_date: None,
             });
-            pos.quantity = amt;
-            pos.average_cost = avg;
-            pos.unrealized_pnl = upnl;
         }
 
+        let unrealized_pnl = positions.iter().map(|p| p.unrealized_pnl).sum();
+
+        Ok(PortfolioSnapshot {
+            venue,
+            positions,
+            total_equity,
+            available_balance,
+            unrealized_pnl,
+            realized_pnl: Decimal::ZERO,
+        })
+    }
+
+    fn diff_check(&self, remote: &PortfolioSnapshot) {
+        for remote_pos in &remote.positions {
+            let key = Self::position_key(&remote_pos.instrument);
+            match self.positions.get(&key) {
+                None => {
+                    tracing::warn!(
+                        key,
+                        remote_qty = %remote_pos.quantity,
+                        "position on exchange not tracked locally"
+                    );
+                }
+                Some(local_pos) => {
+                    let diff = (remote_pos.quantity - local_pos.quantity).abs();
+                    let threshold = local_pos.quantity * rust_decimal_macros::dec!(0.01);
+                    if diff > threshold {
+                        tracing::warn!(
+                            key,
+                            local_qty = %local_pos.quantity,
+                            remote_qty = %remote_pos.quantity,
+                            diff = %diff,
+                            "position mismatch detected"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn local_snapshot(&self) -> PortfolioSnapshot {
+        let positions: Vec<Position> = self.positions.values().cloned().collect();
+        let unrealized_pnl = positions.iter().map(|p| p.unrealized_pnl).sum();
+        let realized_pnl = positions.iter().map(|p| p.realized_pnl).sum();
+        PortfolioSnapshot {
+            venue: Venue::Okx,
+            positions,
+            total_equity: Decimal::ZERO,
+            available_balance: Decimal::ZERO,
+            unrealized_pnl,
+            realized_pnl,
+        }
+    }
+}
+
+#[async_trait]
+impl PositionManager for OkxPositionManager {
+    async fn get_position(&self, symbol: &str) -> anyhow::Result<Option<Position>> {
+        let position = self.positions.get(symbol).cloned();
+        tracing::info!(symbol, found = position.is_some(), "okx get_position");
+        Ok(position)
+    }
+
+    async fn get_portfolio(&self) -> anyhow::Result<PortfolioSnapshot> {
+        let rest = match &self.rest_client {
+            Some(r) => r,
+            None => {
+                tracing::warn!("okx: no credentials, returning local state");
+                return Ok(self.local_snapshot());
+            }
+        };
+
+        let bal_req = RestRequest {
+            method: HttpMethod::Get,
+            path: "/api/v5/account/balance".to_string(),
+            params: HashMap::new(),
+        };
+        let pos_req = RestRequest {
+            method: HttpMethod::Get,
+            path: "/api/v5/account/positions".to_string(),
+            params: HashMap::new(),
+        };
+
+        let bal_resp = match rest.send(bal_req).await {
+            Err(e) => {
+                tracing::warn!(error = %e, "okx get_portfolio balance call failed, returning local state");
+                return Ok(self.local_snapshot());
+            }
+            Ok(r) => r,
+        };
+        if bal_resp.status != 200 {
+            tracing::warn!(
+                status = bal_resp.status,
+                "okx balance returned non-200, returning local state"
+            );
+            return Ok(self.local_snapshot());
+        }
+
+        let pos_resp = match rest.send(pos_req).await {
+            Err(e) => {
+                tracing::warn!(error = %e, "okx get_portfolio positions call failed, returning local state");
+                return Ok(self.local_snapshot());
+            }
+            Ok(r) => r,
+        };
+        if pos_resp.status != 200 {
+            tracing::warn!(
+                status = pos_resp.status,
+                "okx positions returned non-200, returning local state"
+            );
+            return Ok(self.local_snapshot());
+        }
+
+        let snapshot = Self::parse_balance_response(&bal_resp.body, &pos_resp.body, Venue::Okx)?;
         tracing::info!(
-            positions = self.positions.len(),
-            "okx sync_positions completed"
+            num_positions = snapshot.positions.len(),
+            total_equity = %snapshot.total_equity,
+            "okx get_portfolio"
         );
+        Ok(snapshot)
+    }
+
+    async fn sync_positions(&mut self) -> anyhow::Result<()> {
+        if self.rest_client.is_none() {
+            tracing::warn!("okx: no credentials, skipping sync");
+            return Ok(());
+        }
+
+        match self.get_portfolio().await {
+            Err(e) => {
+                tracing::warn!(error = %e, "okx sync_positions failed to fetch remote state");
+            }
+            Ok(remote) => {
+                self.diff_check(&remote);
+            }
+        }
+
+        tracing::info!(venue = ?Venue::Okx, "position reconciliation complete");
         Ok(())
     }
 
@@ -303,5 +476,99 @@ mod tests {
         let snap = pm.get_portfolio().await.unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);
+    }
+
+    // ── New tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn get_portfolio_parses_spot_balance() {
+        let balance_json = r#"{
+            "data": [{
+                "totalEq": "2000.5",
+                "availEq": "1500.0",
+                "details": [
+                    {"ccy": "BTC", "cashBal": "0.05", "frozenBal": "0.0", "upl": "10.0"},
+                    {"ccy": "USDT", "cashBal": "1000.0", "frozenBal": "0.0", "upl": "0.0"},
+                    {"ccy": "ETH", "cashBal": "0.0", "frozenBal": "0.0", "upl": "0.0"}
+                ]
+            }]
+        }"#;
+        let positions_json = r#"{"data": []}"#;
+
+        let snap =
+            OkxPositionManager::parse_balance_response(balance_json, positions_json, Venue::Okx)
+                .unwrap();
+
+        // ETH with zero cashBal filtered out
+        assert_eq!(snap.positions.len(), 2);
+        assert_eq!(snap.total_equity, dec!(2000.5));
+        assert_eq!(snap.available_balance, dec!(1500));
+
+        let btc = snap
+            .positions
+            .iter()
+            .find(|p| p.instrument.base == "BTC")
+            .unwrap();
+        assert_eq!(btc.quantity, dec!(0.05));
+        assert_eq!(btc.unrealized_pnl, dec!(10));
+    }
+
+    #[tokio::test]
+    async fn sync_positions_logs_mismatch_when_diff_exceeds_threshold() {
+        // Local: 1.0 BTC; diff_check against remote 1.5 BTC — >1%, should warn but not error.
+        let mut pm = OkxPositionManager::new("", "", "").unwrap();
+        let inst = test_instrument();
+        pm.apply_fill_inner(&make_fill(&inst, Side::Buy, dec!(50000), dec!(1)));
+
+        let remote_snap = PortfolioSnapshot {
+            venue: Venue::Okx,
+            positions: vec![Position {
+                venue: Venue::Okx,
+                instrument: inst.clone(),
+                quantity: dec!(1.5),
+                average_cost: dec!(50000),
+                unrealized_pnl: Decimal::ZERO,
+                realized_pnl: Decimal::ZERO,
+                settlement_date: None,
+            }],
+            total_equity: dec!(75000),
+            available_balance: dec!(10000),
+            unrealized_pnl: Decimal::ZERO,
+            realized_pnl: Decimal::ZERO,
+        };
+        // diff_check should not panic
+        pm.diff_check(&remote_snap);
+
+        // full sync with no credentials still returns Ok
+        let result = pm.sync_positions().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn position_key_format_consistent() {
+        let inst = Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "SOL".to_string(),
+            quote: "USDT".to_string(),
+            settle_currency: None,
+            expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
+        };
+        assert_eq!(OkxPositionManager::position_key(&inst), "SOL-USDT");
+    }
+
+    #[test]
+    fn empty_portfolio_returns_valid_snapshot() {
+        let balance_json = r#"{"data": []}"#;
+        let positions_json = r#"{"data": []}"#;
+        let snap =
+            OkxPositionManager::parse_balance_response(balance_json, positions_json, Venue::Okx)
+                .unwrap();
+        assert!(snap.positions.is_empty());
+        assert_eq!(snap.total_equity, Decimal::ZERO);
+        assert_eq!(snap.available_balance, Decimal::ZERO);
+        assert_eq!(snap.unrealized_pnl, Decimal::ZERO);
     }
 }
