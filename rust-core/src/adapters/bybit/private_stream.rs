@@ -157,45 +157,98 @@ impl BybitPrivateStream {
 #[async_trait]
 impl PrivateStream for BybitPrivateStream {
     async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
-        let (ws_stream, _) = connect_async(WS_URL).await?;
-        info!(url = WS_URL, "connected to Bybit private WebSocket");
-        crate::metrics::set_ws_private_connected("bybit", true);
-
         let (fill_tx, fill_rx) = mpsc::unbounded_channel();
         let (order_tx, order_rx) = mpsc::unbounded_channel();
 
-        let auth_msg = Self::build_auth_msg(&self.api_key, &self.api_secret);
-        let subscribe_msg =
-            serde_json::json!({"op": "subscribe", "args": ["execution"]}).to_string();
-
-        let (mut write, mut read) = ws_stream.split();
-
-        use futures_util::SinkExt;
-        write
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                auth_msg.into(),
-            ))
-            .await?;
+        let api_key = self.api_key.clone();
+        let api_secret = self.api_secret.clone();
 
         let ws_task = tokio::spawn(async move {
-            use futures_util::SinkExt;
-            let mut subscribed = false;
-            let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(20));
-            ping_interval.tick().await;
+            let mut backoff = std::time::Duration::from_secs(1);
+            let max_backoff = std::time::Duration::from_secs(60);
+            let mut first_connect = true;
             loop {
-                tokio::select! {
-                    _ = ping_interval.tick() => {
-                        let ping = tokio_tungstenite::tungstenite::Message::Text(
-                            r#"{"op":"ping"}"#.into(),
-                        );
-                        if let Err(e) = write.send(ping).await {
-                            warn!(error = %e, "Bybit private WS ping failed");
-                            break;
-                        }
-                        continue;
+                match run_bybit_stream(&api_key, &api_secret, &fill_tx, &order_tx, first_connect)
+                    .await
+                {
+                    Ok(()) => {
+                        info!("Bybit private stream ended cleanly, exiting reconnect loop");
+                        crate::metrics::set_ws_private_connected("bybit", false);
+                        break;
                     }
-                    maybe_msg = read.next() => {
-                        let Some(msg) = maybe_msg else { break };
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "Bybit private WS disconnected, reconnecting"
+                        );
+                        crate::metrics::set_ws_private_connected("bybit", false);
+                    }
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                first_connect = false;
+            }
+        });
+        self.ws_task = Some(ws_task);
+
+        Ok(PrivateStreamReceivers {
+            fills: fill_rx,
+            order_updates: order_rx,
+        })
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if let Some(task) = self.ws_task.take() {
+            task.abort();
+        }
+        info!("disconnected from Bybit private WebSocket");
+        Ok(())
+    }
+}
+
+async fn run_bybit_stream(
+    api_key: &str,
+    api_secret: &str,
+    fill_tx: &mpsc::UnboundedSender<Fill>,
+    order_tx: &mpsc::UnboundedSender<OrderUpdate>,
+    first_connect: bool,
+) -> anyhow::Result<()> {
+    use futures_util::SinkExt;
+
+    let (ws_stream, _) = connect_async(WS_URL).await?;
+    info!(url = WS_URL, "connected to Bybit private WebSocket");
+    if !first_connect {
+        crate::metrics::record_ws_private_reconnect("bybit");
+    }
+    crate::metrics::set_ws_private_connected("bybit", true);
+
+    let auth_msg = BybitPrivateStream::build_auth_msg(api_key, api_secret);
+    let subscribe_msg = serde_json::json!({"op": "subscribe", "args": ["execution"]}).to_string();
+
+    let (mut write, mut read) = ws_stream.split();
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            auth_msg.into(),
+        ))
+        .await?;
+
+    let mut subscribed = false;
+    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(20));
+    ping_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                let ping = tokio_tungstenite::tungstenite::Message::Text(
+                    r#"{"op":"ping"}"#.into(),
+                );
+                write.send(ping).await?;
+            }
+            maybe_msg = read.next() => {
+                let Some(msg) = maybe_msg else {
+                    anyhow::bail!("stream ended");
+                };
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                         crate::metrics::record_ws_private_message("bybit");
@@ -211,12 +264,11 @@ impl PrivateStream for BybitPrivateStream {
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
                             if op == Some("auth") && success {
-                                use futures_util::SinkExt;
-                                let _ = write
+                                write
                                     .send(tokio_tungstenite::tungstenite::Message::Text(
                                         subscribe_msg.clone().into(),
                                     ))
-                                    .await;
+                                    .await?;
                                 subscribed = true;
                                 info!(
                                     "Bybit private stream: authenticated and subscribed to execution"
@@ -243,32 +295,11 @@ impl PrivateStream for BybitPrivateStream {
                             }
                         }
                     }
-                    Err(e) => {
-                        error!(error = %e, "Bybit private WebSocket error");
-                        break;
-                    }
+                    Err(e) => anyhow::bail!("WS error: {}", e),
                     _ => {}
                 }
-                    }
-                }
             }
-            warn!("Bybit private WebSocket stream ended");
-            crate::metrics::set_ws_private_connected("bybit", false);
-        });
-        self.ws_task = Some(ws_task);
-
-        Ok(PrivateStreamReceivers {
-            fills: fill_rx,
-            order_updates: order_rx,
-        })
-    }
-
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if let Some(task) = self.ws_task.take() {
-            task.abort();
         }
-        info!("disconnected from Bybit private WebSocket");
-        Ok(())
     }
 }
 
