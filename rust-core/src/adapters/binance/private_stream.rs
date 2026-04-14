@@ -18,14 +18,11 @@ use crate::models::order::{Fill, OrderUpdate};
 
 pub struct BinancePrivateStream {
     market: BinanceMarket,
-    rest_client: BinanceRestClient,
     rest_base_url: String,
     api_key: String,
     api_secret: String,
-    listen_key: Option<String>,
     ws_base_url: String,
     ws_task: Option<JoinHandle<()>>,
-    keepalive_task: Option<JoinHandle<()>>,
 }
 
 impl BinancePrivateStream {
@@ -40,47 +37,14 @@ impl BinancePrivateStream {
             BinanceMarket::UsdtFutures => "wss://fstream.binance.com/ws/".to_string(),
             BinanceMarket::CoinFutures => "wss://dstream.binance.com/ws/".to_string(),
         };
-        let rest_client = BinanceRestClient::new(rest_base_url, api_key, api_secret)?;
         Ok(Self {
             market,
-            rest_client,
             rest_base_url: rest_base_url.to_string(),
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
-            listen_key: None,
             ws_base_url,
             ws_task: None,
-            keepalive_task: None,
         })
-    }
-
-    fn listen_key_path(&self) -> &'static str {
-        match self.market {
-            BinanceMarket::Spot => "/api/v3/userDataStream",
-            BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => "/fapi/v1/listenKey",
-        }
-    }
-
-    async fn create_listen_key(&self) -> anyhow::Result<String> {
-        let request = RestRequest {
-            method: HttpMethod::Post,
-            path: self.listen_key_path().to_string(),
-            params: HashMap::new(),
-        };
-        let response = self.rest_client.send(request).await?;
-        if response.status != 200 {
-            anyhow::bail!(
-                "failed to create listenKey: status={} body={}",
-                response.status,
-                response.body
-            );
-        }
-        let json: serde_json::Value = serde_json::from_str(&response.body)?;
-        let key = json["listenKey"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing listenKey in response"))?
-            .to_string();
-        Ok(key)
     }
 
     fn parse_execution_report(msg: &serde_json::Value) -> Option<(Fill, OrderUpdate)> {
@@ -157,67 +121,52 @@ impl BinancePrivateStream {
 #[async_trait]
 impl PrivateStream for BinancePrivateStream {
     async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
-        let listen_key = self.create_listen_key().await?;
-        let url = format!("{}{}", self.ws_base_url, listen_key);
-
-        let (ws_stream, _) = connect_async(&url).await?;
-        info!(url = url.as_str(), "connected to Binance private WebSocket");
-        crate::metrics::set_ws_private_connected("binance", true);
-
-        self.listen_key = Some(listen_key.clone());
-
         let (fill_tx, fill_rx) = mpsc::unbounded_channel();
         let (order_tx, order_rx) = mpsc::unbounded_channel();
 
-        let (_, mut read) = ws_stream.split();
+        let market = self.market;
+        let rest_base_url = self.rest_base_url.clone();
+        let api_key = self.api_key.clone();
+        let api_secret = self.api_secret.clone();
+        let ws_base_url = self.ws_base_url.clone();
 
         let ws_task = tokio::spawn(async move {
-            while let Some(msg) = read.next().await {
-                match msg {
-                    Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                        crate::metrics::record_ws_private_message("binance");
-                        let text = text.to_string();
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-                            && let Some((fill, update)) =
-                                BinancePrivateStream::parse_execution_report(&json)
-                        {
-                            let _ = fill_tx.send(fill);
-                            let _ = order_tx.send(update);
-                        }
-                    }
-                    Err(e) => {
-                        error!(error = %e, "Binance private WebSocket error");
+            let mut backoff = std::time::Duration::from_secs(1);
+            let max_backoff = std::time::Duration::from_secs(60);
+            let mut first_connect = true;
+            loop {
+                match run_binance_stream(
+                    market,
+                    &rest_base_url,
+                    &api_key,
+                    &api_secret,
+                    &ws_base_url,
+                    &fill_tx,
+                    &order_tx,
+                    first_connect,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        info!("Binance private stream ended cleanly, exiting reconnect loop");
+                        crate::metrics::set_ws_private_connected("binance", false);
                         break;
                     }
-                    _ => {}
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "Binance private WS disconnected, reconnecting (will recreate listenKey)"
+                        );
+                        crate::metrics::set_ws_private_connected("binance", false);
+                    }
                 }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                first_connect = false;
             }
-            crate::metrics::set_ws_private_connected("binance", false);
         });
         self.ws_task = Some(ws_task);
-
-        let keepalive_path = self.listen_key_path().to_string();
-        let keepalive_key = listen_key;
-        let keepalive_rest =
-            BinanceRestClient::new(&self.rest_base_url, &self.api_key, &self.api_secret)?;
-        let keepalive_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(25 * 60));
-            interval.tick().await;
-            loop {
-                interval.tick().await;
-                let mut params = HashMap::new();
-                params.insert("listenKey".to_string(), keepalive_key.clone());
-                let request = RestRequest {
-                    method: HttpMethod::Put,
-                    path: keepalive_path.clone(),
-                    params,
-                };
-                if let Err(e) = keepalive_rest.send(request).await {
-                    warn!(error = %e, "listenKey keepalive failed");
-                }
-            }
-        });
-        self.keepalive_task = Some(keepalive_task);
 
         Ok(PrivateStreamReceivers {
             fills: fill_rx,
@@ -229,12 +178,101 @@ impl PrivateStream for BinancePrivateStream {
         if let Some(task) = self.ws_task.take() {
             task.abort();
         }
-        if let Some(task) = self.keepalive_task.take() {
-            task.abort();
-        }
-        self.listen_key = None;
         info!("disconnected from Binance private WebSocket");
         Ok(())
+    }
+}
+
+async fn run_binance_stream(
+    market: BinanceMarket,
+    rest_base_url: &str,
+    api_key: &str,
+    api_secret: &str,
+    ws_base_url: &str,
+    fill_tx: &mpsc::UnboundedSender<Fill>,
+    order_tx: &mpsc::UnboundedSender<OrderUpdate>,
+    first_connect: bool,
+) -> anyhow::Result<()> {
+    let rest = BinanceRestClient::new(rest_base_url, api_key, api_secret)?;
+    let listen_key_path = match market {
+        BinanceMarket::Spot => "/api/v3/userDataStream",
+        BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => "/fapi/v1/listenKey",
+    };
+
+    let create_req = RestRequest {
+        method: HttpMethod::Post,
+        path: listen_key_path.to_string(),
+        params: HashMap::new(),
+    };
+    let resp = rest.send(create_req).await?;
+    if resp.status != 200 {
+        anyhow::bail!(
+            "create listenKey failed: status={} body={}",
+            resp.status,
+            resp.body
+        );
+    }
+    let json: serde_json::Value = serde_json::from_str(&resp.body)?;
+    let listen_key = json["listenKey"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing listenKey in response"))?
+        .to_string();
+
+    let url = format!("{}{}", ws_base_url, listen_key);
+    let (ws_stream, _) = connect_async(&url).await?;
+    info!(url = url.as_str(), "connected to Binance private WebSocket");
+    if !first_connect {
+        crate::metrics::record_ws_private_reconnect("binance");
+    }
+    crate::metrics::set_ws_private_connected("binance", true);
+
+    let keepalive_path = listen_key_path.to_string();
+    let keepalive_key = listen_key.clone();
+    let keepalive_rest = BinanceRestClient::new(rest_base_url, api_key, api_secret)?;
+    let keepalive_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(25 * 60));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let mut params = HashMap::new();
+            params.insert("listenKey".to_string(), keepalive_key.clone());
+            let request = RestRequest {
+                method: HttpMethod::Put,
+                path: keepalive_path.clone(),
+                params,
+            };
+            if let Err(e) = keepalive_rest.send(request).await {
+                warn!(error = %e, "listenKey keepalive failed");
+            }
+        }
+    });
+    let _keepalive_guard = AbortOnDrop(keepalive_task);
+
+    let (_, mut read) = ws_stream.split();
+    while let Some(msg) = read.next().await {
+        match msg {
+            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                crate::metrics::record_ws_private_message("binance");
+                let text = text.to_string();
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                    && let Some((fill, update)) =
+                        BinancePrivateStream::parse_execution_report(&json)
+                {
+                    let _ = fill_tx.send(fill);
+                    let _ = order_tx.send(update);
+                }
+            }
+            Err(e) => anyhow::bail!("WS error: {}", e),
+            _ => {}
+        }
+    }
+    anyhow::bail!("stream ended");
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
