@@ -213,11 +213,11 @@ mod tests {
         OrderBook {
             venue,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel {
+            bids: smallvec::smallvec![OrderBookLevel {
                 price: bid,
                 size: bid_size,
             }],
-            asks: vec![OrderBookLevel {
+            asks: smallvec::smallvec![OrderBookLevel {
                 price: ask,
                 size: ask_size,
             }],
@@ -231,11 +231,11 @@ mod tests {
         OrderBook {
             venue,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel {
+            bids: smallvec::smallvec![OrderBookLevel {
                 price: bid,
                 size: dec!(1),
             }],
-            asks: vec![OrderBookLevel {
+            asks: smallvec::smallvec![OrderBookLevel {
                 price: ask,
                 size: dec!(1),
             }],
@@ -643,7 +643,7 @@ mod tests {
         let buy_book = OrderBook {
             venue: Venue::Binance,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel {
+            bids: smallvec::smallvec![OrderBookLevel {
                 price: dec!(99),
                 size: dec!(5),
             }],
@@ -681,7 +681,7 @@ mod tests {
                     size: dec!(1),
                 },
             ],
-            asks: vec![OrderBookLevel {
+            asks: smallvec::smallvec![OrderBookLevel {
                 price: dec!(115),
                 size: dec!(5),
             }],
