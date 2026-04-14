@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::adapters::binance::market_data::BinanceMarket;
 use crate::adapters::binance::rest_client::BinanceRestClient;
@@ -183,6 +183,7 @@ impl PrivateStream for BinancePrivateStream {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_binance_stream(
     market: BinanceMarket,
     rest_base_url: &str,
