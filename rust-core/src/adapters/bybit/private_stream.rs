@@ -159,6 +159,7 @@ impl PrivateStream for BybitPrivateStream {
     async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
         let (ws_stream, _) = connect_async(WS_URL).await?;
         info!(url = WS_URL, "connected to Bybit private WebSocket");
+        crate::metrics::set_ws_private_connected("bybit", true);
 
         let (fill_tx, fill_rx) = mpsc::unbounded_channel();
         let (order_tx, order_rx) = mpsc::unbounded_channel();
@@ -181,6 +182,7 @@ impl PrivateStream for BybitPrivateStream {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                        crate::metrics::record_ws_private_message("bybit");
                         let text = text.to_string();
                         let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
                             continue;
@@ -233,6 +235,7 @@ impl PrivateStream for BybitPrivateStream {
                 }
             }
             warn!("Bybit private WebSocket stream ended");
+            crate::metrics::set_ws_private_connected("bybit", false);
         });
         self.ws_task = Some(ws_task);
 
