@@ -191,8 +191,8 @@ fn bench_bookmap_insert_lookup(c: &mut Criterion) {
     c.bench_function("bookmap_insert_lookup", |b| {
         b.iter(|| {
             let mut books = BookMap::default();
-            books.insert(black_box(key.clone()), black_box(book.clone()));
-            books.get(&key).is_some()
+            books.insert(black_box(key), black_box(book.clone()));
+            books.contains_key(&key)
         })
     });
 }
