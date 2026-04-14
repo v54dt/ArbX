@@ -48,7 +48,9 @@ use risk::state::RiskState;
 use strategy::base::ArbitrageStrategy;
 use strategy::cross_exchange::CrossExchangeStrategy;
 use strategy::ewma_spread::EwmaSpreadStrategy;
+use strategy::funding_rate::FundingRateStrategy;
 use strategy::multi_pair_cross_exchange::{MultiPairCrossExchangeStrategy, PairConfig};
+use strategy::tw_etf_futures::TwEtfFuturesStrategy;
 
 use clap::Parser;
 use config::{InstrumentConfig, VenueConfig};
@@ -690,6 +692,58 @@ async fn main() -> anyhow::Result<()> {
                 "strategy.name=triangular_arb is not yet configurable via YAML; \
                  TriangleCycle must be constructed in code"
             );
+        }
+        "funding_rate" => {
+            let min_funding_rate_bps = cfg
+                .strategy
+                .funding_min_bps
+                .unwrap_or(cfg.strategy.min_net_profit_bps);
+            tracing::info!(
+                venue = ?venue_a,
+                %min_funding_rate_bps,
+                "using FundingRateStrategy (perp = instrument_a, spot = instrument_b)"
+            );
+            Box::new(FundingRateStrategy {
+                venue: venue_a,
+                instrument_perp: instrument_a.clone(),
+                instrument_spot: instrument_b.clone(),
+                min_funding_rate_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_perp: fee_a.clone(),
+                fee_spot: fee_b.clone(),
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            })
+        }
+        "tw_etf_futures" => {
+            let hedge_ratio = cfg
+                .strategy
+                .tw_hedge_ratio
+                .unwrap_or(rust_decimal_macros::dec!(1));
+            let cost_of_carry_bps = cfg
+                .strategy
+                .tw_cost_of_carry_bps
+                .unwrap_or(rust_decimal_macros::dec!(0));
+            let days_to_expiry = cfg.strategy.tw_days_to_expiry.unwrap_or(30);
+            tracing::info!(
+                venue = ?venue_a,
+                %hedge_ratio,
+                %cost_of_carry_bps,
+                days_to_expiry,
+                "using TwEtfFuturesStrategy (etf = instrument_a, futures = instrument_b)"
+            );
+            Box::new(TwEtfFuturesStrategy {
+                venue: venue_a,
+                etf_instrument: instrument_a.clone(),
+                futures_instrument: instrument_b.clone(),
+                hedge_ratio,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_etf: fee_a.clone(),
+                fee_futures: fee_b.clone(),
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                cost_of_carry_bps,
+                days_to_expiry,
+            })
         }
         other => anyhow::bail!("unknown strategy.name: {other}"),
     };
