@@ -212,11 +212,17 @@ impl MarketDataFeed for BinanceMarketData {
             let max_backoff = Duration::from_secs(60);
             let mut ws_write_rx = ws_write_rx;
 
+            let mut first_connect = true;
             loop {
                 match connect_async(&url).await {
                     Ok((ws_stream, _)) => {
                         backoff = Duration::from_secs(1);
                         info!(url = url.as_str(), "connected to Binance WebSocket");
+                        if !first_connect {
+                            crate::metrics::record_ws_reconnect("binance");
+                        }
+                        first_connect = false;
+                        crate::metrics::set_ws_connected("binance", true);
                         let (mut write, mut read) = ws_stream.split();
 
                         'msg: loop {
@@ -228,6 +234,7 @@ impl MarketDataFeed for BinanceMarketData {
                                             break 'msg;
                                         }
                                         Ok(msg) => {
+                                            crate::metrics::record_ws_message("binance");
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                                                 let text = text.to_string();
                                                 if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -283,9 +290,11 @@ impl MarketDataFeed for BinanceMarketData {
                             }
                         }
                         info!("Binance WS disconnected, reconnecting");
+                        crate::metrics::set_ws_connected("binance", false);
                     }
                     Err(e) => {
                         warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "Binance WS connect failed");
+                        crate::metrics::set_ws_connected("binance", false);
                     }
                 }
                 tokio::time::sleep(backoff).await;
