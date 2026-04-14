@@ -89,12 +89,15 @@ pub struct StrategyConfig {
     pub max_book_depth: usize,
     /// EwmaSpreadStrategy: EWMA smoothing factor α (0 < α < 1; default 0.05)
     #[serde(default)]
+    #[allow(dead_code)]
     pub ewma_alpha: Option<Decimal>,
     /// EwmaSpreadStrategy: sigma threshold for entry (default 2.0)
     #[serde(default)]
+    #[allow(dead_code)]
     pub ewma_entry_sigma: Option<Decimal>,
     /// EwmaSpreadStrategy: minimum samples before trading (default 60)
     #[serde(default)]
+    #[allow(dead_code)]
     pub ewma_min_samples: Option<u32>,
 }
 
