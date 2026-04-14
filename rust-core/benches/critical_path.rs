@@ -168,6 +168,35 @@ fn bench_book_key(c: &mut Criterion) {
     });
 }
 
+fn bench_orderbook_mid_price(c: &mut Criterion) {
+    let inst = make_instrument(InstrumentType::Spot);
+    let book = make_orderbook(Venue::Binance, &inst, dec!(50000), dec!(50010));
+    c.bench_function("orderbook_mid_price", |b| {
+        b.iter(|| black_box(&book).mid_price())
+    });
+}
+
+fn bench_orderbook_spread_bps(c: &mut Criterion) {
+    let inst = make_instrument(InstrumentType::Spot);
+    let book = make_orderbook(Venue::Binance, &inst, dec!(50000), dec!(50010));
+    c.bench_function("orderbook_spread_bps", |b| {
+        b.iter(|| black_box(&book).spread_bps())
+    });
+}
+
+fn bench_bookmap_insert_lookup(c: &mut Criterion) {
+    let inst = make_instrument(InstrumentType::Spot);
+    let book = make_orderbook(Venue::Binance, &inst, dec!(50000), dec!(50010));
+    let key = book_key(Venue::Binance, &inst);
+    c.bench_function("bookmap_insert_lookup", |b| {
+        b.iter(|| {
+            let mut books = BookMap::default();
+            books.insert(black_box(key), black_box(book.clone()));
+            books.contains_key(&key)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_strategy_evaluate,
@@ -175,5 +204,8 @@ criterion_group!(
     bench_flatbuf_encode_quote,
     bench_flatbuf_decode_quote,
     bench_book_key,
+    bench_orderbook_mid_price,
+    bench_orderbook_spread_bps,
+    bench_bookmap_insert_lookup,
 );
 criterion_main!(benches);

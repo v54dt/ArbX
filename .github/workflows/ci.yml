@@ -63,3 +63,53 @@ jobs:
           rustup default ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
+
+  bench:
+    name: cargo bench (PR vs main)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq uuid-dev libbsd-dev
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component rustfmt
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Checkout merge-base of main
+        run: |
+          PR_HEAD=$(git rev-parse HEAD)
+          BASE=$(git merge-base origin/main HEAD)
+          echo "PR_HEAD=$PR_HEAD" >> $GITHUB_ENV
+          echo "BASE=$BASE" >> $GITHUB_ENV
+          echo "Baseline commit: $BASE"
+          echo "PR head commit: $PR_HEAD"
+
+      - name: Bench baseline (merge-base of main)
+        run: |
+          git checkout $BASE
+          cargo bench --bench critical_path -- --save-baseline main --warm-up-time 1 --measurement-time 3 --sample-size 10 2>&1 | tee /tmp/bench-main.txt
+
+      - name: Bench PR head (compared to baseline)
+        run: |
+          git checkout $PR_HEAD
+          cargo bench --bench critical_path -- --baseline main --warm-up-time 1 --measurement-time 3 --sample-size 10 2>&1 | tee /tmp/bench-pr.txt
+
+      - name: Summarize result
+        run: |
+          echo "### Benchmark: PR vs main baseline" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "(time:|change:|Performance has|No change)" /tmp/bench-pr.txt | head -80 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload criterion reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: criterion-report
+          path: rust-core/target/criterion/
+          retention-days: 14
