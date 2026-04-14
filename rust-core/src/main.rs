@@ -64,6 +64,10 @@ struct Cli {
 
     #[arg(long)]
     log_level: Option<String>,
+
+    /// Run offline backtest over the given quote CSV and exit.
+    #[arg(long, value_name = "CSV")]
+    backtest: Option<String>,
 }
 
 fn parse_venue(name: &str) -> anyhow::Result<Venue> {
@@ -380,6 +384,96 @@ async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Re
     }
 }
 
+async fn run_backtest_mode(csv_path: &str, cfg: &config::AppConfig) -> anyhow::Result<()> {
+    use backtest::data_feed::HistoricalDataFeed;
+    use backtest::engine::run_backtest;
+
+    if cfg.strategy.name != "cross_exchange" {
+        anyhow::bail!(
+            "backtest mode only supports strategy.name=cross_exchange today; got {}",
+            cfg.strategy.name
+        );
+    }
+
+    tracing::info!(csv = csv_path, "loading historical quotes");
+    let feed = HistoricalDataFeed::from_csv(csv_path)?;
+
+    let venue_a = parse_venue(&cfg.venues[0].name)?;
+    let venue_b = parse_venue(&cfg.venues[1 % cfg.venues.len()].name)?;
+    let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
+    let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
+
+    let strategy = Box::new(CrossExchangeStrategy {
+        venue_a,
+        venue_b,
+        instrument_a,
+        instrument_b,
+        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+        max_quantity: cfg.strategy.max_quantity,
+        fee_a: FeeSchedule::new(
+            venue_a,
+            cfg.venues[0]
+                .fee_maker_override
+                .unwrap_or(rust_decimal_macros::dec!(0.001)),
+            cfg.venues[0]
+                .fee_taker_override
+                .unwrap_or(rust_decimal_macros::dec!(0.001)),
+        ),
+        fee_b: FeeSchedule::new(
+            venue_b,
+            cfg.venues[1 % cfg.venues.len()]
+                .fee_maker_override
+                .unwrap_or(rust_decimal_macros::dec!(0.001)),
+            cfg.venues[1 % cfg.venues.len()]
+                .fee_taker_override
+                .unwrap_or(rust_decimal_macros::dec!(0.001)),
+        ),
+        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+        tick_size_a: cfg
+            .strategy
+            .tick_size_a
+            .unwrap_or(rust_decimal_macros::dec!(0.01)),
+        tick_size_b: cfg
+            .strategy
+            .tick_size_b
+            .unwrap_or(rust_decimal_macros::dec!(0.01)),
+        lot_size_a: cfg
+            .strategy
+            .lot_size_a
+            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+        lot_size_b: cfg
+            .strategy
+            .lot_size_b
+            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+        max_book_depth: cfg.strategy.max_book_depth,
+    });
+
+    let result = run_backtest(
+        vec![Box::new(feed)],
+        strategy,
+        config::RiskConfig {
+            max_position_size: cfg.risk.max_position_size,
+            max_daily_loss: cfg.risk.max_daily_loss,
+            max_notional_exposure: cfg.risk.max_notional_exposure,
+            circuit_breaker: config::CircuitBreakerConfig {
+                max_drawdown: cfg.risk.circuit_breaker.max_drawdown,
+                max_orders_per_minute: cfg.risk.circuit_breaker.max_orders_per_minute,
+                max_consecutive_failures: cfg.risk.circuit_breaker.max_consecutive_failures,
+            },
+        },
+    )
+    .await?;
+
+    println!("─── Backtest result ───");
+    println!("total_trades:      {}", result.total_trades);
+    println!("profitable_trades: {}", result.profitable_trades);
+    println!("total_pnl:         {}", result.total_pnl);
+    println!("max_drawdown:      {}", result.max_drawdown);
+    println!("sharpe_ratio:      {:.4}", result.sharpe_ratio);
+    println!("duration_ms:       {}", result.duration_ms);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -432,6 +526,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     metrics::setup_metrics_server(9090);
+
+    if let Some(csv_path) = cli.backtest.as_ref() {
+        return run_backtest_mode(csv_path, &cfg).await;
+    }
 
     // Pin main thread to a dedicated core to reduce OS context-switch jitter.
     if let Some(cores) = core_affinity::get_core_ids() {
