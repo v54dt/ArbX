@@ -35,11 +35,11 @@ fn make_orderbook(venue: Venue, instrument: &Instrument, bid: Decimal, ask: Deci
     OrderBook {
         venue,
         instrument: instrument.clone(),
-        bids: vec![OrderBookLevel {
+        bids: smallvec::smallvec![OrderBookLevel {
             price: bid,
             size: dec!(1),
         }],
-        asks: vec![OrderBookLevel {
+        asks: smallvec::smallvec![OrderBookLevel {
             price: ask,
             size: dec!(1),
         }],
