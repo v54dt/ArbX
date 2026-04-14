@@ -93,6 +93,7 @@ fn build_engine(
         circuit_breaker,
         Box::new(executor),
         Box::new(position_manager),
+        Vec::new(),
         3600,
         shutdown_rx,
     )

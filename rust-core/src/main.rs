@@ -19,11 +19,13 @@ use adapters::binance::fee_provider::BinanceFeeProvider;
 use adapters::binance::market_data::{BinanceMarket, BinanceMarketData};
 use adapters::binance::order_executor::BinanceOrderExecutor;
 use adapters::binance::position_manager::BinancePositionManager;
+use adapters::binance::private_stream::BinancePrivateStream;
 use adapters::binance::rest_client::BinanceRestClient;
 use adapters::bybit::fee_provider::BybitFeeProvider;
 use adapters::bybit::market_data::{BybitMarket, BybitMarketData};
 use adapters::bybit::order_executor::BybitOrderExecutor;
 use adapters::bybit::position_manager::BybitPositionManager;
+use adapters::bybit::private_stream::BybitPrivateStream;
 use adapters::bybit::rest_client::BybitRestClient;
 use adapters::fee_provider::FeeProvider;
 use adapters::market_data::MarketDataFeed;
@@ -31,8 +33,10 @@ use adapters::okx::fee_provider::OkxFeeProvider;
 use adapters::okx::market_data::OkxMarketData;
 use adapters::okx::order_executor::OkxOrderExecutor;
 use adapters::okx::position_manager::OkxPositionManager;
+use adapters::okx::private_stream::OkxPrivateStream;
 use adapters::okx::rest_client::OkxRestClient;
 use adapters::paper_executor::PaperExecutor;
+use adapters::private_stream::PrivateStream;
 use engine::arbitrage::ArbitrageEngine;
 use models::enums::Venue;
 use models::fee::FeeSchedule;
@@ -241,6 +245,52 @@ fn build_position_manager(
             Ok(Box::new(pm))
         }
         other => anyhow::bail!("unsupported venue for position manager: {}", other),
+    }
+}
+
+fn build_private_streams(venue_cfg: &VenueConfig) -> Vec<Box<dyn PrivateStream>> {
+    if venue_cfg.api_key.is_empty() || venue_cfg.api_secret.is_empty() {
+        tracing::warn!(
+            venue = venue_cfg.name.as_str(),
+            "no API credentials; skipping private stream (fills from engine-owned executor only)"
+        );
+        return Vec::new();
+    }
+    match venue_cfg.name.to_lowercase().as_str() {
+        "binance" => match parse_binance_market(&venue_cfg.market) {
+            Ok(market) => {
+                let rest_base = market.rest_base_url();
+                match BinancePrivateStream::new(
+                    market,
+                    rest_base,
+                    &venue_cfg.api_key,
+                    &venue_cfg.api_secret,
+                ) {
+                    Ok(s) => vec![Box::new(s)],
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to build Binance private stream");
+                        Vec::new()
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "skipping Binance private stream");
+                Vec::new()
+            }
+        },
+        "okx" => {
+            let passphrase = venue_cfg.passphrase.as_deref().unwrap_or_default();
+            vec![Box::new(OkxPrivateStream::new(
+                &venue_cfg.api_key,
+                &venue_cfg.api_secret,
+                passphrase,
+            ))]
+        }
+        "bybit" => vec![Box::new(BybitPrivateStream::new(
+            &venue_cfg.api_key,
+            &venue_cfg.api_secret,
+        ))],
+        _ => Vec::new(),
     }
 }
 
@@ -581,6 +631,12 @@ async fn main() -> anyhow::Result<()> {
         };
     let position_manager = build_position_manager(&cfg.venues[idx_b])?;
 
+    let private_streams = if venue_cfg.paper_trading || cli.dry_run {
+        Vec::new()
+    } else {
+        build_private_streams(venue_cfg)
+    };
+
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     let mut engine = ArbitrageEngine::new(
@@ -591,6 +647,7 @@ async fn main() -> anyhow::Result<()> {
         circuit_breaker,
         executor,
         position_manager,
+        private_streams,
         cfg.engine.reconcile_interval_secs,
         shutdown_rx,
     );
