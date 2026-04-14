@@ -1,3 +1,4 @@
+// Modules carrying items the binary doesn't yet exercise (tested + lib-reachable).
 #[allow(dead_code)]
 mod adapters;
 #[allow(dead_code)]
@@ -572,12 +573,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let venue_cfg = &cfg.venues[idx_b];
-    let executor = build_executor(venue_cfg)?;
     let executor: Box<dyn adapters::order_executor::OrderExecutor> =
         if venue_cfg.paper_trading || cli.dry_run {
-            Box::new(PaperExecutor::new(executor))
+            Box::new(PaperExecutor::new())
         } else {
-            executor
+            build_executor(venue_cfg)?
         };
     let position_manager = build_position_manager(&cfg.venues[idx_b])?;
 

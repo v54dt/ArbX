@@ -9,7 +9,6 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{error, info, warn};
 
-use crate::adapters::bybit::market_data::BybitMarket;
 use crate::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
 use crate::models::enums::{OrderStatus, Side, Venue};
 use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
@@ -20,16 +19,14 @@ const WS_URL: &str = "wss://stream.bybit.com/v5/private";
 pub struct BybitPrivateStream {
     api_key: String,
     api_secret: String,
-    market: BybitMarket,
     ws_task: Option<JoinHandle<()>>,
 }
 
 impl BybitPrivateStream {
-    pub fn new(api_key: &str, api_secret: &str, market: BybitMarket) -> Self {
+    pub fn new(api_key: &str, api_secret: &str) -> Self {
         Self {
             api_key: api_key.to_string(),
             api_secret: api_secret.to_string(),
-            market,
             ws_task: None,
         }
     }

@@ -55,24 +55,24 @@ struct FuturesAccountInfo {
 
 pub struct BinancePositionManager {
     market: BinanceMarket,
-    base_url: String,
     rest_client: Option<BinanceRestClient>,
     positions: HashMap<String, Position>,
 }
 
 impl BinancePositionManager {
     pub fn new(market: BinanceMarket, api_key: &str, api_secret: &str) -> anyhow::Result<Self> {
-        let base_url = market.rest_base_url().to_string();
-
         let rest_client = if api_key.is_empty() || api_secret.is_empty() {
             None
         } else {
-            Some(BinanceRestClient::new(&base_url, api_key, api_secret)?)
+            Some(BinanceRestClient::new(
+                market.rest_base_url(),
+                api_key,
+                api_secret,
+            )?)
         };
 
         Ok(Self {
             market,
-            base_url,
             rest_client,
             positions: HashMap::new(),
         })

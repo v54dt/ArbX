@@ -53,8 +53,7 @@ pub async fn run_backtest(
         risk_config.circuit_breaker.max_consecutive_failures,
     );
 
-    let stub_executor = StubExecutor;
-    let executor = PaperExecutor::new(Box::new(stub_executor));
+    let executor = PaperExecutor::new();
     let position_manager = NullPositionManager;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -139,43 +138,10 @@ fn decimal_to_f64(d: Decimal) -> Option<f64> {
     d.to_string().parse::<f64>().ok()
 }
 
-use crate::adapters::order_executor::{OrderExecutor, OrderReceivers};
-use crate::models::enums::OrderStatus;
-use crate::models::order::{Fill, Order, OrderUpdate};
 use async_trait::async_trait;
-use tokio::sync::mpsc;
-
-struct StubExecutor;
-
-#[async_trait]
-impl OrderExecutor for StubExecutor {
-    async fn connect(&mut self) -> Result<OrderReceivers> {
-        let (_ftx, fills) = mpsc::unbounded_channel::<Fill>();
-        let (_utx, updates) = mpsc::unbounded_channel::<OrderUpdate>();
-        Ok(OrderReceivers { fills, updates })
-    }
-    async fn disconnect(&mut self) -> Result<()> {
-        Ok(())
-    }
-    async fn submit_order(&self, _order: &Order) -> Result<String> {
-        Ok("stub-0".into())
-    }
-    async fn cancel_order(&self, _order_id: &str) -> Result<bool> {
-        Ok(true)
-    }
-    async fn get_order_status(&self, order_id: &str) -> Result<OrderUpdate> {
-        Ok(OrderUpdate {
-            order_id: order_id.to_string(),
-            status: OrderStatus::Filled,
-            filled_quantity: Decimal::ZERO,
-            remaining_quantity: Decimal::ZERO,
-            average_price: None,
-            updated_at: chrono::Utc::now(),
-        })
-    }
-}
 
 use crate::adapters::position_manager::PositionManager;
+use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
 struct NullPositionManager;
