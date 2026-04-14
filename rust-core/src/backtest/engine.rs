@@ -141,6 +141,7 @@ fn decimal_to_f64(d: Decimal) -> Option<f64> {
 use async_trait::async_trait;
 
 use crate::adapters::position_manager::PositionManager;
+use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
 struct NullPositionManager;

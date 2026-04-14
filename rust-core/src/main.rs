@@ -1,11 +1,18 @@
+// Modules carrying items the binary doesn't yet exercise (tested + lib-reachable).
+#[allow(dead_code)]
 mod adapters;
+#[allow(dead_code)]
 mod backtest;
 mod config;
 mod engine;
+#[allow(dead_code)]
 mod ipc;
 mod metrics;
+#[allow(dead_code)]
 mod models;
+#[allow(dead_code)]
 mod risk;
+#[allow(dead_code)]
 mod strategy;
 
 use adapters::binance::fee_provider::BinanceFeeProvider;
