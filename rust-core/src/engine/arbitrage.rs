@@ -513,7 +513,7 @@ mod tests {
     fn book_key_format_is_consistent() {
         let inst = test_instrument();
         let key = book_key(Venue::Binance, &inst);
-        assert_eq!(key, "binance:btc-usdt:spot");
+        assert_eq!(key.as_str(), "binance:btc-usdt:spot");
     }
 
     #[test]

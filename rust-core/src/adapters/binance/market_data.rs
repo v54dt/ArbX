@@ -107,7 +107,7 @@ struct DepthMsg {
 }
 
 fn depth_msg_to_orderbook(msg: &DepthMsg, venue: Venue, instrument: Instrument) -> OrderBook {
-    let parse_levels = |levels: &[[String; 2]]| -> Vec<OrderBookLevel> {
+    let parse_levels = |levels: &[[String; 2]]| -> smallvec::SmallVec<[OrderBookLevel; 20]> {
         levels
             .iter()
             .filter_map(|[p, q]| {
