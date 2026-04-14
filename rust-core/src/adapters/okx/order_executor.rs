@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 use super::rest_client::OkxRestClient;
 use crate::adapters::order_executor::{OrderExecutor, OrderReceivers};
@@ -11,10 +12,17 @@ use crate::models::enums::{OrderStatus, OrderType, Side};
 use crate::models::instrument::Instrument;
 use crate::models::order::{Fill, Order, OrderUpdate};
 
+struct OkxOrderEntry {
+    inst_id: String,
+    #[allow(dead_code)]
+    instrument: Instrument,
+}
+
 pub struct OkxOrderExecutor {
     rest_client: OkxRestClient,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
+    order_map: Arc<RwLock<HashMap<String, OkxOrderEntry>>>,
 }
 
 impl OkxOrderExecutor {
@@ -25,6 +33,7 @@ impl OkxOrderExecutor {
             rest_client,
             fills_tx: None,
             updates_tx: None,
+            order_map: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -53,6 +62,16 @@ impl OkxOrderExecutor {
             _ => "cross",
         }
     }
+
+    fn parse_status(s: &str) -> OrderStatus {
+        match s {
+            "filled" => OrderStatus::Filled,
+            "partially_filled" => OrderStatus::PartiallyFilled,
+            "live" => OrderStatus::Pending,
+            "canceled" => OrderStatus::Cancelled,
+            _ => OrderStatus::Pending,
+        }
+    }
 }
 
 #[async_trait]
@@ -77,7 +96,7 @@ impl OrderExecutor for OkxOrderExecutor {
         let inst_id = Self::instrument_to_inst_id(&order.instrument);
 
         let mut params = HashMap::new();
-        params.insert("instId".to_string(), inst_id);
+        params.insert("instId".to_string(), inst_id.clone());
         params.insert(
             "tdMode".to_string(),
             Self::td_mode(&order.instrument).to_string(),
@@ -117,6 +136,14 @@ impl OrderExecutor for OkxOrderExecutor {
             _ => anyhow::bail!("missing ordId in response: {}", response.body),
         };
 
+        self.order_map.write().await.insert(
+            order_id.clone(),
+            OkxOrderEntry {
+                inst_id,
+                instrument: order.instrument.clone(),
+            },
+        );
+
         tracing::info!(
             order_id,
             side = ?order.side,
@@ -128,17 +155,99 @@ impl OrderExecutor for OkxOrderExecutor {
     }
 
     async fn cancel_order(&self, order_id: &str) -> anyhow::Result<bool> {
-        tracing::info!(order_id, "okx cancel_order (stub - needs instId)");
+        let inst_id = self
+            .order_map
+            .read()
+            .await
+            .get(order_id)
+            .map(|e| e.inst_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id);
+        params.insert("ordId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Post,
+            path: "/api/v5/trade/cancel-order".to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "okx cancel rejected ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&response.body)?;
+        if json["code"].as_str() != Some("0") {
+            anyhow::bail!(
+                "okx cancel failed: {}",
+                json["msg"].as_str().unwrap_or(&response.body)
+            );
+        }
+
         Ok(true)
     }
 
     async fn get_order_status(&self, order_id: &str) -> anyhow::Result<OrderUpdate> {
+        let inst_id = self
+            .order_map
+            .read()
+            .await
+            .get(order_id)
+            .map(|e| e.inst_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+
+        let mut params = HashMap::new();
+        params.insert("instId".to_string(), inst_id);
+        params.insert("ordId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Get,
+            path: "/api/v5/trade/order".to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "okx order status error ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&response.body)?;
+        let data = &json["data"][0];
+        let status = Self::parse_status(data["state"].as_str().unwrap_or(""));
+        let filled_quantity = data["accFillSz"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let orig_qty = data["sz"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let remaining_quantity = orig_qty - filled_quantity;
+        let average_price = data["avgPx"]
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .filter(|p| !p.is_zero());
+
         Ok(OrderUpdate {
             order_id: order_id.to_string(),
-            status: OrderStatus::Pending,
-            filled_quantity: Decimal::ZERO,
-            remaining_quantity: Decimal::ZERO,
-            average_price: None,
+            status,
+            filled_quantity,
+            remaining_quantity,
+            average_price,
             updated_at: chrono::Utc::now(),
         })
     }
@@ -202,5 +311,65 @@ mod tests {
             settlement_time: None,
         };
         assert_eq!(OkxOrderExecutor::td_mode(&inst), "cross");
+    }
+
+    #[test]
+    fn parse_status_maps_all_states() {
+        assert_eq!(
+            OkxOrderExecutor::parse_status("filled"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            OkxOrderExecutor::parse_status("partially_filled"),
+            OrderStatus::PartiallyFilled
+        );
+        assert_eq!(OkxOrderExecutor::parse_status("live"), OrderStatus::Pending);
+        assert_eq!(
+            OkxOrderExecutor::parse_status("canceled"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            OkxOrderExecutor::parse_status("unknown"),
+            OrderStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn order_map_starts_empty() {
+        let executor = OkxOrderExecutor::new("k".into(), "s".into(), "p".into()).unwrap();
+        assert!(executor.order_map.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_order_status_unknown_order_returns_error() {
+        let executor = OkxOrderExecutor::new("k".into(), "s".into(), "p".into()).unwrap();
+        let result = executor.get_order_status("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn cancel_order_unknown_order_returns_error() {
+        let executor = OkxOrderExecutor::new("k".into(), "s".into(), "p".into()).unwrap();
+        let result = executor.cancel_order("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn order_entry_stores_correct_inst_id() {
+        let executor = OkxOrderExecutor::new("k".into(), "s".into(), "p".into()).unwrap();
+        let inst = btc_usdt_spot();
+        let inst_id = OkxOrderExecutor::instrument_to_inst_id(&inst);
+        executor.order_map.write().await.insert(
+            "test-order-1".to_string(),
+            OkxOrderEntry {
+                inst_id: inst_id.clone(),
+                instrument: inst,
+            },
+        );
+        let stored = executor.order_map.read().await;
+        let entry = stored.get("test-order-1").unwrap();
+        assert_eq!(entry.inst_id, "BTC-USDT");
     }
 }

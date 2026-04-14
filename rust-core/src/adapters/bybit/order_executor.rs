@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
-use tokio::sync::mpsc;
+use tokio::sync::{RwLock, mpsc};
 
 use super::market_data::BybitMarket;
 use super::rest_client::BybitRestClient;
@@ -12,11 +13,18 @@ use crate::models::enums::{OrderStatus, OrderType, Side, TimeInForce};
 use crate::models::instrument::Instrument;
 use crate::models::order::{Fill, Order, OrderUpdate};
 
+struct BybitOrderEntry {
+    symbol: String,
+    #[allow(dead_code)]
+    instrument: Instrument,
+}
+
 pub struct BybitOrderExecutor {
     market: BybitMarket,
     rest_client: BybitRestClient,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
+    order_map: Arc<RwLock<HashMap<String, BybitOrderEntry>>>,
 }
 
 impl BybitOrderExecutor {
@@ -28,6 +36,7 @@ impl BybitOrderExecutor {
             rest_client,
             fills_tx: None,
             updates_tx: None,
+            order_map: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -72,6 +81,17 @@ impl BybitOrderExecutor {
             Some(TimeInForce::Rod) | None => "GTC",
         }
     }
+
+    fn parse_status(s: &str) -> OrderStatus {
+        match s {
+            "Filled" => OrderStatus::Filled,
+            "PartiallyFilled" => OrderStatus::PartiallyFilled,
+            "New" => OrderStatus::Pending,
+            "Cancelled" => OrderStatus::Cancelled,
+            "Rejected" => OrderStatus::Rejected,
+            _ => OrderStatus::Pending,
+        }
+    }
 }
 
 #[async_trait]
@@ -100,7 +120,7 @@ impl OrderExecutor for BybitOrderExecutor {
 
         let mut params = HashMap::new();
         params.insert("category".to_string(), self.category().to_string());
-        params.insert("symbol".to_string(), symbol);
+        params.insert("symbol".to_string(), symbol.clone());
         params.insert("side".to_string(), Self::side_str(order.side).to_string());
         params.insert(
             "orderType".to_string(),
@@ -140,6 +160,14 @@ impl OrderExecutor for BybitOrderExecutor {
             _ => anyhow::bail!("missing orderId in response: {}", response.body),
         };
 
+        self.order_map.write().await.insert(
+            order_id.clone(),
+            BybitOrderEntry {
+                symbol,
+                instrument: order.instrument.clone(),
+            },
+        );
+
         tracing::info!(
             order_id,
             market = self.market_label(),
@@ -152,17 +180,101 @@ impl OrderExecutor for BybitOrderExecutor {
     }
 
     async fn cancel_order(&self, order_id: &str) -> anyhow::Result<bool> {
-        tracing::info!(order_id, "cancel_order (stub — needs symbol)");
+        let symbol = self
+            .order_map
+            .read()
+            .await
+            .get(order_id)
+            .map(|e| e.symbol.clone())
+            .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), self.category().to_string());
+        params.insert("symbol".to_string(), symbol);
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Post,
+            path: "/v5/order/cancel".to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "bybit cancel rejected ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&response.body)?;
+        if json["retCode"].as_i64() != Some(0) {
+            anyhow::bail!(
+                "bybit cancel failed: {}",
+                json["retMsg"].as_str().unwrap_or(&response.body)
+            );
+        }
+
         Ok(true)
     }
 
     async fn get_order_status(&self, order_id: &str) -> anyhow::Result<OrderUpdate> {
+        let (symbol, category) = {
+            let map = self.order_map.read().await;
+            let entry = map
+                .get(order_id)
+                .ok_or_else(|| anyhow::anyhow!("unknown order_id: {}", order_id))?;
+            (entry.symbol.clone(), self.category().to_string())
+        };
+
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category);
+        params.insert("symbol".to_string(), symbol);
+        params.insert("orderId".to_string(), order_id.to_string());
+
+        let request = RestRequest {
+            method: HttpMethod::Get,
+            path: "/v5/order/realtime".to_string(),
+            params,
+        };
+
+        let response = self.rest_client.send(request).await?;
+
+        if response.status < 200 || response.status >= 300 {
+            anyhow::bail!(
+                "bybit order status error ({}): {}",
+                response.status,
+                response.body
+            );
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&response.body)?;
+        let item = &json["result"]["list"][0];
+        let status = Self::parse_status(item["orderStatus"].as_str().unwrap_or(""));
+        let filled_quantity = item["cumExecQty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let orig_qty = item["qty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        let remaining_quantity = orig_qty - filled_quantity;
+        let average_price = item["avgPrice"]
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .filter(|p| !p.is_zero());
+
         Ok(OrderUpdate {
             order_id: order_id.to_string(),
-            status: OrderStatus::Pending,
-            filled_quantity: Decimal::ZERO,
-            remaining_quantity: Decimal::ZERO,
-            average_price: None,
+            status,
+            filled_quantity,
+            remaining_quantity,
+            average_price,
             updated_at: chrono::Utc::now(),
         })
     }
@@ -184,6 +296,10 @@ mod tests {
             last_trade_time: None,
             settlement_time: None,
         }
+    }
+
+    fn make_executor(market: BybitMarket) -> BybitOrderExecutor {
+        BybitOrderExecutor::new(market, "key".into(), "secret".into()).unwrap()
     }
 
     #[test]
@@ -225,5 +341,72 @@ mod tests {
             BybitOrderExecutor::tif_to_string(Some(TimeInForce::Fok)),
             "FOK"
         );
+    }
+
+    #[test]
+    fn parse_status_maps_all_states() {
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Filled"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("PartiallyFilled"),
+            OrderStatus::PartiallyFilled
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("New"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Cancelled"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Rejected"),
+            OrderStatus::Rejected
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Unknown"),
+            OrderStatus::Pending
+        );
+    }
+
+    #[tokio::test]
+    async fn order_map_starts_empty() {
+        let executor = make_executor(BybitMarket::Spot);
+        assert!(executor.order_map.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_order_status_unknown_order_returns_error() {
+        let executor = make_executor(BybitMarket::Spot);
+        let result = executor.get_order_status("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn cancel_order_unknown_order_returns_error() {
+        let executor = make_executor(BybitMarket::Spot);
+        let result = executor.cancel_order("nonexistent-id").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[tokio::test]
+    async fn order_entry_stores_correct_symbol() {
+        let executor = make_executor(BybitMarket::Spot);
+        let inst = btc_usdt_spot();
+        let symbol = BybitOrderExecutor::instrument_to_symbol(&inst);
+        executor.order_map.write().await.insert(
+            "test-order-1".to_string(),
+            BybitOrderEntry {
+                symbol: symbol.clone(),
+                instrument: inst,
+            },
+        );
+        let stored = executor.order_map.read().await;
+        let entry = stored.get("test-order-1").unwrap();
+        assert_eq!(entry.symbol, "BTCUSDT");
     }
 }
