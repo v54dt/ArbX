@@ -345,15 +345,30 @@ mod tests {
 
     #[test]
     fn parse_status_maps_all_states() {
-        assert_eq!(BybitOrderExecutor::parse_status("Filled"), OrderStatus::Filled);
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Filled"),
+            OrderStatus::Filled
+        );
         assert_eq!(
             BybitOrderExecutor::parse_status("PartiallyFilled"),
             OrderStatus::PartiallyFilled
         );
-        assert_eq!(BybitOrderExecutor::parse_status("New"), OrderStatus::Pending);
-        assert_eq!(BybitOrderExecutor::parse_status("Cancelled"), OrderStatus::Cancelled);
-        assert_eq!(BybitOrderExecutor::parse_status("Rejected"), OrderStatus::Rejected);
-        assert_eq!(BybitOrderExecutor::parse_status("Unknown"), OrderStatus::Pending);
+        assert_eq!(
+            BybitOrderExecutor::parse_status("New"),
+            OrderStatus::Pending
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Cancelled"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Rejected"),
+            OrderStatus::Rejected
+        );
+        assert_eq!(
+            BybitOrderExecutor::parse_status("Unknown"),
+            OrderStatus::Pending
+        );
     }
 
     #[tokio::test]

@@ -315,14 +315,23 @@ mod tests {
 
     #[test]
     fn parse_status_maps_all_states() {
-        assert_eq!(OkxOrderExecutor::parse_status("filled"), OrderStatus::Filled);
+        assert_eq!(
+            OkxOrderExecutor::parse_status("filled"),
+            OrderStatus::Filled
+        );
         assert_eq!(
             OkxOrderExecutor::parse_status("partially_filled"),
             OrderStatus::PartiallyFilled
         );
         assert_eq!(OkxOrderExecutor::parse_status("live"), OrderStatus::Pending);
-        assert_eq!(OkxOrderExecutor::parse_status("canceled"), OrderStatus::Cancelled);
-        assert_eq!(OkxOrderExecutor::parse_status("unknown"), OrderStatus::Pending);
+        assert_eq!(
+            OkxOrderExecutor::parse_status("canceled"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            OkxOrderExecutor::parse_status("unknown"),
+            OrderStatus::Pending
+        );
     }
 
     #[tokio::test]

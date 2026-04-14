@@ -383,15 +383,30 @@ mod tests {
 
     #[test]
     fn parse_status_maps_all_states() {
-        assert_eq!(BinanceOrderExecutor::parse_status("NEW"), OrderStatus::Pending);
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("NEW"),
+            OrderStatus::Pending
+        );
         assert_eq!(
             BinanceOrderExecutor::parse_status("PARTIALLY_FILLED"),
             OrderStatus::PartiallyFilled
         );
-        assert_eq!(BinanceOrderExecutor::parse_status("FILLED"), OrderStatus::Filled);
-        assert_eq!(BinanceOrderExecutor::parse_status("CANCELED"), OrderStatus::Cancelled);
-        assert_eq!(BinanceOrderExecutor::parse_status("REJECTED"), OrderStatus::Rejected);
-        assert_eq!(BinanceOrderExecutor::parse_status("EXPIRED"), OrderStatus::Pending);
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("FILLED"),
+            OrderStatus::Filled
+        );
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("CANCELED"),
+            OrderStatus::Cancelled
+        );
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("REJECTED"),
+            OrderStatus::Rejected
+        );
+        assert_eq!(
+            BinanceOrderExecutor::parse_status("EXPIRED"),
+            OrderStatus::Pending
+        );
     }
 
     #[tokio::test]
