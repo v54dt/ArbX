@@ -7,7 +7,7 @@ use sha2::Sha256;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
 use crate::models::enums::{OrderStatus, Side, Venue};
