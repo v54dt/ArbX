@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
-use async_trait::async_trait;
-use rust_decimal::Decimal;
 use crate::models::enums::{OrderType, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
 use crate::models::market::BookMap;
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
+use async_trait::async_trait;
+use rust_decimal::Decimal;
 
 use super::Opportunity;
 use super::base::ArbitrageStrategy;
@@ -213,25 +213,32 @@ mod tests {
         OrderBook {
             venue,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel { price: bid, size: bid_size }],
-            asks: vec![OrderBookLevel { price: ask, size: ask_size }],
+            bids: vec![OrderBookLevel {
+                price: bid,
+                size: bid_size,
+            }],
+            asks: vec![OrderBookLevel {
+                price: ask,
+                size: ask_size,
+            }],
             timestamp: now,
             local_timestamp: now,
         }
     }
 
-    fn stale_orderbook(
-        venue: Venue,
-        inst: &Instrument,
-        bid: Decimal,
-        ask: Decimal,
-    ) -> OrderBook {
+    fn stale_orderbook(venue: Venue, inst: &Instrument, bid: Decimal, ask: Decimal) -> OrderBook {
         let old = Utc::now() - Duration::seconds(30);
         OrderBook {
             venue,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel { price: bid, size: dec!(1) }],
-            asks: vec![OrderBookLevel { price: ask, size: dec!(1) }],
+            bids: vec![OrderBookLevel {
+                price: bid,
+                size: dec!(1),
+            }],
+            asks: vec![OrderBookLevel {
+                price: ask,
+                size: dec!(1),
+            }],
             timestamp: old,
             local_timestamp: old,
         }
@@ -259,7 +266,11 @@ mod tests {
             dec!(0.001),
             dec!(0.001),
         )]);
-        assert!(s.evaluate(&BookMap::default(), &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&BookMap::default(), &empty_portfolios())
+                .await
+                .is_none()
+        );
     }
 
     // 2. 3 pairs, only one profitable
@@ -270,9 +281,30 @@ mod tests {
         let sol = instrument("SOL", InstrumentType::Spot);
 
         let s = strategy_with_pairs(vec![
-            pair_config("BTC", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("ETH", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("SOL", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
+            pair_config(
+                "BTC",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "ETH",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "SOL",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
         ]);
 
         // BTC: no spread
@@ -299,9 +331,30 @@ mod tests {
         let sol = instrument("SOL", InstrumentType::Spot);
 
         let s = strategy_with_pairs(vec![
-            pair_config("BTC", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("ETH", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("SOL", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
+            pair_config(
+                "BTC",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "ETH",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "SOL",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
         ]);
 
         // BTC: small spread ~2%
@@ -360,7 +413,10 @@ mod tests {
         let opp_multi = multi.evaluate(&books, &empty_portfolios()).await.unwrap();
         let opp_single = single.evaluate(&books, &empty_portfolios()).await.unwrap();
 
-        assert_eq!(opp_multi.economics.net_profit_bps, opp_single.economics.net_profit_bps);
+        assert_eq!(
+            opp_multi.economics.net_profit_bps,
+            opp_single.economics.net_profit_bps
+        );
         assert_eq!(opp_multi.legs[0].side, opp_single.legs[0].side);
         assert_eq!(opp_multi.legs[0].quantity, opp_single.legs[0].quantity);
     }
@@ -400,7 +456,14 @@ mod tests {
 
         // Bybit ask < Binance bid => B->A is profitable
         let books = make_books(vec![
-            orderbook(Venue::Binance, &inst, dec!(105), dec!(1), dec!(108), dec!(1)),
+            orderbook(
+                Venue::Binance,
+                &inst,
+                dec!(105),
+                dec!(1),
+                dec!(108),
+                dec!(1),
+            ),
             orderbook(Venue::Bybit, &inst, dec!(99), dec!(1), dec!(100), dec!(1)),
         ]);
 
@@ -428,7 +491,14 @@ mod tests {
         // tiny spread, won't survive fees + threshold
         let books = make_books(vec![
             orderbook(Venue::Binance, &inst, dec!(99), dec!(1), dec!(100), dec!(1)),
-            orderbook(Venue::Bybit, &inst, dec!(100.5), dec!(1), dec!(101), dec!(1)),
+            orderbook(
+                Venue::Bybit,
+                &inst,
+                dec!(100.5),
+                dec!(1),
+                dec!(101),
+                dec!(1),
+            ),
         ]);
 
         assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
@@ -441,12 +511,33 @@ mod tests {
         let eth = instrument("ETH", InstrumentType::Spot);
 
         let s = strategy_with_pairs(vec![
-            pair_config("BTC", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("ETH", Venue::Binance, Venue::Bybit, dec!(5), dec!(0.001), dec!(0.001)),
+            pair_config(
+                "BTC",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "ETH",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(5),
+                dec!(0.001),
+                dec!(0.001),
+            ),
         ]);
 
         let books = make_books(vec![
-            orderbook(Venue::Binance, &btc, dec!(99), dec!(10), dec!(100), dec!(10)),
+            orderbook(
+                Venue::Binance,
+                &btc,
+                dec!(99),
+                dec!(10),
+                dec!(100),
+                dec!(10),
+            ),
             orderbook(Venue::Bybit, &btc, dec!(105), dec!(10), dec!(106), dec!(10)),
             orderbook(Venue::Binance, &eth, dec!(49), dec!(10), dec!(50), dec!(10)),
             orderbook(Venue::Bybit, &eth, dec!(55), dec!(10), dec!(56), dec!(10)),
@@ -462,10 +553,20 @@ mod tests {
             dec!(0.001),
         )]);
         let books_btc = make_books(vec![
-            orderbook(Venue::Binance, &btc, dec!(99), dec!(10), dec!(100), dec!(10)),
+            orderbook(
+                Venue::Binance,
+                &btc,
+                dec!(99),
+                dec!(10),
+                dec!(100),
+                dec!(10),
+            ),
             orderbook(Venue::Bybit, &btc, dec!(105), dec!(10), dec!(106), dec!(10)),
         ]);
-        let opp_btc = s_btc.evaluate(&books_btc, &empty_portfolios()).await.unwrap();
+        let opp_btc = s_btc
+            .evaluate(&books_btc, &empty_portfolios())
+            .await
+            .unwrap();
         assert_eq!(opp_btc.legs[0].quantity, dec!(1)); // capped at max_quantity=1
 
         let s_eth = strategy_with_pairs(vec![pair_config(
@@ -480,7 +581,10 @@ mod tests {
             orderbook(Venue::Binance, &eth, dec!(49), dec!(10), dec!(50), dec!(10)),
             orderbook(Venue::Bybit, &eth, dec!(55), dec!(10), dec!(56), dec!(10)),
         ]);
-        let opp_eth = s_eth.evaluate(&books_eth, &empty_portfolios()).await.unwrap();
+        let opp_eth = s_eth
+            .evaluate(&books_eth, &empty_portfolios())
+            .await
+            .unwrap();
         assert_eq!(opp_eth.legs[0].quantity, dec!(5)); // capped at max_quantity=5
 
         // full multi-pair: best is SOL-like by bps, but here ETH wins because spread is larger
@@ -539,11 +643,23 @@ mod tests {
         let buy_book = OrderBook {
             venue: Venue::Binance,
             instrument: inst.clone(),
-            bids: vec![OrderBookLevel { price: dec!(99), size: dec!(5) }],
+            bids: vec![OrderBookLevel {
+                price: dec!(99),
+                size: dec!(5),
+            }],
             asks: vec![
-                OrderBookLevel { price: dec!(100), size: dec!(1) },
-                OrderBookLevel { price: dec!(101), size: dec!(1) },
-                OrderBookLevel { price: dec!(102), size: dec!(1) },
+                OrderBookLevel {
+                    price: dec!(100),
+                    size: dec!(1),
+                },
+                OrderBookLevel {
+                    price: dec!(101),
+                    size: dec!(1),
+                },
+                OrderBookLevel {
+                    price: dec!(102),
+                    size: dec!(1),
+                },
             ],
             timestamp: now,
             local_timestamp: now,
@@ -552,11 +668,23 @@ mod tests {
             venue: Venue::Bybit,
             instrument: inst.clone(),
             bids: vec![
-                OrderBookLevel { price: dec!(108), size: dec!(1) },
-                OrderBookLevel { price: dec!(107), size: dec!(1) },
-                OrderBookLevel { price: dec!(106), size: dec!(1) },
+                OrderBookLevel {
+                    price: dec!(108),
+                    size: dec!(1),
+                },
+                OrderBookLevel {
+                    price: dec!(107),
+                    size: dec!(1),
+                },
+                OrderBookLevel {
+                    price: dec!(106),
+                    size: dec!(1),
+                },
             ],
-            asks: vec![OrderBookLevel { price: dec!(115), size: dec!(5) }],
+            asks: vec![OrderBookLevel {
+                price: dec!(115),
+                size: dec!(5),
+            }],
             timestamp: now,
             local_timestamp: now,
         };
@@ -590,16 +718,37 @@ mod tests {
 
         let s = strategy_with_pairs(vec![
             // BTC: 10bps fee each side => total 20bps costs eat the spread
-            pair_config("BTC", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
+            pair_config(
+                "BTC",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
             // ETH: 1bps fee each side => minimal cost, opportunity survives
-            pair_config("ETH", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.0001), dec!(0.0001)),
+            pair_config(
+                "ETH",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.0001),
+                dec!(0.0001),
+            ),
         ]);
 
         // BTC spread: ask=100, bid=100.1 => tiny, fees kill it
         // ETH spread: ask=100, bid=102 => large enough even with low fee
         let books = make_books(vec![
             orderbook(Venue::Binance, &btc, dec!(99), dec!(1), dec!(100), dec!(1)),
-            orderbook(Venue::Bybit, &btc, dec!(100.1), dec!(1), dec!(100.5), dec!(1)),
+            orderbook(
+                Venue::Bybit,
+                &btc,
+                dec!(100.1),
+                dec!(1),
+                dec!(100.5),
+                dec!(1),
+            ),
             orderbook(Venue::Binance, &eth, dec!(99), dec!(1), dec!(100), dec!(1)),
             orderbook(Venue::Bybit, &eth, dec!(102), dec!(1), dec!(103), dec!(1)),
         ]);
@@ -615,8 +764,22 @@ mod tests {
         let eth = instrument("ETH", InstrumentType::Spot);
 
         let s = strategy_with_pairs(vec![
-            pair_config("BTC", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
-            pair_config("ETH", Venue::Binance, Venue::Bybit, dec!(1), dec!(0.001), dec!(0.001)),
+            pair_config(
+                "BTC",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
+            pair_config(
+                "ETH",
+                Venue::Binance,
+                Venue::Bybit,
+                dec!(1),
+                dec!(0.001),
+                dec!(0.001),
+            ),
         ]);
 
         let books = make_books(vec![

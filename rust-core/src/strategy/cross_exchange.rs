@@ -127,7 +127,11 @@ pub(crate) fn check_inventory_capped(
             if pos.instrument == *buy_instrument && pos.quantity > half_max {
                 let excess = pos.quantity - half_max;
                 let reduced = quantity - excess;
-                return if reduced > Decimal::ZERO { reduced } else { Decimal::ZERO };
+                return if reduced > Decimal::ZERO {
+                    reduced
+                } else {
+                    Decimal::ZERO
+                };
             }
         }
     }
