@@ -125,11 +125,6 @@ impl MarketDataFeed for OkxMarketData {
                     Ok((ws_stream, _)) => {
                         backoff = Duration::from_secs(1);
                         info!(url, "connected to OKX WebSocket");
-                        if !first_connect {
-                            crate::metrics::record_ws_reconnect("okx");
-                        }
-                        first_connect = false;
-                        crate::metrics::set_ws_connected("okx", true);
                         let (mut write, mut read) = ws_stream.split();
 
                         let ws_sub =
@@ -140,14 +135,19 @@ impl MarketDataFeed for OkxMarketData {
                             backoff = (backoff * 2).min(max_backoff);
                             continue;
                         }
+                        if !first_connect {
+                            crate::metrics::record_ws_reconnect("okx");
+                        }
+                        first_connect = false;
+                        crate::metrics::set_ws_connected("okx", true);
 
                         'msg: loop {
                             tokio::select! {
                                 Some(msg) = read.next() => {
                                     match msg {
                                         Ok(msg) => {
-                                            crate::metrics::record_ws_message("okx");
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                crate::metrics::record_ws_message("okx");
                                                 let text = text.to_string();
                                                 if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text)
                                                     && let Some(data) = ws_msg.data

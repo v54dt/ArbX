@@ -129,11 +129,6 @@ impl MarketDataFeed for BybitMarketData {
                     Ok((ws_stream, _)) => {
                         backoff = Duration::from_secs(1);
                         info!(url = url.as_str(), "connected to Bybit WebSocket");
-                        if !first_connect {
-                            crate::metrics::record_ws_reconnect("bybit");
-                        }
-                        first_connect = false;
-                        crate::metrics::set_ws_connected("bybit", true);
                         let (mut write, mut read) = ws_stream.split();
 
                         let ws_sub =
@@ -144,14 +139,19 @@ impl MarketDataFeed for BybitMarketData {
                             backoff = (backoff * 2).min(max_backoff);
                             continue;
                         }
+                        if !first_connect {
+                            crate::metrics::record_ws_reconnect("bybit");
+                        }
+                        first_connect = false;
+                        crate::metrics::set_ws_connected("bybit", true);
 
                         'msg: loop {
                             tokio::select! {
                                 Some(msg) = read.next() => {
                                     match msg {
                                         Ok(msg) => {
-                                            crate::metrics::record_ws_message("bybit");
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                crate::metrics::record_ws_message("bybit");
                                                 let text = text.to_string();
                                                 if let Ok(ticker_msg) = serde_json::from_str::<TickerMessage>(&text)
                                                     && let Some(instrument) = instruments.get(&ticker_msg.data.symbol)

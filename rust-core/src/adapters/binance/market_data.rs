@@ -234,8 +234,8 @@ impl MarketDataFeed for BinanceMarketData {
                                             break 'msg;
                                         }
                                         Ok(msg) => {
-                                            crate::metrics::record_ws_message("binance");
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                                                crate::metrics::record_ws_message("binance");
                                                 let text = text.to_string();
                                                 if let Ok(wrapper) = serde_json::from_str::<serde_json::Value>(&text) {
                                                     let stream_name = wrapper.get("stream").and_then(|v| v.as_str()).unwrap_or("");
