@@ -109,8 +109,7 @@ pub(crate) fn vwap_bid(
     }
 }
 
-/// Cap `quantity` based on existing long position at `buy_venue`/`buy_instrument`.
-/// Reduces size if position exceeds half of `max_quantity` to avoid over-concentration.
+/// Cap `quantity` if existing long position exceeds half of `max_quantity`.
 pub(crate) fn check_inventory_capped(
     portfolios: &HashMap<String, PortfolioSnapshot>,
     buy_venue: Venue,
