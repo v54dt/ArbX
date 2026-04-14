@@ -145,6 +145,9 @@ impl MarketDataFeed for BybitMarketData {
                         first_connect = false;
                         crate::metrics::set_ws_connected("bybit", true);
 
+                        let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+                        ping_interval.tick().await;
+
                         'msg: loop {
                             tokio::select! {
                                 Some(msg) = read.next() => {
@@ -182,6 +185,16 @@ impl MarketDataFeed for BybitMarketData {
                                     let ws_msg = tokio_tungstenite::tungstenite::Message::Text(msg.into());
                                     if let Err(e) = write.send(ws_msg).await {
                                         warn!(error = %e, "Bybit WS write error, will reconnect");
+                                        break 'msg;
+                                    }
+                                }
+
+                                _ = ping_interval.tick() => {
+                                    let ping = tokio_tungstenite::tungstenite::Message::Text(
+                                        r#"{"op":"ping"}"#.into(),
+                                    );
+                                    if let Err(e) = write.send(ping).await {
+                                        warn!(error = %e, "Bybit WS ping failed, will reconnect");
                                         break 'msg;
                                     }
                                 }

@@ -177,8 +177,24 @@ impl PrivateStream for BybitPrivateStream {
             .await?;
 
         let ws_task = tokio::spawn(async move {
+            use futures_util::SinkExt;
             let mut subscribed = false;
-            while let Some(msg) = read.next().await {
+            let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(20));
+            ping_interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = ping_interval.tick() => {
+                        let ping = tokio_tungstenite::tungstenite::Message::Text(
+                            r#"{"op":"ping"}"#.into(),
+                        );
+                        if let Err(e) = write.send(ping).await {
+                            warn!(error = %e, "Bybit private WS ping failed");
+                            break;
+                        }
+                        continue;
+                    }
+                    maybe_msg = read.next() => {
+                        let Some(msg) = maybe_msg else { break };
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                         let text = text.to_string();
@@ -230,6 +246,8 @@ impl PrivateStream for BybitPrivateStream {
                         break;
                     }
                     _ => {}
+                }
+                    }
                 }
             }
             warn!("Bybit private WebSocket stream ended");
