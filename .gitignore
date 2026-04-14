@@ -7,3 +7,11 @@ target/
 # IDE
 .vscode/
 .idea/
+
+# Local-only notes (planning / review / per-machine agent state)
+plan.md
+CLAUDE.md
+review.md
+.claude/
+config/observe.yaml
+config/pipeline_test.yaml
