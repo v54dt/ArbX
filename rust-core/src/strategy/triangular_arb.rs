@@ -1,6 +1,3 @@
-// Architecture note: validates that the SmallVec<[Leg; 4]> model supports 3-leg strategies
-// and that the engine's concurrent order submission handles more than 2 legs correctly.
-
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -99,11 +96,7 @@ fn simulate_cycle(
     }
 }
 
-/// For a Buy leg: spend `wallet` quote currency to acquire base.
-///   base_acquired = (wallet / price) * (1 - fee_rate)
-/// For a Sell leg: spend `wallet` base currency to acquire quote.
-///   quote_acquired = wallet * price * (1 - fee_rate)
-/// Returns (new_wallet, quantity_traded, fee_paid_in_output_currency).
+/// Apply one leg, returning (new_wallet, traded_qty, fee_in_output_ccy).
 fn apply_leg(
     leg: &TriangleLeg,
     wallet: Decimal,

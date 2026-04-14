@@ -8,7 +8,6 @@ use smallvec::SmallVec;
 use super::enums::Venue;
 use super::instrument::Instrument;
 
-/// Stack-allocated book key — no heap allocation per quote.
 pub type BookKey = ArrayString<64>;
 pub type BookMap = FxHashMap<BookKey, OrderBook>;
 
@@ -39,9 +38,7 @@ pub struct OrderBook {
     pub local_timestamp: DateTime<Utc>,
 }
 
-/// Canonical key for order book lookup. Used by engine and all strategies.
-/// Format: `"venue:base-quote:instrument_type"` all lowercase.
-/// Stack-allocated — zero heap alloc per call.
+/// `"venue:base-quote:instrument_type"` lowercase, stack-allocated.
 pub fn book_key(venue: Venue, instrument: &Instrument) -> BookKey {
     use std::fmt::Write as _;
     let mut key = BookKey::new();

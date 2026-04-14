@@ -12,8 +12,7 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::market::Quote;
 use crate::models::order::{Fill, OrderRequest};
 
-// FlatBuffer field offsets matching schemas/messages.fbs
-// These must stay in sync with the .fbs schema.
+// Must match schemas/messages.fbs.
 mod vt {
     pub const QUOTE_VENUE: u16 = 4;
     pub const QUOTE_BASE: u16 = 6;
