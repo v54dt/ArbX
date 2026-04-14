@@ -90,6 +90,7 @@ impl ExchangeRestClient for BinanceRestClient {
         let req = match request.method {
             HttpMethod::Get => self.http.get(&url),
             HttpMethod::Post => self.http.post(&url),
+            HttpMethod::Put => self.http.put(&url),
             HttpMethod::Delete => self.http.delete(&url),
         };
 
@@ -126,6 +127,7 @@ impl ExchangeRestClient for BinanceRestClient {
         let req = match request.method {
             HttpMethod::Get => self.http.get(&url),
             HttpMethod::Post => self.http.post(&url),
+            HttpMethod::Put => self.http.put(&url),
             HttpMethod::Delete => self.http.delete(&url),
         };
 

@@ -72,7 +72,7 @@ impl ExchangeRestClient for BybitRestClient {
         let ts = Self::timestamp_ms();
 
         let resp = match request.method {
-            HttpMethod::Get | HttpMethod::Delete => {
+            HttpMethod::Get | HttpMethod::Delete | HttpMethod::Put => {
                 let qs = Self::build_query_string(&request.params);
                 let sign_payload = format!("{}{}{}{}", ts, self.api_key, RECV_WINDOW, qs);
                 let signature = self.sign(&sign_payload);
@@ -86,6 +86,7 @@ impl ExchangeRestClient for BybitRestClient {
                 let builder = match request.method {
                     HttpMethod::Get => self.http.get(&url),
                     HttpMethod::Delete => self.http.delete(&url),
+                    HttpMethod::Put => self.http.put(&url),
                     _ => unreachable!(),
                 };
 
@@ -147,6 +148,7 @@ impl ExchangeRestClient for BybitRestClient {
         let req = match request.method {
             HttpMethod::Get => self.http.get(&url),
             HttpMethod::Post => self.http.post(&url),
+            HttpMethod::Put => self.http.put(&url),
             HttpMethod::Delete => self.http.delete(&url),
         };
 

@@ -208,7 +208,7 @@ impl PrivateStream for BinancePrivateStream {
                 let mut params = HashMap::new();
                 params.insert("listenKey".to_string(), keepalive_key.clone());
                 let request = RestRequest {
-                    method: HttpMethod::Post,
+                    method: HttpMethod::Put,
                     path: keepalive_path.clone(),
                     params,
                 };
