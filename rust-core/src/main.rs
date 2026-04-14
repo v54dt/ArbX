@@ -499,7 +499,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine = ArbitrageEngine::new(
         feeds,
-        Box::new(strategy),
+        strategy,
         risk_manager,
         risk_state,
         circuit_breaker,
