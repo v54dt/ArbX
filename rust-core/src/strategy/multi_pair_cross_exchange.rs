@@ -647,7 +647,7 @@ mod tests {
                 price: dec!(99),
                 size: dec!(5),
             }],
-            asks: vec![
+            asks: smallvec::smallvec![
                 OrderBookLevel {
                     price: dec!(100),
                     size: dec!(1),
@@ -667,7 +667,7 @@ mod tests {
         let sell_book = OrderBook {
             venue: Venue::Bybit,
             instrument: inst.clone(),
-            bids: vec![
+            bids: smallvec::smallvec![
                 OrderBookLevel {
                     price: dec!(108),
                     size: dec!(1),
