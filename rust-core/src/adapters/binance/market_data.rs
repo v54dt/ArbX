@@ -18,7 +18,6 @@ use crate::models::instrument::Instrument;
 use crate::models::market::Quote;
 use crate::models::market::{OrderBook, OrderBookLevel};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinanceMarket {
     Spot,
     UsdtFutures,
