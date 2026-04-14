@@ -50,6 +50,9 @@ pub fn record_submit_latency_us(us: f64) {
 pub fn record_quote_age_ms(ms: f64) {
     histogram!("arbx_quote_age_ms").record(ms);
 }
+pub fn record_slippage_bps(venue: &str, slippage_bps: f64) {
+    histogram!("arbx_slippage_bps", "venue" => venue.to_string()).record(slippage_bps);
+}
 
 pub fn record_ws_reconnect(venue: &str) {
     counter!("arbx_ws_reconnects_total", "venue" => venue.to_string()).increment(1);

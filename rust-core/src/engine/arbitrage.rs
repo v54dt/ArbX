@@ -23,6 +23,11 @@ use crate::risk::state::RiskState;
 use crate::strategy::base::ArbitrageStrategy;
 use rust_decimal::Decimal;
 
+struct IntendedFill {
+    side: crate::models::enums::Side,
+    intended_price: Decimal,
+}
+
 /// Main loop: receive quote → update local book → evaluate strategy → log opportunity.
 pub struct ArbitrageEngine {
     feeds: Vec<Box<dyn MarketDataFeed>>,
@@ -36,6 +41,7 @@ pub struct ArbitrageEngine {
     books: BookMap,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
+    intended_fills: HashMap<String, IntendedFill>,
     reconcile_interval_secs: u64,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
@@ -66,6 +72,7 @@ impl ArbitrageEngine {
             books: BookMap::default(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
+            intended_fills: HashMap::new(),
             reconcile_interval_secs,
             shutdown_rx,
         }
@@ -174,6 +181,23 @@ impl ArbitrageEngine {
                     self.risk_state.apply_fill(fill_key.as_str(), signed_qty, notional, Decimal::ZERO);
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received();
+
+                    if let Some(intended) = self.intended_fills.remove(&fill.order_id)
+                        && !intended.intended_price.is_zero()
+                    {
+                        let raw = (fill.price - intended.intended_price)
+                            / intended.intended_price
+                            * Decimal::from(10_000);
+                        let signed_bps = match intended.side {
+                            crate::models::enums::Side::Buy => raw,
+                            crate::models::enums::Side::Sell => -raw,
+                        };
+                        let venue_label = format!("{:?}", fill.venue).to_lowercase();
+                        crate::metrics::record_slippage_bps(
+                            &venue_label,
+                            signed_bps.to_string().parse::<f64>().unwrap_or(0.0),
+                        );
+                    }
                     let pos = self.risk_state.position_by_instrument.get(fill_key.as_str()).copied().unwrap_or(Decimal::ZERO);
                     crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
                     crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
@@ -374,11 +398,21 @@ impl ArbitrageEngine {
                         self.circuit_breaker.record_success();
                         self.circuit_breaker.record_order();
                         submitted_count += 1;
+                        let intended_price = order.price.unwrap_or(Decimal::ZERO);
+                        if !intended_price.is_zero() {
+                            self.intended_fills.insert(
+                                order_id.clone(),
+                                IntendedFill {
+                                    side: order.side,
+                                    intended_price,
+                                },
+                            );
+                        }
                         trade_legs.push(TradeLeg {
                             venue: order.venue,
                             instrument: order.instrument.clone(),
                             side: order.side,
-                            intended_price: order.price.unwrap_or(Decimal::ZERO),
+                            intended_price,
                             intended_quantity: order.quantity,
                             order_id: Some(order_id.clone()),
                             submitted_at: Utc::now(),
