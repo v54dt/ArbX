@@ -42,6 +42,8 @@ use risk::manager::RiskManager;
 use risk::state::RiskState;
 use strategy::base::ArbitrageStrategy;
 use strategy::cross_exchange::CrossExchangeStrategy;
+use strategy::ewma_spread::EwmaSpreadStrategy;
+use strategy::multi_pair_cross_exchange::{MultiPairCrossExchangeStrategy, PairConfig};
 
 use clap::Parser;
 use config::{InstrumentConfig, VenueConfig};
@@ -431,32 +433,116 @@ async fn main() -> anyhow::Result<()> {
         .lot_size_b
         .unwrap_or(rust_decimal_macros::dec!(0.00001));
 
-    // Strategy dispatch: `strategy.name` in config selects which strategy to run.
-    // Additional strategies (ewma_spread, triangular_arb, multi_pair) are available
-    // via their respective feature branches; add arms here once merged.
-    let strategy: Box<dyn ArbitrageStrategy> = {
-        tracing::info!(
-            strategy = cfg.strategy.name.as_str(),
-            venue_a = ?venue_a,
-            venue_b = ?venue_b,
-            "using CrossExchangeStrategy"
-        );
-        Box::new(CrossExchangeStrategy {
-            venue_a,
-            venue_b,
-            instrument_a,
-            instrument_b,
-            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-            max_quantity: cfg.strategy.max_quantity,
-            fee_a,
-            fee_b,
-            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-            tick_size_a: tick_a,
-            tick_size_b: tick_b,
-            lot_size_a: lot_a,
-            lot_size_b: lot_b,
-            max_book_depth: cfg.strategy.max_book_depth,
-        })
+    let strategy: Box<dyn ArbitrageStrategy> = match cfg.strategy.name.as_str() {
+        "cross_exchange" => {
+            tracing::info!(venue_a = ?venue_a, venue_b = ?venue_b, "using CrossExchangeStrategy");
+            Box::new(CrossExchangeStrategy {
+                venue_a,
+                venue_b,
+                instrument_a: instrument_a.clone(),
+                instrument_b: instrument_b.clone(),
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_a: fee_a.clone(),
+                fee_b: fee_b.clone(),
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                tick_size_a: tick_a,
+                tick_size_b: tick_b,
+                lot_size_a: lot_a,
+                lot_size_b: lot_b,
+                max_book_depth: cfg.strategy.max_book_depth,
+            })
+        }
+        "multi_pair" => {
+            let extra_instruments: Vec<_> = cfg.venues[0]
+                .instruments
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|icfg| parse_instrument(icfg).ok())
+                .collect();
+            if extra_instruments.len() < 2 {
+                anyhow::bail!(
+                    "strategy.name=multi_pair requires venues[0].instruments to list ≥ 2 \
+                     entries; found {}",
+                    extra_instruments.len()
+                );
+            }
+            let pairs: Vec<PairConfig> = extra_instruments
+                .iter()
+                .map(|inst| {
+                    let mut inst_b = inst.clone();
+                    inst_b.instrument_type = instrument_b.instrument_type;
+                    inst_b.settle_currency = instrument_b.settle_currency.clone();
+                    PairConfig {
+                        venue_a,
+                        venue_b,
+                        instrument_a: inst.clone(),
+                        instrument_b: inst_b,
+                        max_quantity: cfg.strategy.max_quantity,
+                        tick_size_a: tick_a,
+                        tick_size_b: tick_b,
+                        lot_size_a: lot_a,
+                        lot_size_b: lot_b,
+                        fee_a: fee_a.clone(),
+                        fee_b: fee_b.clone(),
+                    }
+                })
+                .collect();
+            tracing::info!(
+                pairs = pairs.len(),
+                venue_a = ?venue_a,
+                venue_b = ?venue_b,
+                "using MultiPairCrossExchangeStrategy"
+            );
+            Box::new(MultiPairCrossExchangeStrategy {
+                pairs,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_book_depth: cfg.strategy.max_book_depth,
+            })
+        }
+        "ewma_spread" => {
+            let alpha = cfg
+                .strategy
+                .ewma_alpha
+                .unwrap_or(rust_decimal_macros::dec!(0.05));
+            let entry_sigma = cfg
+                .strategy
+                .ewma_entry_sigma
+                .unwrap_or(rust_decimal_macros::dec!(2.0));
+            let min_samples = cfg.strategy.ewma_min_samples.unwrap_or(60);
+            tracing::info!(
+                %alpha, %entry_sigma, min_samples,
+                venue_a = ?venue_a, venue_b = ?venue_b,
+                "using EwmaSpreadStrategy"
+            );
+            Box::new(EwmaSpreadStrategy::new(
+                venue_a,
+                venue_b,
+                instrument_a.clone(),
+                instrument_b.clone(),
+                fee_a.clone(),
+                fee_b.clone(),
+                alpha,
+                entry_sigma,
+                cfg.strategy.max_quantity,
+                cfg.strategy.min_net_profit_bps,
+                cfg.strategy.max_quote_age_ms,
+                tick_a,
+                tick_b,
+                lot_a,
+                cfg.strategy.max_book_depth,
+                min_samples,
+            ))
+        }
+        "triangular_arb" => {
+            anyhow::bail!(
+                "strategy.name=triangular_arb is not yet configurable via YAML; \
+                 TriangleCycle must be constructed in code"
+            );
+        }
+        other => anyhow::bail!("unknown strategy.name: {other}"),
     };
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a, feed_b];
