@@ -96,6 +96,18 @@ pub struct StrategyConfig {
     /// EwmaSpreadStrategy: minimum samples before trading (default 60)
     #[serde(default)]
     pub ewma_min_samples: Option<u32>,
+    /// FundingRateStrategy: annualized bps threshold to trigger (default = min_net_profit_bps)
+    #[serde(default)]
+    pub funding_min_bps: Option<Decimal>,
+    /// TwEtfFuturesStrategy: hedge ratio (futures : ETF; default 1.0)
+    #[serde(default)]
+    pub tw_hedge_ratio: Option<Decimal>,
+    /// TwEtfFuturesStrategy: annualized cost of carry in bps (default 0)
+    #[serde(default)]
+    pub tw_cost_of_carry_bps: Option<Decimal>,
+    /// TwEtfFuturesStrategy: days to futures expiry (default 30)
+    #[serde(default)]
+    pub tw_days_to_expiry: Option<i64>,
 }
 
 fn default_max_book_depth() -> usize {
