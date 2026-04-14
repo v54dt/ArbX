@@ -64,3 +64,18 @@ pub fn set_ws_connected(venue: &str, connected: bool) {
 pub fn record_ws_message(venue: &str) {
     counter!("arbx_ws_messages_received_total", "venue" => venue.to_string()).increment(1);
 }
+
+#[allow(dead_code)]
+pub fn record_ws_private_reconnect(venue: &str) {
+    counter!("arbx_ws_private_reconnects_total", "venue" => venue.to_string()).increment(1);
+}
+pub fn set_ws_private_connected(venue: &str, connected: bool) {
+    gauge!("arbx_ws_private_connected", "venue" => venue.to_string()).set(if connected {
+        1.0
+    } else {
+        0.0
+    });
+}
+pub fn record_ws_private_message(venue: &str) {
+    counter!("arbx_ws_private_messages_received_total", "venue" => venue.to_string()).increment(1);
+}

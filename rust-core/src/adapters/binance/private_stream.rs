@@ -162,6 +162,7 @@ impl PrivateStream for BinancePrivateStream {
 
         let (ws_stream, _) = connect_async(&url).await?;
         info!(url = url.as_str(), "connected to Binance private WebSocket");
+        crate::metrics::set_ws_private_connected("binance", true);
 
         self.listen_key = Some(listen_key.clone());
 
@@ -174,6 +175,7 @@ impl PrivateStream for BinancePrivateStream {
             while let Some(msg) = read.next().await {
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                        crate::metrics::record_ws_private_message("binance");
                         let text = text.to_string();
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
                             && let Some((fill, update)) =
@@ -190,6 +192,7 @@ impl PrivateStream for BinancePrivateStream {
                     _ => {}
                 }
             }
+            crate::metrics::set_ws_private_connected("binance", false);
         });
         self.ws_task = Some(ws_task);
 
