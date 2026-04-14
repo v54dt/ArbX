@@ -11,6 +11,7 @@ use smallvec::SmallVec;
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
+use crate::adapters::private_stream::PrivateStream;
 use crate::models::market::book_key as make_book_key;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
@@ -31,6 +32,7 @@ pub struct ArbitrageEngine {
     circuit_breaker: CircuitBreaker,
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
+    private_streams: Vec<Box<dyn PrivateStream>>,
     books: BookMap,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
@@ -48,6 +50,7 @@ impl ArbitrageEngine {
         circuit_breaker: CircuitBreaker,
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
+        private_streams: Vec<Box<dyn PrivateStream>>,
         reconcile_interval_secs: u64,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
@@ -59,6 +62,7 @@ impl ArbitrageEngine {
             circuit_breaker,
             executor,
             position_manager,
+            private_streams,
             books: BookMap::default(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
@@ -110,7 +114,7 @@ impl ArbitrageEngine {
         let exec_receivers = self.executor.connect().await?;
         let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
         {
-            let tx = fill_tx;
+            let tx = fill_tx.clone();
             let mut fills = exec_receivers.fills;
             tokio::spawn(async move {
                 while let Some(f) = fills.recv().await {
@@ -120,6 +124,32 @@ impl ArbitrageEngine {
                 }
             });
         }
+
+        for stream in self.private_streams.iter_mut() {
+            match stream.connect().await {
+                Ok(ps_receivers) => {
+                    let tx = fill_tx.clone();
+                    let mut fills = ps_receivers.fills;
+                    tokio::spawn(async move {
+                        while let Some(f) = fills.recv().await {
+                            if tx.send(f).is_err() {
+                                break;
+                            }
+                        }
+                    });
+                    let mut updates = ps_receivers.order_updates;
+                    tokio::spawn(async move {
+                        while let Some(u) = updates.recv().await {
+                            tracing::debug!(order_id = u.order_id.as_str(), status = ?u.status, "private stream order update");
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!(error = %e, "private stream connect failed, skipping");
+                }
+            }
+        }
+        drop(fill_tx);
 
         let mut reconcile_interval =
             tokio::time::interval(std::time::Duration::from_secs(self.reconcile_interval_secs));
