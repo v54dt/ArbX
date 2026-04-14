@@ -214,8 +214,10 @@ impl BinancePositionManager {
 
         let total_equity: Decimal = info.total_wallet_balance.parse().unwrap_or(Decimal::ZERO);
         let available_balance: Decimal = info.available_balance.parse().unwrap_or(Decimal::ZERO);
-        let unrealized_pnl: Decimal =
-            info.total_unrealized_profit.parse().unwrap_or(Decimal::ZERO);
+        let unrealized_pnl: Decimal = info
+            .total_unrealized_profit
+            .parse()
+            .unwrap_or(Decimal::ZERO);
 
         let mut positions = Vec::new();
         for p in info.positions {
@@ -319,14 +321,12 @@ impl PositionManager for BinancePositionManager {
             }
         };
 
-        let (path, parser): (
-            &str,
-            fn(&str, Venue) -> anyhow::Result<PortfolioSnapshot>,
-        ) = match self.market {
-            BinanceMarket::Spot => ("/api/v3/account", Self::parse_spot_portfolio),
-            BinanceMarket::UsdtFutures => ("/fapi/v2/account", Self::parse_futures_portfolio),
-            BinanceMarket::CoinFutures => ("/dapi/v2/account", Self::parse_futures_portfolio),
-        };
+        let (path, parser): (&str, fn(&str, Venue) -> anyhow::Result<PortfolioSnapshot>) =
+            match self.market {
+                BinanceMarket::Spot => ("/api/v3/account", Self::parse_spot_portfolio),
+                BinanceMarket::UsdtFutures => ("/fapi/v2/account", Self::parse_futures_portfolio),
+                BinanceMarket::CoinFutures => ("/dapi/v2/account", Self::parse_futures_portfolio),
+            };
 
         let req = RestRequest {
             method: HttpMethod::Get,
@@ -523,8 +523,7 @@ mod tests {
                 {"asset": "ETH", "free": "0.0", "locked": "0.0"}
             ]
         }"#;
-        let snap =
-            BinancePositionManager::parse_spot_portfolio(json, Venue::Binance).unwrap();
+        let snap = BinancePositionManager::parse_spot_portfolio(json, Venue::Binance).unwrap();
         // ETH with zero balance should be filtered out
         assert_eq!(snap.positions.len(), 2);
         assert_eq!(snap.available_balance, dec!(1000));
@@ -549,8 +548,7 @@ mod tests {
                 {"symbol": "ETHUSDT", "positionAmt": "0.0", "entryPrice": "0.0", "unrealizedProfit": "0.0"}
             ]
         }"#;
-        let snap =
-            BinancePositionManager::parse_futures_portfolio(json, Venue::Binance).unwrap();
+        let snap = BinancePositionManager::parse_futures_portfolio(json, Venue::Binance).unwrap();
         // ETH with zero positionAmt filtered out
         assert_eq!(snap.positions.len(), 1);
         assert_eq!(snap.total_equity, dec!(5000));
@@ -611,8 +609,7 @@ mod tests {
     #[test]
     fn empty_portfolio_returns_valid_snapshot() {
         let json = r#"{"balances": []}"#;
-        let snap =
-            BinancePositionManager::parse_spot_portfolio(json, Venue::Binance).unwrap();
+        let snap = BinancePositionManager::parse_spot_portfolio(json, Venue::Binance).unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);
         assert_eq!(snap.available_balance, Decimal::ZERO);

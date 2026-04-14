@@ -349,8 +349,7 @@ impl PositionManager for OkxPositionManager {
             return Ok(self.local_snapshot());
         }
 
-        let snapshot =
-            Self::parse_balance_response(&bal_resp.body, &pos_resp.body, Venue::Okx)?;
+        let snapshot = Self::parse_balance_response(&bal_resp.body, &pos_resp.body, Venue::Okx)?;
         tracing::info!(
             num_positions = snapshot.positions.len(),
             total_equity = %snapshot.total_equity,
@@ -496,12 +495,9 @@ mod tests {
         }"#;
         let positions_json = r#"{"data": []}"#;
 
-        let snap = OkxPositionManager::parse_balance_response(
-            balance_json,
-            positions_json,
-            Venue::Okx,
-        )
-        .unwrap();
+        let snap =
+            OkxPositionManager::parse_balance_response(balance_json, positions_json, Venue::Okx)
+                .unwrap();
 
         // ETH with zero cashBal filtered out
         assert_eq!(snap.positions.len(), 2);
@@ -567,12 +563,9 @@ mod tests {
     fn empty_portfolio_returns_valid_snapshot() {
         let balance_json = r#"{"data": []}"#;
         let positions_json = r#"{"data": []}"#;
-        let snap = OkxPositionManager::parse_balance_response(
-            balance_json,
-            positions_json,
-            Venue::Okx,
-        )
-        .unwrap();
+        let snap =
+            OkxPositionManager::parse_balance_response(balance_json, positions_json, Venue::Okx)
+                .unwrap();
         assert!(snap.positions.is_empty());
         assert_eq!(snap.total_equity, Decimal::ZERO);
         assert_eq!(snap.available_balance, Decimal::ZERO);

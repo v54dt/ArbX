@@ -201,8 +201,10 @@ impl BybitPositionManager {
         let (total_equity, available_balance, coin_positions) =
             if let Some(wallet) = wallet_resp.result.list.into_iter().next() {
                 let equity: Decimal = wallet.total_equity.parse().unwrap_or(Decimal::ZERO);
-                let available: Decimal =
-                    wallet.available_to_withdraw.parse().unwrap_or(Decimal::ZERO);
+                let available: Decimal = wallet
+                    .available_to_withdraw
+                    .parse()
+                    .unwrap_or(Decimal::ZERO);
 
                 let mut coin_pos = Vec::new();
                 for c in wallet.coin {
