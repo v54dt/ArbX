@@ -63,6 +63,7 @@ impl OkxRestClient {
         match method {
             HttpMethod::Get => "GET",
             HttpMethod::Post => "POST",
+            HttpMethod::Put => "PUT",
             HttpMethod::Delete => "DELETE",
         }
     }
@@ -111,6 +112,7 @@ impl ExchangeRestClient for OkxRestClient {
         let mut req = match request.method {
             HttpMethod::Get => self.http.get(&url),
             HttpMethod::Post => self.http.post(&url).body(body),
+            HttpMethod::Put => self.http.put(&url),
             HttpMethod::Delete => self.http.delete(&url),
         };
 
@@ -153,6 +155,7 @@ impl ExchangeRestClient for OkxRestClient {
         let req = match request.method {
             HttpMethod::Get => self.http.get(&url),
             HttpMethod::Post => self.http.post(&url),
+            HttpMethod::Put => self.http.put(&url),
             HttpMethod::Delete => self.http.delete(&url),
         };
 
