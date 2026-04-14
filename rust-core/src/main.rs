@@ -40,7 +40,9 @@ use risk::circuit_breaker::CircuitBreaker;
 use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
 use risk::manager::RiskManager;
 use risk::state::RiskState;
+use strategy::base::ArbitrageStrategy;
 use strategy::cross_exchange::CrossExchangeStrategy;
+use strategy::multi_pair_cross_exchange::{MultiPairCrossExchangeStrategy, PairConfig};
 
 use clap::Parser;
 use config::{InstrumentConfig, VenueConfig};
@@ -413,33 +415,92 @@ async fn main() -> anyhow::Result<()> {
     let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a).await?;
     let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b).await?;
 
-    let strategy = CrossExchangeStrategy {
-        venue_a,
-        venue_b,
-        instrument_a,
-        instrument_b,
-        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-        max_quantity: cfg.strategy.max_quantity,
-        fee_a,
-        fee_b,
-        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-        tick_size_a: cfg
+    // Use MultiPairCrossExchangeStrategy when venues list additional instruments;
+    // fall back to single-pair CrossExchangeStrategy otherwise.
+    let multi_instruments: Vec<_> = cfg.venues[0]
+        .instruments
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|icfg| parse_instrument(icfg).ok())
+        .collect();
+
+    let strategy: Box<dyn ArbitrageStrategy> = if multi_instruments.len() > 1 {
+        let tick = cfg
             .strategy
             .tick_size_a
-            .unwrap_or(rust_decimal_macros::dec!(0.01)),
-        tick_size_b: cfg
-            .strategy
-            .tick_size_b
-            .unwrap_or(rust_decimal_macros::dec!(0.01)),
-        lot_size_a: cfg
+            .unwrap_or(rust_decimal_macros::dec!(0.01));
+        let lot = cfg
             .strategy
             .lot_size_a
-            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
-        lot_size_b: cfg
-            .strategy
-            .lot_size_b
-            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
-        max_book_depth: cfg.strategy.max_book_depth,
+            .unwrap_or(rust_decimal_macros::dec!(0.00001));
+        let pairs: Vec<PairConfig> = multi_instruments
+            .iter()
+            .map(|inst| {
+                // For each additional instrument, mirror instrument on venue_b
+                let inst_b = {
+                    let mut b = inst.clone();
+                    // venue_b instrument type comes from strategy.instrument_b
+                    b.instrument_type = instrument_b.instrument_type;
+                    b.settle_currency = instrument_b.settle_currency.clone();
+                    b
+                };
+                PairConfig {
+                    venue_a,
+                    venue_b,
+                    instrument_a: inst.clone(),
+                    instrument_b: inst_b,
+                    max_quantity: cfg.strategy.max_quantity,
+                    tick_size_a: tick,
+                    tick_size_b: tick,
+                    lot_size_a: lot,
+                    lot_size_b: lot,
+                    fee_a: fee_a.clone(),
+                    fee_b: fee_b.clone(),
+                }
+            })
+            .collect();
+        tracing::info!(
+            pairs = pairs.len(),
+            venue_a = ?venue_a,
+            venue_b = ?venue_b,
+            "using MultiPairCrossExchangeStrategy"
+        );
+        Box::new(MultiPairCrossExchangeStrategy {
+            pairs,
+            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            max_book_depth: cfg.strategy.max_book_depth,
+        })
+    } else {
+        Box::new(CrossExchangeStrategy {
+            venue_a,
+            venue_b,
+            instrument_a,
+            instrument_b,
+            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+            max_quantity: cfg.strategy.max_quantity,
+            fee_a,
+            fee_b,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            tick_size_a: cfg
+                .strategy
+                .tick_size_a
+                .unwrap_or(rust_decimal_macros::dec!(0.01)),
+            tick_size_b: cfg
+                .strategy
+                .tick_size_b
+                .unwrap_or(rust_decimal_macros::dec!(0.01)),
+            lot_size_a: cfg
+                .strategy
+                .lot_size_a
+                .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+            lot_size_b: cfg
+                .strategy
+                .lot_size_b
+                .unwrap_or(rust_decimal_macros::dec!(0.00001)),
+            max_book_depth: cfg.strategy.max_book_depth,
+        })
     };
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a, feed_b];
@@ -482,7 +543,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut engine = ArbitrageEngine::new(
         feeds,
-        Box::new(strategy),
+        strategy,
         risk_manager,
         risk_state,
         circuit_breaker,

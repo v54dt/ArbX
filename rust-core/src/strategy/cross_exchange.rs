@@ -32,19 +32,22 @@ pub struct CrossExchangeStrategy {
     pub max_book_depth: usize,
 }
 
-struct DirectionParams<'a> {
-    buy_venue: Venue,
-    buy_instrument: &'a Instrument,
-    sell_venue: Venue,
-    sell_instrument: &'a Instrument,
-    buy_fee: Decimal,
-    sell_fee: Decimal,
-    tick_size_buy: Decimal,
-    tick_size_sell: Decimal,
-    lot_size: Decimal,
+pub(crate) struct DirectionParams<'a> {
+    pub(crate) buy_venue: Venue,
+    pub(crate) buy_instrument: &'a Instrument,
+    pub(crate) sell_venue: Venue,
+    pub(crate) sell_instrument: &'a Instrument,
+    pub(crate) buy_fee: Decimal,
+    pub(crate) sell_fee: Decimal,
+    pub(crate) tick_size_buy: Decimal,
+    pub(crate) tick_size_sell: Decimal,
+    pub(crate) lot_size: Decimal,
+    pub(crate) max_quantity: Decimal,
+    pub(crate) min_net_profit_bps: Decimal,
+    pub(crate) strategy_id: &'a str,
 }
 
-fn quantize(value: Decimal, step: Decimal) -> Decimal {
+pub(crate) fn quantize(value: Decimal, step: Decimal) -> Decimal {
     if step.is_zero() {
         return value;
     }
@@ -106,142 +109,162 @@ pub(crate) fn vwap_bid(
     }
 }
 
-impl CrossExchangeStrategy {
-    fn check_inventory(
-        &self,
-        portfolios: &HashMap<String, PortfolioSnapshot>,
-        buy_venue: Venue,
-        buy_instrument: &Instrument,
-        quantity: Decimal,
-    ) -> Decimal {
-        let half_max = self.max_quantity * Decimal::new(5, 1);
-        for snapshot in portfolios.values() {
-            if snapshot.venue != buy_venue {
-                continue;
-            }
-            for pos in &snapshot.positions {
-                if pos.instrument == *buy_instrument && pos.quantity > half_max {
-                    let excess = pos.quantity - half_max;
-                    let reduced = quantity - excess;
-                    return if reduced > Decimal::ZERO {
-                        reduced
-                    } else {
-                        Decimal::ZERO
-                    };
-                }
+/// Cap `quantity` based on existing long position at `buy_venue`/`buy_instrument`.
+/// Reduces size if position exceeds half of `max_quantity` to avoid over-concentration.
+pub(crate) fn check_inventory_capped(
+    portfolios: &HashMap<String, PortfolioSnapshot>,
+    buy_venue: Venue,
+    buy_instrument: &Instrument,
+    max_quantity: Decimal,
+    quantity: Decimal,
+) -> Decimal {
+    let half_max = max_quantity * Decimal::new(5, 1);
+    for snapshot in portfolios.values() {
+        if snapshot.venue != buy_venue {
+            continue;
+        }
+        for pos in &snapshot.positions {
+            if pos.instrument == *buy_instrument && pos.quantity > half_max {
+                let excess = pos.quantity - half_max;
+                let reduced = quantity - excess;
+                return if reduced > Decimal::ZERO {
+                    reduced
+                } else {
+                    Decimal::ZERO
+                };
             }
         }
-        quantity
+    }
+    quantity
+}
+
+/// Evaluate one cross-exchange direction and return an `Opportunity` if profitable.
+pub(crate) fn evaluate_cross_direction(
+    books: &BookMap,
+    portfolios: &HashMap<String, PortfolioSnapshot>,
+    params: DirectionParams<'_>,
+    max_quote_age_ms: i64,
+    max_book_depth: usize,
+) -> Option<Opportunity> {
+    let DirectionParams {
+        buy_venue,
+        buy_instrument,
+        sell_venue,
+        sell_instrument,
+        buy_fee,
+        sell_fee,
+        tick_size_buy,
+        tick_size_sell,
+        lot_size,
+        max_quantity,
+        min_net_profit_bps,
+        strategy_id,
+    } = params;
+    let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
+    let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
+
+    let now = Utc::now();
+    let max_age = Duration::milliseconds(max_quote_age_ms);
+    if now - buy_book.local_timestamp > max_age || now - sell_book.local_timestamp > max_age {
+        return None;
     }
 
+    let (vwap_ask_price, ask_fill) = vwap_ask(buy_book, max_quantity, max_book_depth)?;
+    let (vwap_bid_price, bid_fill) = vwap_bid(sell_book, max_quantity, max_book_depth)?;
+
+    if vwap_bid_price <= vwap_ask_price {
+        return None;
+    }
+
+    let raw_qty = ask_fill.min(bid_fill).min(max_quantity);
+
+    let quantity = quantize(
+        check_inventory_capped(portfolios, buy_venue, buy_instrument, max_quantity, raw_qty),
+        lot_size,
+    );
+    if quantity <= Decimal::ZERO {
+        return None;
+    }
+
+    let (final_ask, _) = vwap_ask(buy_book, quantity, max_book_depth)?;
+    let (final_bid, _) = vwap_bid(sell_book, quantity, max_book_depth)?;
+
+    let order_ask = quantize_up(final_ask, tick_size_buy);
+    let order_bid = quantize(final_bid, tick_size_sell);
+
+    let gross_profit = (order_bid - order_ask) * quantity;
+    let fee_buy = order_ask * quantity * buy_fee;
+    let fee_sell = order_bid * quantity * sell_fee;
+    let fees_total = fee_buy + fee_sell;
+    let net_profit = gross_profit - fees_total;
+
+    if net_profit <= Decimal::ZERO {
+        return None;
+    }
+
+    let notional = order_ask * quantity;
+    let net_profit_bps = (net_profit / notional) * Decimal::from(10_000);
+
+    if net_profit_bps < min_net_profit_bps {
+        return None;
+    }
+
+    let now = Utc::now();
+    let legs = smallvec![
+        Leg {
+            venue: buy_venue,
+            instrument: buy_instrument.clone(),
+            side: Side::Buy,
+            quote_price: final_ask,
+            order_price: order_ask,
+            quantity,
+            fee_estimate: fee_buy,
+        },
+        Leg {
+            venue: sell_venue,
+            instrument: sell_instrument.clone(),
+            side: Side::Sell,
+            quote_price: final_bid,
+            order_price: order_bid,
+            quantity,
+            fee_estimate: fee_sell,
+        },
+    ];
+
+    Some(Opportunity {
+        id: format!("{}-{}", strategy_id, now.timestamp_nanos_opt().unwrap_or(0)),
+        kind: OpportunityKind::CrossExchange,
+        legs,
+        economics: Economics {
+            gross_profit,
+            fees_total,
+            net_profit,
+            net_profit_bps,
+            notional,
+        },
+        meta: OpportunityMeta {
+            detected_at: now,
+            quote_ts_per_leg: smallvec![buy_book.timestamp, sell_book.timestamp],
+            ttl: Duration::milliseconds(50),
+            strategy_id: strategy_id.to_string(),
+        },
+    })
+}
+
+impl CrossExchangeStrategy {
     fn evaluate_direction(
         &self,
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
         params: DirectionParams<'_>,
     ) -> Option<Opportunity> {
-        let DirectionParams {
-            buy_venue,
-            buy_instrument,
-            sell_venue,
-            sell_instrument,
-            buy_fee,
-            sell_fee,
-            tick_size_buy,
-            tick_size_sell,
-            lot_size,
-        } = params;
-        let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
-        let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
-
-        let now = Utc::now();
-        let max_age = Duration::milliseconds(self.max_quote_age_ms);
-        if now - buy_book.local_timestamp > max_age || now - sell_book.local_timestamp > max_age {
-            return None;
-        }
-
-        let (vwap_ask_price, ask_fill) =
-            vwap_ask(buy_book, self.max_quantity, self.max_book_depth)?;
-        let (vwap_bid_price, bid_fill) =
-            vwap_bid(sell_book, self.max_quantity, self.max_book_depth)?;
-
-        if vwap_bid_price <= vwap_ask_price {
-            return None;
-        }
-
-        let raw_qty = ask_fill.min(bid_fill).min(self.max_quantity);
-
-        let quantity = quantize(
-            self.check_inventory(portfolios, buy_venue, buy_instrument, raw_qty),
-            lot_size,
-        );
-        if quantity <= Decimal::ZERO {
-            return None;
-        }
-
-        let (final_ask, _) = vwap_ask(buy_book, quantity, self.max_book_depth)?;
-        let (final_bid, _) = vwap_bid(sell_book, quantity, self.max_book_depth)?;
-
-        let order_ask = quantize_up(final_ask, tick_size_buy);
-        let order_bid = quantize(final_bid, tick_size_sell);
-
-        let gross_profit = (order_bid - order_ask) * quantity;
-        let fee_buy = order_ask * quantity * buy_fee;
-        let fee_sell = order_bid * quantity * sell_fee;
-        let fees_total = fee_buy + fee_sell;
-        let net_profit = gross_profit - fees_total;
-
-        if net_profit <= Decimal::ZERO {
-            return None;
-        }
-
-        let notional = order_ask * quantity;
-        let net_profit_bps = (net_profit / notional) * Decimal::from(10_000);
-
-        if net_profit_bps < self.min_net_profit_bps {
-            return None;
-        }
-
-        let now = Utc::now();
-        let legs = smallvec![
-            Leg {
-                venue: buy_venue,
-                instrument: buy_instrument.clone(),
-                side: Side::Buy,
-                quote_price: final_ask,
-                order_price: order_ask,
-                quantity,
-                fee_estimate: fee_buy,
-            },
-            Leg {
-                venue: sell_venue,
-                instrument: sell_instrument.clone(),
-                side: Side::Sell,
-                quote_price: final_bid,
-                order_price: order_bid,
-                quantity,
-                fee_estimate: fee_sell,
-            },
-        ];
-
-        Some(Opportunity {
-            id: format!("{}-{}", self.name(), now.timestamp_nanos_opt().unwrap_or(0)),
-            kind: OpportunityKind::CrossExchange,
-            legs,
-            economics: Economics {
-                gross_profit,
-                fees_total,
-                net_profit,
-                net_profit_bps,
-                notional,
-            },
-            meta: OpportunityMeta {
-                detected_at: now,
-                quote_ts_per_leg: smallvec![buy_book.timestamp, sell_book.timestamp],
-                ttl: Duration::milliseconds(50),
-                strategy_id: self.name().to_string(),
-            },
-        })
+        evaluate_cross_direction(
+            books,
+            portfolios,
+            params,
+            self.max_quote_age_ms,
+            self.max_book_depth,
+        )
     }
 }
 
@@ -265,6 +288,9 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 tick_size_buy: self.tick_size_a,
                 tick_size_sell: self.tick_size_b,
                 lot_size: self.lot_size_a.max(self.lot_size_b),
+                max_quantity: self.max_quantity,
+                min_net_profit_bps: self.min_net_profit_bps,
+                strategy_id: self.name(),
             },
         );
         let b_to_a = self.evaluate_direction(
@@ -280,6 +306,9 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 tick_size_buy: self.tick_size_b,
                 tick_size_sell: self.tick_size_a,
                 lot_size: self.lot_size_a.max(self.lot_size_b),
+                max_quantity: self.max_quantity,
+                min_net_profit_bps: self.min_net_profit_bps,
+                strategy_id: self.name(),
             },
         );
 
