@@ -8,7 +8,7 @@ use sha2::Sha256;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
 use crate::models::enums::{OrderStatus, Side, Venue};
@@ -163,46 +163,110 @@ impl OkxPrivateStream {
 #[async_trait]
 impl PrivateStream for OkxPrivateStream {
     async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
-        let (ws_stream, _) = connect_async(WS_URL).await?;
-        info!(url = WS_URL, "connected to OKX private WebSocket");
-        crate::metrics::set_ws_private_connected("okx", true);
-
         let (fill_tx, fill_rx) = mpsc::unbounded_channel();
         let (order_tx, order_rx) = mpsc::unbounded_channel();
 
-        let login_msg = Self::build_login_msg(&self.api_key, &self.api_secret, &self.passphrase);
-        let subscribe_msg = serde_json::json!({
-            "op": "subscribe",
-            "args": [{"channel": "orders", "instType": "ANY"}]
-        })
-        .to_string();
-
-        let (mut write, mut read) = ws_stream.split();
-
-        use futures_util::SinkExt;
-        write
-            .send(tokio_tungstenite::tungstenite::Message::Text(
-                login_msg.into(),
-            ))
-            .await?;
+        let api_key = self.api_key.clone();
+        let api_secret = self.api_secret.clone();
+        let passphrase = self.passphrase.clone();
 
         let ws_task = tokio::spawn(async move {
-            use futures_util::SinkExt;
-            let mut subscribed = false;
-            let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(25));
-            ping_interval.tick().await;
+            let mut backoff = std::time::Duration::from_secs(1);
+            let max_backoff = std::time::Duration::from_secs(60);
+            let mut first_connect = true;
             loop {
-                tokio::select! {
-                    _ = ping_interval.tick() => {
-                        let ping = tokio_tungstenite::tungstenite::Message::Text("ping".into());
-                        if let Err(e) = write.send(ping).await {
-                            warn!(error = %e, "OKX private WS ping failed");
-                            break;
-                        }
-                        continue;
+                match run_okx_stream(
+                    &api_key,
+                    &api_secret,
+                    &passphrase,
+                    &fill_tx,
+                    &order_tx,
+                    first_connect,
+                )
+                .await
+                {
+                    Ok(()) => {
+                        info!("OKX private stream ended cleanly, exiting reconnect loop");
+                        crate::metrics::set_ws_private_connected("okx", false);
+                        break;
                     }
-                    maybe_msg = read.next() => {
-                        let Some(msg) = maybe_msg else { break };
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            backoff_ms = backoff.as_millis() as u64,
+                            "OKX private WS disconnected, reconnecting"
+                        );
+                        crate::metrics::set_ws_private_connected("okx", false);
+                    }
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                first_connect = false;
+            }
+        });
+        self.ws_task = Some(ws_task);
+
+        Ok(PrivateStreamReceivers {
+            fills: fill_rx,
+            order_updates: order_rx,
+        })
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        if let Some(task) = self.ws_task.take() {
+            task.abort();
+        }
+        info!("disconnected from OKX private WebSocket");
+        Ok(())
+    }
+}
+
+async fn run_okx_stream(
+    api_key: &str,
+    api_secret: &str,
+    passphrase: &str,
+    fill_tx: &mpsc::UnboundedSender<Fill>,
+    order_tx: &mpsc::UnboundedSender<OrderUpdate>,
+    first_connect: bool,
+) -> anyhow::Result<()> {
+    use futures_util::SinkExt;
+
+    let (ws_stream, _) = connect_async(WS_URL).await?;
+    info!(url = WS_URL, "connected to OKX private WebSocket");
+    if !first_connect {
+        crate::metrics::record_ws_private_reconnect("okx");
+    }
+    crate::metrics::set_ws_private_connected("okx", true);
+
+    let login_msg = OkxPrivateStream::build_login_msg(api_key, api_secret, passphrase);
+    let subscribe_msg = serde_json::json!({
+        "op": "subscribe",
+        "args": [{"channel": "orders", "instType": "ANY"}]
+    })
+    .to_string();
+
+    let (mut write, mut read) = ws_stream.split();
+
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            login_msg.into(),
+        ))
+        .await?;
+
+    let mut subscribed = false;
+    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(25));
+    ping_interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = ping_interval.tick() => {
+                let ping = tokio_tungstenite::tungstenite::Message::Text("ping".into());
+                write.send(ping).await?;
+            }
+            maybe_msg = read.next() => {
+                let Some(msg) = maybe_msg else {
+                    anyhow::bail!("stream ended");
+                };
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                         crate::metrics::record_ws_private_message("okx");
@@ -211,17 +275,15 @@ impl PrivateStream for OkxPrivateStream {
                             continue;
                         };
 
-                        // After login success, subscribe to orders
                         if !subscribed {
                             let event = json.get("event").and_then(|v| v.as_str());
                             let code = json.get("code").and_then(|v| v.as_str());
                             if event == Some("login") && code == Some("0") {
-                                use futures_util::SinkExt;
-                                let _ = write
+                                write
                                     .send(tokio_tungstenite::tungstenite::Message::Text(
                                         subscribe_msg.clone().into(),
                                     ))
-                                    .await;
+                                    .await?;
                                 subscribed = true;
                                 info!("OKX private stream: logged in and subscribed to orders");
                             }
@@ -246,32 +308,11 @@ impl PrivateStream for OkxPrivateStream {
                             }
                         }
                     }
-                    Err(e) => {
-                        error!(error = %e, "OKX private WebSocket error");
-                        break;
-                    }
+                    Err(e) => anyhow::bail!("WS error: {}", e),
                     _ => {}
                 }
-                    }
-                }
             }
-            warn!("OKX private WebSocket stream ended");
-            crate::metrics::set_ws_private_connected("okx", false);
-        });
-        self.ws_task = Some(ws_task);
-
-        Ok(PrivateStreamReceivers {
-            fills: fill_rx,
-            order_updates: order_rx,
-        })
-    }
-
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        if let Some(task) = self.ws_task.take() {
-            task.abort();
         }
-        info!("disconnected from OKX private WebSocket");
-        Ok(())
     }
 }
 
