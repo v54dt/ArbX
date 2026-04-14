@@ -186,8 +186,22 @@ impl PrivateStream for OkxPrivateStream {
             .await?;
 
         let ws_task = tokio::spawn(async move {
+            use futures_util::SinkExt;
             let mut subscribed = false;
-            while let Some(msg) = read.next().await {
+            let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(25));
+            ping_interval.tick().await;
+            loop {
+                tokio::select! {
+                    _ = ping_interval.tick() => {
+                        let ping = tokio_tungstenite::tungstenite::Message::Text("ping".into());
+                        if let Err(e) = write.send(ping).await {
+                            warn!(error = %e, "OKX private WS ping failed");
+                            break;
+                        }
+                        continue;
+                    }
+                    maybe_msg = read.next() => {
+                        let Some(msg) = maybe_msg else { break };
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
                         let text = text.to_string();
@@ -235,6 +249,8 @@ impl PrivateStream for OkxPrivateStream {
                         break;
                     }
                     _ => {}
+                }
+                    }
                 }
             }
             warn!("OKX private WebSocket stream ended");
