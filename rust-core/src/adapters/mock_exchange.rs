@@ -46,6 +46,10 @@ impl MockExchange {
         self.quote_interval_ms = ms;
         self
     }
+
+    pub fn positions_handle(&self) -> Arc<Mutex<HashMap<String, Position>>> {
+        self.positions.clone()
+    }
 }
 
 #[async_trait]

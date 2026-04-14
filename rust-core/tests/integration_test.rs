@@ -1,14 +1,18 @@
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use tokio::sync::mpsc;
 
 use arbx_core::adapters::mock_exchange::MockExchange;
-use arbx_core::models::enums::Venue;
+use arbx_core::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
+use arbx_core::models::enums::{Side, Venue};
 use arbx_core::models::fee::FeeSchedule;
 use arbx_core::models::instrument::{AssetClass, Instrument, InstrumentType};
 use arbx_core::models::market::Quote;
+use arbx_core::models::order::Fill;
 use arbx_core::models::trade_log::TradeOutcome;
 use arbx_core::risk::circuit_breaker::CircuitBreaker;
 use arbx_core::risk::limits::MaxPositionSize;
@@ -184,6 +188,91 @@ async fn engine_respects_risk_limits() {
             "all trades should be risk-rejected"
         );
     }
+}
+
+struct PrecannedPrivateStream {
+    fill: Option<Fill>,
+}
+
+#[async_trait]
+impl PrivateStream for PrecannedPrivateStream {
+    async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
+        let (fill_tx, fill_rx) = mpsc::unbounded_channel();
+        let (_updates_tx, order_rx) = mpsc::unbounded_channel();
+        if let Some(fill) = self.fill.take() {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let _ = fill_tx.send(fill);
+            });
+        }
+        Ok(PrivateStreamReceivers {
+            fills: fill_rx,
+            order_updates: order_rx,
+        })
+    }
+
+    async fn disconnect(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn private_stream_fill_updates_position_manager() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(50);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(50);
+    let executor = MockExchange::new(vec![], 0, 0.0);
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+    let positions_handle = position_manager.positions_handle();
+
+    let fill = Fill {
+        order_id: "external-exchange-fill-1".into(),
+        venue: Venue::Binance,
+        instrument: spot_instrument(),
+        side: Side::Buy,
+        price: dec!(50000),
+        quantity: dec!(0.123),
+        fee: Decimal::ZERO,
+        fee_currency: "USDT".into(),
+        filled_at: Utc::now(),
+    };
+    let private_stream: Box<dyn PrivateStream> = Box::new(PrecannedPrivateStream {
+        fill: Some(fill.clone()),
+    });
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        vec![private_stream],
+        3600,
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move { engine.run().await });
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let _ = shutdown_tx.send(true);
+    let _ = handle.await;
+
+    let positions = positions_handle.lock().await;
+    let key = format!("{:?}:{}", fill.venue, fill.instrument.base).to_lowercase();
+    let pos = positions
+        .get(&key)
+        .expect("private stream fill should have triggered apply_fill on position manager");
+    assert_eq!(pos.quantity, fill.quantity);
+    assert_eq!(pos.average_cost, fill.price);
 }
 
 #[tokio::test]
