@@ -50,3 +50,17 @@ pub fn record_submit_latency_us(us: f64) {
 pub fn record_quote_age_ms(ms: f64) {
     histogram!("arbx_quote_age_ms").record(ms);
 }
+
+pub fn record_ws_reconnect(venue: &str) {
+    counter!("arbx_ws_reconnects_total", "venue" => venue.to_string()).increment(1);
+}
+pub fn set_ws_connected(venue: &str, connected: bool) {
+    gauge!("arbx_ws_connected", "venue" => venue.to_string()).set(if connected {
+        1.0
+    } else {
+        0.0
+    });
+}
+pub fn record_ws_message(venue: &str) {
+    counter!("arbx_ws_messages_received_total", "venue" => venue.to_string()).increment(1);
+}

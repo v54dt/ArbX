@@ -118,12 +118,18 @@ impl MarketDataFeed for OkxMarketData {
             let mut backoff = Duration::from_secs(1);
             let max_backoff = Duration::from_secs(60);
             let mut ws_write_rx = ws_write_rx;
+            let mut first_connect = true;
 
             loop {
                 match connect_async(url).await {
                     Ok((ws_stream, _)) => {
                         backoff = Duration::from_secs(1);
                         info!(url, "connected to OKX WebSocket");
+                        if !first_connect {
+                            crate::metrics::record_ws_reconnect("okx");
+                        }
+                        first_connect = false;
+                        crate::metrics::set_ws_connected("okx", true);
                         let (mut write, mut read) = ws_stream.split();
 
                         let ws_sub =
@@ -140,6 +146,7 @@ impl MarketDataFeed for OkxMarketData {
                                 Some(msg) = read.next() => {
                                     match msg {
                                         Ok(msg) => {
+                                            crate::metrics::record_ws_message("okx");
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
                                                 let text = text.to_string();
                                                 if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&text)
@@ -182,9 +189,11 @@ impl MarketDataFeed for OkxMarketData {
                             }
                         }
                         info!("OKX WS disconnected, reconnecting");
+                        crate::metrics::set_ws_connected("okx", false);
                     }
                     Err(e) => {
                         warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "OKX WS connect failed");
+                        crate::metrics::set_ws_connected("okx", false);
                     }
                 }
                 tokio::time::sleep(backoff).await;
