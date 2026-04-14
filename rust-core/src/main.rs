@@ -1,17 +1,11 @@
-#[allow(dead_code)]
 mod adapters;
-#[allow(dead_code)]
 mod backtest;
 mod config;
 mod engine;
-#[allow(dead_code)]
 mod ipc;
 mod metrics;
-#[allow(dead_code)]
 mod models;
-#[allow(dead_code)]
 mod risk;
-#[allow(dead_code)]
 mod strategy;
 
 use adapters::binance::fee_provider::BinanceFeeProvider;
@@ -486,12 +480,11 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let venue_cfg = &cfg.venues[idx_b];
-    let executor = build_executor(venue_cfg)?;
     let executor: Box<dyn adapters::order_executor::OrderExecutor> =
         if venue_cfg.paper_trading || cli.dry_run {
-            Box::new(PaperExecutor::new(executor))
+            Box::new(PaperExecutor::new())
         } else {
-            executor
+            build_executor(venue_cfg)?
         };
     let position_manager = build_position_manager(&cfg.venues[idx_b])?;
 

@@ -8,21 +8,16 @@ use super::order_executor::{OrderExecutor, OrderReceivers};
 use crate::models::enums::OrderStatus;
 use crate::models::order::{Fill, Order, OrderUpdate};
 
+#[derive(Default)]
 pub struct PaperExecutor {
-    inner: Box<dyn OrderExecutor>,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
     order_counter: AtomicU64,
 }
 
 impl PaperExecutor {
-    pub fn new(inner: Box<dyn OrderExecutor>) -> Self {
-        Self {
-            inner,
-            fills_tx: None,
-            updates_tx: None,
-            order_counter: AtomicU64::new(0),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -114,8 +109,6 @@ impl OrderExecutor for PaperExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::adapters::binance::market_data::BinanceMarket;
-    use crate::adapters::binance::order_executor::BinanceOrderExecutor;
     use crate::models::enums::{OrderType, Side, Venue};
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
     use rust_decimal_macros::dec;
@@ -148,10 +141,7 @@ mod tests {
     }
 
     fn make_paper() -> PaperExecutor {
-        let inner = Box::new(
-            BinanceOrderExecutor::new(BinanceMarket::Spot, String::new(), String::new()).unwrap(),
-        );
-        PaperExecutor::new(inner)
+        PaperExecutor::new()
     }
 
     #[tokio::test]
