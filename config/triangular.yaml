@@ -1,10 +1,4 @@
-# Triangular arbitrage: A→B→C→A within a single venue.
-# Requires feat/triangular-arb-strategy merged and strategy.name dispatch wired.
-#
-# Example cycle: USDT → BTC → ETH → USDT on Binance spot
-#   leg_a: buy BTC with USDT  (BTCUSDT, side=buy)
-#   leg_b: buy ETH with BTC   (ETHBTC,  side=buy)
-#   leg_c: sell ETH for USDT  (ETHUSDT, side=sell)
+# Template: triangular_arb (USDT→BTC→ETH→USDT). Requires feat/triangular-arb-strategy.
 
 venues:
   - name: binance
@@ -17,7 +11,6 @@ venues:
 
 strategy:
   name: triangular_arb
-  # instrument_a/b retained for schema compat; triangle legs are defined in code
   instrument_a:
     base: BTC
     quote: USDT
@@ -27,8 +20,8 @@ strategy:
     quote: BTC
     instrument_type: spot
   min_net_profit_bps: "2"
-  max_quantity: "0.01"      # max notional leg size in base currency of leg_a
-  max_quote_age_ms: 2000    # tighter staleness window for 3-leg synchrony
+  max_quantity: "0.01"
+  max_quote_age_ms: 2000
   tick_size_a: "0.01"
   tick_size_b: "0.00001"
   lot_size_a: "0.00001"

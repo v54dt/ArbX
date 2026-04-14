@@ -33,10 +33,9 @@ strategy:
   lot_size_a: "0.00001"
   lot_size_b: "0.00001"
   max_book_depth: 10
-  # EWMA spread strategy parameters
-  ewma_alpha: "0.05"         # smoothing factor (smaller = slower adaptation)
-  ewma_entry_sigma: "2.0"   # z-score threshold to trigger entry
-  ewma_min_samples: 60      # warm-up samples before trading begins
+  ewma_alpha: "0.05"
+  ewma_entry_sigma: "2.0"
+  ewma_min_samples: 60
 
 risk:
   max_position_size: "1"
