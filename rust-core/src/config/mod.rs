@@ -71,7 +71,6 @@ impl std::fmt::Debug for VenueConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct StrategyConfig {
-    #[allow(dead_code)] // used for config identification
     pub name: String,
     pub instrument_a: InstrumentConfig,
     pub instrument_b: InstrumentConfig,
@@ -88,6 +87,18 @@ pub struct StrategyConfig {
     pub lot_size_b: Option<Decimal>,
     #[serde(default = "default_max_book_depth")]
     pub max_book_depth: usize,
+    /// EwmaSpreadStrategy: EWMA smoothing factor α (0 < α < 1; default 0.05)
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ewma_alpha: Option<Decimal>,
+    /// EwmaSpreadStrategy: sigma threshold for entry (default 2.0)
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ewma_entry_sigma: Option<Decimal>,
+    /// EwmaSpreadStrategy: minimum samples before trading (default 60)
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub ewma_min_samples: Option<u32>,
 }
 
 fn default_max_book_depth() -> usize {

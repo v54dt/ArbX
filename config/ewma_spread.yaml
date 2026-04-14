@@ -1,0 +1,55 @@
+venues:
+  - name: binance
+    market: spot
+    api_key: "${BINANCE_API_KEY}"
+    api_secret: "${BINANCE_API_SECRET}"
+    paper_trading: true
+    fee_taker_override: "0.0001"
+    fee_maker_override: "0.00005"
+  - name: binance
+    market: usdt_futures
+    api_key: "${BINANCE_API_KEY}"
+    api_secret: "${BINANCE_API_SECRET}"
+    paper_trading: true
+    fee_taker_override: "0.0001"
+    fee_maker_override: "0.00005"
+
+strategy:
+  name: ewma_spread
+  instrument_a:
+    base: BTC
+    quote: USDT
+    instrument_type: spot
+  instrument_b:
+    base: BTC
+    quote: USDT
+    instrument_type: swap
+    settle_currency: USDT
+  min_net_profit_bps: "1"
+  max_quantity: "0.01"
+  max_quote_age_ms: 5000
+  tick_size_a: "0.01"
+  tick_size_b: "0.01"
+  lot_size_a: "0.00001"
+  lot_size_b: "0.00001"
+  max_book_depth: 10
+  ewma_alpha: "0.05"
+  ewma_entry_sigma: "2.0"
+  ewma_min_samples: 60
+
+risk:
+  max_position_size: "1"
+  max_daily_loss: "1000"
+  max_notional_exposure: "100000"
+  circuit_breaker:
+    max_drawdown: "500"
+    max_orders_per_minute: 100
+    max_consecutive_failures: 5
+
+engine:
+  reconcile_interval_secs: 30
+
+logging:
+  level: info
+  json_output: false
+  log_file: null

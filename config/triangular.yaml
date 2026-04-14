@@ -1,0 +1,46 @@
+# Template: triangular_arb (USDT→BTC→ETH→USDT). Requires feat/triangular-arb-strategy.
+
+venues:
+  - name: binance
+    market: spot
+    api_key: "${BINANCE_API_KEY}"
+    api_secret: "${BINANCE_API_SECRET}"
+    paper_trading: true
+    fee_taker_override: "0.0001"
+    fee_maker_override: "0.00005"
+
+strategy:
+  name: triangular_arb
+  instrument_a:
+    base: BTC
+    quote: USDT
+    instrument_type: spot
+  instrument_b:
+    base: ETH
+    quote: BTC
+    instrument_type: spot
+  min_net_profit_bps: "2"
+  max_quantity: "0.01"
+  max_quote_age_ms: 2000
+  tick_size_a: "0.01"
+  tick_size_b: "0.00001"
+  lot_size_a: "0.00001"
+  lot_size_b: "0.00001"
+  max_book_depth: 5
+
+risk:
+  max_position_size: "0.5"
+  max_daily_loss: "500"
+  max_notional_exposure: "50000"
+  circuit_breaker:
+    max_drawdown: "250"
+    max_orders_per_minute: 60
+    max_consecutive_failures: 3
+
+engine:
+  reconcile_interval_secs: 30
+
+logging:
+  level: info
+  json_output: false
+  log_file: null
