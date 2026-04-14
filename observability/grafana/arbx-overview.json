@@ -1,0 +1,161 @@
+{
+  "title": "ArbX Overview",
+  "uid": "arbx-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "tags": ["arbx", "arbitrage"],
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"selected": false, "text": "Prometheus", "value": "Prometheus"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Quote rate (per sec, by venue label set on counter)",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "rate(arbx_quotes_received_total[1m])", "legendFormat": "quotes/s", "refId": "A"}]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Opportunities detected / sec",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "rate(arbx_opportunities_detected_total[1m])", "legendFormat": "opps/s", "refId": "A"}]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Orders: submitted / failed / risk-rejected / filled (per sec)",
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "rate(arbx_orders_submitted_total[1m])", "legendFormat": "submitted", "refId": "A"},
+        {"expr": "rate(arbx_orders_failed_total[1m])", "legendFormat": "failed", "refId": "B"},
+        {"expr": "rate(arbx_orders_risk_rejected_total[1m])", "legendFormat": "risk-rejected", "refId": "C"},
+        {"expr": "rate(arbx_fills_received_total[1m])", "legendFormat": "fills", "refId": "D"}
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Strategy eval latency (us) p50 / p99",
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "histogram_quantile(0.5, rate(arbx_strategy_eval_latency_us_bucket[1m]))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, rate(arbx_strategy_eval_latency_us_bucket[1m]))", "legendFormat": "p99", "refId": "B"}
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Quote age (ms) p50 / p99",
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "histogram_quantile(0.5, rate(arbx_quote_age_ms_bucket[1m]))", "legendFormat": "p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, rate(arbx_quote_age_ms_bucket[1m]))", "legendFormat": "p99", "refId": "B"}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Order submit latency (us) p99",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "histogram_quantile(0.99, rate(arbx_order_submit_latency_us_bucket[1m]))", "legendFormat": "p99", "refId": "A"}]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Slippage (bps) p50 / p99 per venue (positive = worse than intended)",
+      "gridPos": {"x": 0, "y": 18, "w": 24, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum by (venue, le) (rate(arbx_slippage_bps_bucket[5m])))", "legendFormat": "{{venue}} p50", "refId": "A"},
+        {"expr": "histogram_quantile(0.99, sum by (venue, le) (rate(arbx_slippage_bps_bucket[5m])))", "legendFormat": "{{venue}} p99", "refId": "B"}
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Position quantity per instrument",
+      "gridPos": {"x": 0, "y": 24, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "arbx_position_quantity", "legendFormat": "{{instrument}}", "refId": "A"}]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Realized PnL (today)",
+      "gridPos": {"x": 12, "y": 24, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "arbx_realized_pnl", "legendFormat": "realized", "refId": "A"}]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "WS connected (public)",
+      "gridPos": {"x": 0, "y": 30, "w": 6, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "arbx_ws_connected", "legendFormat": "{{venue}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "red", "value": null},
+        {"color": "green", "value": 1}
+      ]}}}
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "WS connected (private)",
+      "gridPos": {"x": 6, "y": 30, "w": 6, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "arbx_ws_private_connected", "legendFormat": "{{venue}}", "refId": "A"}],
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [
+        {"color": "red", "value": null},
+        {"color": "green", "value": 1}
+      ]}}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "WS reconnects per venue (public + private)",
+      "gridPos": {"x": 12, "y": 30, "w": 12, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "rate(arbx_ws_reconnects_total[5m])", "legendFormat": "{{venue}} (pub)", "refId": "A"},
+        {"expr": "rate(arbx_ws_private_reconnects_total[5m])", "legendFormat": "{{venue}} (priv)", "refId": "B"}
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "WS message rate per venue (public + private)",
+      "gridPos": {"x": 0, "y": 36, "w": 24, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "rate(arbx_ws_messages_received_total[1m])", "legendFormat": "{{venue}} (pub)", "refId": "A"},
+        {"expr": "rate(arbx_ws_private_messages_received_total[1m])", "legendFormat": "{{venue}} (priv)", "refId": "B"}
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Circuit breaker trips (per sec)",
+      "gridPos": {"x": 0, "y": 42, "w": 24, "h": 6},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "rate(arbx_circuit_breaker_trips_total[5m])", "legendFormat": "trips/s", "refId": "A"}]
+    }
+  ]
+}
