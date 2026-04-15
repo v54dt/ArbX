@@ -712,46 +712,9 @@ async fn run_backtest_mode(
     println!("duration_ms:       {}", result.duration_ms);
 
     if let Some(path) = csv_out {
-        write_backtest_csv(path, &result.trade_logs)?;
+        backtest::report::write_trade_csv(path, &result.trade_logs)?;
         println!("trade rows written: {}", path);
     }
-    Ok(())
-}
-
-fn write_backtest_csv(
-    path: &str,
-    logs: &[crate::models::trade_log::TradeLog],
-) -> anyhow::Result<()> {
-    use std::fmt::Write as _;
-    use std::io::Write as _;
-
-    let mut buf = String::with_capacity(256 * (logs.len() + 1));
-    buf.push_str(
-        "id,strategy_id,outcome,gross_profit,fees,net_profit,net_profit_bps,notional,legs,created_at\n",
-    );
-    for log in logs {
-        let outcome = match log.outcome {
-            crate::models::trade_log::TradeOutcome::AllSubmitted => "AllSubmitted",
-            crate::models::trade_log::TradeOutcome::PartialFailure => "PartialFailure",
-            crate::models::trade_log::TradeOutcome::RiskRejected => "RiskRejected",
-        };
-        writeln!(
-            buf,
-            "{},{},{},{},{},{},{},{},{},{}",
-            log.id,
-            log.strategy_id,
-            outcome,
-            log.expected_gross_profit,
-            log.expected_fees,
-            log.expected_net_profit,
-            log.expected_net_profit_bps,
-            log.notional,
-            log.legs.len(),
-            log.created_at.to_rfc3339(),
-        )?;
-    }
-    let mut file = std::fs::File::create(path)?;
-    file.write_all(buf.as_bytes())?;
     Ok(())
 }
 
