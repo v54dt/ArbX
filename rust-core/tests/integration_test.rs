@@ -399,3 +399,77 @@ async fn duplicate_fill_is_deduplicated_by_fingerprint() {
     // Quantity equals the single fill, not 2× — dedup held.
     assert_eq!(pos.quantity, fill.quantity);
 }
+
+#[tokio::test]
+async fn circuit_breaker_trips_after_failures_and_skips_subsequent_orders() {
+    // Executor.submit_order always fails → engine calls record_failure each time.
+    // With max_consecutive_failures=1, the CB trips after the first leg's
+    // failed submit; the next opportunity is fully skipped with RiskRejected.
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(20);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(20);
+    let executor = MockExchange::new(vec![], 0, 1.0).with_submit_failure();
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    // max_consecutive_failures = 1 → first submit fail trips the breaker.
+    let circuit_breaker = CircuitBreaker::new(dec!(50000), 1000, 1);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        0,
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+
+    // Long enough for at least 2 opportunities to flow through.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    let logs = engine.trade_logs();
+    assert!(!logs.is_empty(), "expected at least one trade log");
+
+    // Every leg across every log should have no order_id — either the submit
+    // failed outright, or the CB trip skipped it.
+    let total_legs: usize = logs.iter().map(|l| l.legs.len()).sum();
+    let none_legs: usize = logs
+        .iter()
+        .flat_map(|l| l.legs.iter())
+        .filter(|leg| leg.order_id.is_none())
+        .count();
+    assert_eq!(
+        none_legs, total_legs,
+        "all legs should have order_id=None when submit fails or CB is tripped"
+    );
+
+    // At least one trade_log should be RiskRejected — meaning CB skipped both
+    // legs of a later opportunity. If CB never trips, we'd see only
+    // PartialFailure logs (mix of failed submits).
+    let risk_rejected = logs
+        .iter()
+        .filter(|l| l.outcome == TradeOutcome::RiskRejected)
+        .count();
+    assert!(
+        risk_rejected >= 1,
+        "expected at least one RiskRejected log after CB trip (got {risk_rejected} of {})",
+        logs.len()
+    );
+}
