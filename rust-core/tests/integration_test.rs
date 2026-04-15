@@ -399,3 +399,58 @@ async fn duplicate_fill_is_deduplicated_by_fingerprint() {
     // Quantity equals the single fill, not 2× — dedup held.
     assert_eq!(pos.quantity, fill.quantity);
 }
+
+#[tokio::test]
+async fn unfilled_orders_are_cancelled_after_ttl() {
+    // Engine with order_ttl_secs=1 and executor fill_rate=0 (orders submit but
+    // never fill). After the TTL elapses + a 500ms cancel tick, the engine
+    // should call executor.cancel_order for each live order.
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(50);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(50);
+    let executor = MockExchange::new(vec![], 0, 0.0); // fill_rate=0 → no fills
+    let cancels_handle = executor.cancels_handle();
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        1, // order_ttl_secs = 1
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move { engine.run().await });
+
+    // Orders go out within ~200ms; TTL elapses at +1s; cancel_check ticks at +500ms
+    // — so ~2s is enough margin to see the cancel fire.
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let _ = shutdown_tx.send(true);
+    let _ = handle.await;
+
+    let cancels = cancels_handle.lock().await;
+    assert!(
+        !cancels.is_empty(),
+        "expected at least one cancel_order call after TTL (got 0)"
+    );
+    for id in cancels.iter() {
+        assert!(
+            id.starts_with("mock-"),
+            "cancel id should be a mock order id, got '{id}'"
+        );
+    }
+}

@@ -25,6 +25,7 @@ pub struct MockExchange {
     fill_rate: f64,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
+    cancels: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockExchange {
@@ -39,6 +40,7 @@ impl MockExchange {
             fill_rate,
             fills_tx: None,
             updates_tx: None,
+            cancels: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -49,6 +51,11 @@ impl MockExchange {
 
     pub fn positions_handle(&self) -> Arc<Mutex<HashMap<String, Position>>> {
         self.positions.clone()
+    }
+
+    /// Handle for tests to inspect which order_ids were cancelled.
+    pub fn cancels_handle(&self) -> Arc<Mutex<Vec<String>>> {
+        self.cancels.clone()
     }
 }
 
@@ -193,7 +200,8 @@ impl OrderExecutor for MockExchange {
         Ok(order_id)
     }
 
-    async fn cancel_order(&self, _order_id: &str) -> anyhow::Result<bool> {
+    async fn cancel_order(&self, order_id: &str) -> anyhow::Result<bool> {
+        self.cancels.lock().await.push(order_id.to_string());
         Ok(true)
     }
 
