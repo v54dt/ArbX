@@ -269,7 +269,8 @@ fn bench_dedup_check_duplicate(c: &mut Criterion) {
                 black_box(dec!(50000)),
                 black_box(dec!(1)),
             );
-            black_box(seen_set.contains(&fp))
+            // Match engine hot path: insert(fp.clone()) returning false for a duplicate.
+            black_box(seen_set.insert(fp))
         })
     });
 }
@@ -279,17 +280,18 @@ fn bench_intended_fills_lookup(c: &mut Criterion) {
     // compute signed slippage on each fill. Size reflects roughly the number
     // of unacked orders — benchmark at 256 live entries.
     const LIVE: usize = 256;
+    let keys: Vec<String> = (0..LIVE).map(|i| format!("ord{}", i)).collect();
     let mut map: HashMap<String, (Side, Decimal)> = HashMap::with_capacity(LIVE);
-    for i in 0..LIVE {
-        map.insert(format!("ord{}", i), (Side::Buy, dec!(50000)));
+    for k in &keys {
+        map.insert(k.clone(), (Side::Buy, dec!(50000)));
     }
 
     let mut idx: usize = 0;
     c.bench_function("intended_fills_remove", |b| {
         b.iter(|| {
-            let key = format!("ord{}", idx % LIVE);
-            if let Some((side, price)) = map.remove(black_box(&key)) {
-                map.insert(key, (side, price));
+            let key = &keys[idx % LIVE];
+            if let Some(val) = map.remove(black_box(key)) {
+                map.insert(key.clone(), val);
             }
             idx += 1;
         })
