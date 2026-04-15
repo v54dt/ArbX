@@ -38,7 +38,7 @@ use adapters::okx::rest_client::OkxRestClient;
 use adapters::paper_executor::PaperExecutor;
 use adapters::private_stream::PrivateStream;
 use engine::arbitrage::ArbitrageEngine;
-use models::enums::Venue;
+use models::enums::{Side, Venue};
 use models::fee::FeeSchedule;
 use models::instrument::{AssetClass, Instrument, InstrumentType};
 use risk::circuit_breaker::CircuitBreaker;
@@ -50,6 +50,7 @@ use strategy::cross_exchange::CrossExchangeStrategy;
 use strategy::ewma_spread::EwmaSpreadStrategy;
 use strategy::funding_rate::FundingRateStrategy;
 use strategy::multi_pair_cross_exchange::{MultiPairCrossExchangeStrategy, PairConfig};
+use strategy::triangular_arb::{TriangleCycle, TriangleLeg, TriangularArbStrategy};
 use strategy::tw_etf_futures::TwEtfFuturesStrategy;
 
 use clap::Parser;
@@ -394,6 +395,27 @@ async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Re
     }
 }
 
+fn build_triangle_leg(cfg: &config::TriangleLegConfig) -> anyhow::Result<TriangleLeg> {
+    let side = match cfg.side.to_lowercase().as_str() {
+        "buy" => Side::Buy,
+        "sell" => Side::Sell,
+        other => anyhow::bail!("triangle leg side must be 'buy' or 'sell', got {}", other),
+    };
+    Ok(TriangleLeg {
+        instrument: Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: cfg.base.clone(),
+            quote: cfg.quote.clone(),
+            settle_currency: None,
+            expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
+        },
+        side,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_strategy_from_config(
     cfg: &config::AppConfig,
@@ -525,10 +547,42 @@ fn build_strategy_from_config(
             ))
         }
         "triangular_arb" => {
-            anyhow::bail!(
-                "strategy.name=triangular_arb is not yet configurable via YAML; \
-                 TriangleCycle must be constructed in code"
+            if cfg.strategy.triangle_cycles.is_empty() {
+                anyhow::bail!(
+                    "strategy.name=triangular_arb requires at least one entry in \
+                     strategy.triangle_cycles"
+                );
+            }
+            let cycles: Vec<TriangleCycle> = cfg
+                .strategy
+                .triangle_cycles
+                .iter()
+                .map(|c| {
+                    Ok(TriangleCycle {
+                        venue: venue_a,
+                        leg_a: build_triangle_leg(&c.leg_a)?,
+                        leg_b: build_triangle_leg(&c.leg_b)?,
+                        leg_c: build_triangle_leg(&c.leg_c)?,
+                        fee: fee_a.clone(),
+                        max_notional_usdt: c.max_notional_usdt,
+                        min_net_profit_bps: c
+                            .min_net_profit_bps
+                            .unwrap_or(cfg.strategy.min_net_profit_bps),
+                        tick_size: c.tick_size,
+                        lot_size: c.lot_size,
+                    })
+                })
+                .collect::<anyhow::Result<_>>()?;
+            tracing::info!(
+                cycles = cycles.len(),
+                venue = ?venue_a,
+                "using TriangularArbStrategy"
             );
+            Box::new(TriangularArbStrategy {
+                cycles,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_book_depth: cfg.strategy.max_book_depth,
+            })
         }
         "funding_rate" => {
             let min_funding_rate_bps = cfg
