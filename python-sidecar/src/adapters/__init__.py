@@ -1,5 +1,7 @@
 from src.adapters.base import BaseAdapter
-from src.adapters.fubon_adapter import FubonAdapter
-from src.adapters.shioaji_adapter import ShioajiAdapter
 
-__all__ = ["BaseAdapter", "FubonAdapter", "ShioajiAdapter"]
+# Optional heavyweight adapters (shioaji / fubon_neo) are imported lazily
+# by main.build_adapter so users don't need the TW broker SDKs installed
+# just to run the crypto / mock paths.
+
+__all__ = ["BaseAdapter"]
