@@ -722,7 +722,7 @@ async fn run_backtest_mode(
                 println!("trade rows written: {}", path);
             }
         }
-        Some(n) if n == 0 => anyhow::bail!("--backtest-window-size must be > 0"),
+        Some(0) => anyhow::bail!("--backtest-window-size must be > 0"),
         Some(n) => {
             println!(
                 "─── Walk-forward backtest: window={} quotes, total_quotes={} ───",
