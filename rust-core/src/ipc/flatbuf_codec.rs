@@ -9,7 +9,7 @@ use crate::models::enums::{
     Venue as DomainVenue,
 };
 use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-use crate::models::market::Quote;
+use crate::models::market::{OrderBook, OrderBookLevel, Quote};
 use crate::models::order::{Fill, OrderRequest};
 
 // Must match schemas/messages.fbs.
@@ -44,6 +44,16 @@ mod vt {
     pub const FILL_FEE: u16 = 18;
     pub const FILL_FEE_CURRENCY: u16 = 20;
     pub const FILL_TIMESTAMP_MS: u16 = 22;
+
+    pub const OB_VENUE: u16 = 4;
+    pub const OB_BASE: u16 = 6;
+    pub const OB_QUOTE_CURRENCY: u16 = 8;
+    pub const OB_INSTRUMENT_TYPE: u16 = 10;
+    pub const OB_BID_PRICES: u16 = 12;
+    pub const OB_BID_SIZES: u16 = 14;
+    pub const OB_ASK_PRICES: u16 = 16;
+    pub const OB_ASK_SIZES: u16 = 18;
+    pub const OB_TIMESTAMP_MS: u16 = 20;
 }
 
 fn venue_to_i8(v: DomainVenue) -> i8 {
@@ -351,6 +361,102 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
     })
 }
 
+pub fn encode_order_book(book: &OrderBook) -> Vec<u8> {
+    let mut fbb = FlatBufferBuilder::with_capacity(512);
+    let base = fbb.create_string(&book.instrument.base);
+    let quote_cur = fbb.create_string(&book.instrument.quote);
+    let inst_type = fbb.create_string(instrument_type_str(book.instrument.instrument_type));
+
+    let bid_prices: Vec<f64> = book.bids.iter().map(|l| dec_to_f64(l.price)).collect();
+    let bid_sizes: Vec<f64> = book.bids.iter().map(|l| dec_to_f64(l.size)).collect();
+    let ask_prices: Vec<f64> = book.asks.iter().map(|l| dec_to_f64(l.price)).collect();
+    let ask_sizes: Vec<f64> = book.asks.iter().map(|l| dec_to_f64(l.size)).collect();
+
+    let bid_prices_off = fbb.create_vector(&bid_prices);
+    let bid_sizes_off = fbb.create_vector(&bid_sizes);
+    let ask_prices_off = fbb.create_vector(&ask_prices);
+    let ask_sizes_off = fbb.create_vector(&ask_sizes);
+
+    let start = fbb.start_table();
+    fbb.push_slot::<i8>(vt::OB_VENUE, venue_to_i8(book.venue), 0);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_BASE, base);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_QUOTE_CURRENCY, quote_cur);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_INSTRUMENT_TYPE, inst_type);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_BID_PRICES, bid_prices_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_BID_SIZES, bid_sizes_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_ASK_PRICES, ask_prices_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OB_ASK_SIZES, ask_sizes_off);
+    fbb.push_slot::<i64>(vt::OB_TIMESTAMP_MS, book.timestamp.timestamp_millis(), 0);
+    let root = fbb.end_table(start);
+    fbb.finish(root, None);
+    fbb.finished_data().to_vec()
+}
+
+pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
+    use flatbuffers::Vector;
+
+    let table = checked_root_as_table(data, "order_book")?;
+    let venue_i8 = unsafe { get_field::<i8>(&table, vt::OB_VENUE, 0) };
+    let base = unsafe { get_str(&table, vt::OB_BASE) }.unwrap_or("");
+    let quote_cur = unsafe { get_str(&table, vt::OB_QUOTE_CURRENCY) }.unwrap_or("");
+    let inst_type = unsafe { get_str(&table, vt::OB_INSTRUMENT_TYPE) }.unwrap_or("spot");
+    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::OB_TIMESTAMP_MS, 0) };
+
+    let read_vec = |vt_offset: u16| -> anyhow::Result<Vec<f64>> {
+        let opt: Option<Vector<'_, f64>> =
+            unsafe { table.get::<ForwardsUOffset<Vector<f64>>>(vt_offset, None) };
+        Ok(opt.map(|v| v.iter().collect()).unwrap_or_default())
+    };
+    let bid_prices = read_vec(vt::OB_BID_PRICES)?;
+    let bid_sizes = read_vec(vt::OB_BID_SIZES)?;
+    let ask_prices = read_vec(vt::OB_ASK_PRICES)?;
+    let ask_sizes = read_vec(vt::OB_ASK_SIZES)?;
+
+    if bid_prices.len() != bid_sizes.len() {
+        bail!(
+            "bid prices/sizes length mismatch: {} vs {}",
+            bid_prices.len(),
+            bid_sizes.len()
+        );
+    }
+    if ask_prices.len() != ask_sizes.len() {
+        bail!(
+            "ask prices/sizes length mismatch: {} vs {}",
+            ask_prices.len(),
+            ask_sizes.len()
+        );
+    }
+
+    let to_levels = |prices: &[f64],
+                     sizes: &[f64]|
+     -> anyhow::Result<smallvec::SmallVec<[OrderBookLevel; 20]>> {
+        prices
+            .iter()
+            .zip(sizes.iter())
+            .map(|(&p, &s)| {
+                Ok(OrderBookLevel {
+                    price: f64_to_dec(p)?,
+                    size: f64_to_dec(s)?,
+                })
+            })
+            .collect()
+    };
+
+    let ts = Utc
+        .timestamp_millis_opt(timestamp_ms)
+        .single()
+        .context("invalid timestamp")?;
+
+    Ok(OrderBook {
+        venue: venue_from_i8(venue_i8)?,
+        instrument: make_instrument(base, quote_cur, inst_type)?,
+        bids: to_levels(&bid_prices, &bid_sizes)?,
+        asks: to_levels(&ask_prices, &ask_sizes)?,
+        timestamp: ts,
+        local_timestamp: Utc::now(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,5 +574,71 @@ mod tests {
             decoded.filled_at.timestamp_millis(),
             original.filled_at.timestamp_millis()
         );
+    }
+
+    #[test]
+    fn encode_decode_order_book_roundtrip() {
+        let ts = Utc::now();
+        let original = OrderBook {
+            venue: DomainVenue::Binance,
+            instrument: sample_instrument(),
+            bids: smallvec::smallvec![
+                OrderBookLevel {
+                    price: dec!(50000),
+                    size: dec!(1.5)
+                },
+                OrderBookLevel {
+                    price: dec!(49999),
+                    size: dec!(2.0)
+                },
+                OrderBookLevel {
+                    price: dec!(49998),
+                    size: dec!(0.5)
+                },
+            ],
+            asks: smallvec::smallvec![
+                OrderBookLevel {
+                    price: dec!(50010),
+                    size: dec!(1.0)
+                },
+                OrderBookLevel {
+                    price: dec!(50011),
+                    size: dec!(2.5)
+                },
+            ],
+            timestamp: ts,
+            local_timestamp: ts,
+        };
+
+        let bytes = encode_order_book(&original);
+        let decoded = decode_order_book(&bytes).unwrap();
+
+        assert_eq!(decoded.venue, original.venue);
+        assert_eq!(decoded.instrument.base, original.instrument.base);
+        assert_eq!(decoded.bids.len(), 3);
+        assert_eq!(decoded.asks.len(), 2);
+        assert_dec_approx(decoded.bids[0].price, dec!(50000), "bid0 price");
+        assert_dec_approx(decoded.bids[2].size, dec!(0.5), "bid2 size");
+        assert_dec_approx(decoded.asks[1].price, dec!(50011), "ask1 price");
+        assert_eq!(
+            decoded.timestamp.timestamp_millis(),
+            original.timestamp.timestamp_millis()
+        );
+    }
+
+    #[test]
+    fn decode_order_book_empty_levels() {
+        let original = OrderBook {
+            venue: DomainVenue::Okx,
+            instrument: sample_instrument(),
+            bids: smallvec::smallvec![],
+            asks: smallvec::smallvec![],
+            timestamp: Utc::now(),
+            local_timestamp: Utc::now(),
+        };
+        let bytes = encode_order_book(&original);
+        let decoded = decode_order_book(&bytes).unwrap();
+        assert!(decoded.bids.is_empty());
+        assert!(decoded.asks.is_empty());
     }
 }
