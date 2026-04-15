@@ -1,0 +1,23 @@
+# Run the Aeron media driver for local dev. Host Rust / Python clients
+# connect to /dev/shm/aeron (bind-mounted into the container).
+#
+# Usage from repo root:
+#   docker compose -f docker/aeron/docker-compose.yml up -d
+#   docker compose -f docker/aeron/docker-compose.yml logs -f
+#   docker compose -f docker/aeron/docker-compose.yml down
+
+services:
+  aeron-driver:
+    build:
+      context: .
+    container_name: arbx-aeron-driver
+    # Share the host's /dev/shm/aeron so local Rust/Python processes on
+    # the host see the same shared-memory files the driver creates.
+    volumes:
+      - /dev/shm/aeron:/dev/shm/aeron
+    # The Media Driver is latency-sensitive; ulimit for locked memory
+    # avoids OOM-style page faults on large term buffers.
+    ulimits:
+      memlock: -1
+    restart: unless-stopped
+    # No network ports — this is pure IPC (aeron:ipc).
