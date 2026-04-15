@@ -386,16 +386,202 @@ async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Re
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_strategy_from_config(
+    cfg: &config::AppConfig,
+    venue_a: Venue,
+    venue_b: Venue,
+    instrument_a: Instrument,
+    instrument_b: Instrument,
+    fee_a: FeeSchedule,
+    fee_b: FeeSchedule,
+) -> anyhow::Result<Box<dyn ArbitrageStrategy>> {
+    let tick_a = cfg
+        .strategy
+        .tick_size_a
+        .unwrap_or(rust_decimal_macros::dec!(0.01));
+    let tick_b = cfg
+        .strategy
+        .tick_size_b
+        .unwrap_or(rust_decimal_macros::dec!(0.01));
+    let lot_a = cfg
+        .strategy
+        .lot_size_a
+        .unwrap_or(rust_decimal_macros::dec!(0.00001));
+    let lot_b = cfg
+        .strategy
+        .lot_size_b
+        .unwrap_or(rust_decimal_macros::dec!(0.00001));
+
+    let strategy: Box<dyn ArbitrageStrategy> = match cfg.strategy.name.as_str() {
+        "cross_exchange" => {
+            tracing::info!(venue_a = ?venue_a, venue_b = ?venue_b, "using CrossExchangeStrategy");
+            Box::new(CrossExchangeStrategy {
+                venue_a,
+                venue_b,
+                instrument_a,
+                instrument_b,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_a,
+                fee_b,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                tick_size_a: tick_a,
+                tick_size_b: tick_b,
+                lot_size_a: lot_a,
+                lot_size_b: lot_b,
+                max_book_depth: cfg.strategy.max_book_depth,
+            })
+        }
+        "multi_pair" => {
+            let extra_instruments: Vec<_> = cfg.venues[0]
+                .instruments
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|icfg| parse_instrument(icfg).ok())
+                .collect();
+            if extra_instruments.len() < 2 {
+                anyhow::bail!(
+                    "strategy.name=multi_pair requires venues[0].instruments to list ≥ 2 \
+                     entries; found {}",
+                    extra_instruments.len()
+                );
+            }
+            let pairs: Vec<PairConfig> = extra_instruments
+                .iter()
+                .map(|inst| {
+                    let mut inst_b = inst.clone();
+                    inst_b.instrument_type = instrument_b.instrument_type;
+                    inst_b.settle_currency = instrument_b.settle_currency.clone();
+                    PairConfig {
+                        venue_a,
+                        venue_b,
+                        instrument_a: inst.clone(),
+                        instrument_b: inst_b,
+                        max_quantity: cfg.strategy.max_quantity,
+                        tick_size_a: tick_a,
+                        tick_size_b: tick_b,
+                        lot_size_a: lot_a,
+                        lot_size_b: lot_b,
+                        fee_a: fee_a.clone(),
+                        fee_b: fee_b.clone(),
+                    }
+                })
+                .collect();
+            tracing::info!(
+                pairs = pairs.len(),
+                venue_a = ?venue_a,
+                venue_b = ?venue_b,
+                "using MultiPairCrossExchangeStrategy"
+            );
+            Box::new(MultiPairCrossExchangeStrategy {
+                pairs,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_book_depth: cfg.strategy.max_book_depth,
+            })
+        }
+        "ewma_spread" => {
+            let alpha = cfg
+                .strategy
+                .ewma_alpha
+                .unwrap_or(rust_decimal_macros::dec!(0.05));
+            let entry_sigma = cfg
+                .strategy
+                .ewma_entry_sigma
+                .unwrap_or(rust_decimal_macros::dec!(2.0));
+            let min_samples = cfg.strategy.ewma_min_samples.unwrap_or(60);
+            tracing::info!(
+                %alpha, %entry_sigma, min_samples,
+                venue_a = ?venue_a, venue_b = ?venue_b,
+                "using EwmaSpreadStrategy"
+            );
+            Box::new(EwmaSpreadStrategy::new(
+                venue_a,
+                venue_b,
+                instrument_a,
+                instrument_b,
+                fee_a,
+                fee_b,
+                alpha,
+                entry_sigma,
+                cfg.strategy.max_quantity,
+                cfg.strategy.min_net_profit_bps,
+                cfg.strategy.max_quote_age_ms,
+                tick_a,
+                tick_b,
+                lot_a,
+                cfg.strategy.max_book_depth,
+                min_samples,
+            ))
+        }
+        "triangular_arb" => {
+            anyhow::bail!(
+                "strategy.name=triangular_arb is not yet configurable via YAML; \
+                 TriangleCycle must be constructed in code"
+            );
+        }
+        "funding_rate" => {
+            let min_funding_rate_bps = cfg
+                .strategy
+                .funding_min_bps
+                .unwrap_or(cfg.strategy.min_net_profit_bps);
+            tracing::info!(
+                venue = ?venue_a,
+                %min_funding_rate_bps,
+                "using FundingRateStrategy"
+            );
+            Box::new(FundingRateStrategy {
+                venue: venue_a,
+                instrument_perp: instrument_a,
+                instrument_spot: instrument_b,
+                min_funding_rate_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_perp: fee_a,
+                fee_spot: fee_b,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            })
+        }
+        "tw_etf_futures" => {
+            let hedge_ratio = cfg
+                .strategy
+                .tw_hedge_ratio
+                .unwrap_or(rust_decimal_macros::dec!(1));
+            let cost_of_carry_bps = cfg
+                .strategy
+                .tw_cost_of_carry_bps
+                .unwrap_or(rust_decimal_macros::dec!(0));
+            let days_to_expiry = cfg.strategy.tw_days_to_expiry.unwrap_or(30);
+            tracing::info!(
+                venue = ?venue_a,
+                %hedge_ratio,
+                %cost_of_carry_bps,
+                days_to_expiry,
+                "using TwEtfFuturesStrategy"
+            );
+            Box::new(TwEtfFuturesStrategy {
+                venue: venue_a,
+                etf_instrument: instrument_a,
+                futures_instrument: instrument_b,
+                hedge_ratio,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quantity: cfg.strategy.max_quantity,
+                fee_etf: fee_a,
+                fee_futures: fee_b,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                cost_of_carry_bps,
+                days_to_expiry,
+            })
+        }
+        other => anyhow::bail!("unknown strategy.name: {other}"),
+    };
+    Ok(strategy)
+}
+
 async fn run_backtest_mode(csv_path: &str, cfg: &config::AppConfig) -> anyhow::Result<()> {
     use backtest::data_feed::HistoricalDataFeed;
     use backtest::engine::run_backtest;
-
-    if cfg.strategy.name != "cross_exchange" {
-        anyhow::bail!(
-            "backtest mode only supports strategy.name=cross_exchange today; got {}",
-            cfg.strategy.name
-        );
-    }
 
     tracing::info!(csv = csv_path, "loading historical quotes");
     let feed = HistoricalDataFeed::from_csv(csv_path)?;
@@ -405,50 +591,31 @@ async fn run_backtest_mode(csv_path: &str, cfg: &config::AppConfig) -> anyhow::R
     let instrument_a = parse_instrument(&cfg.strategy.instrument_a)?;
     let instrument_b = parse_instrument(&cfg.strategy.instrument_b)?;
 
-    let strategy = Box::new(CrossExchangeStrategy {
+    let fee_default = rust_decimal_macros::dec!(0.001);
+    let fee_a = FeeSchedule::new(
+        venue_a,
+        cfg.venues[0].fee_maker_override.unwrap_or(fee_default),
+        cfg.venues[0].fee_taker_override.unwrap_or(fee_default),
+    );
+    let fee_b = FeeSchedule::new(
+        venue_b,
+        cfg.venues[1 % cfg.venues.len()]
+            .fee_maker_override
+            .unwrap_or(fee_default),
+        cfg.venues[1 % cfg.venues.len()]
+            .fee_taker_override
+            .unwrap_or(fee_default),
+    );
+
+    let strategy = build_strategy_from_config(
+        cfg,
         venue_a,
         venue_b,
         instrument_a,
         instrument_b,
-        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-        max_quantity: cfg.strategy.max_quantity,
-        fee_a: FeeSchedule::new(
-            venue_a,
-            cfg.venues[0]
-                .fee_maker_override
-                .unwrap_or(rust_decimal_macros::dec!(0.001)),
-            cfg.venues[0]
-                .fee_taker_override
-                .unwrap_or(rust_decimal_macros::dec!(0.001)),
-        ),
-        fee_b: FeeSchedule::new(
-            venue_b,
-            cfg.venues[1 % cfg.venues.len()]
-                .fee_maker_override
-                .unwrap_or(rust_decimal_macros::dec!(0.001)),
-            cfg.venues[1 % cfg.venues.len()]
-                .fee_taker_override
-                .unwrap_or(rust_decimal_macros::dec!(0.001)),
-        ),
-        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-        tick_size_a: cfg
-            .strategy
-            .tick_size_a
-            .unwrap_or(rust_decimal_macros::dec!(0.01)),
-        tick_size_b: cfg
-            .strategy
-            .tick_size_b
-            .unwrap_or(rust_decimal_macros::dec!(0.01)),
-        lot_size_a: cfg
-            .strategy
-            .lot_size_a
-            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
-        lot_size_b: cfg
-            .strategy
-            .lot_size_b
-            .unwrap_or(rust_decimal_macros::dec!(0.00001)),
-        max_book_depth: cfg.strategy.max_book_depth,
-    });
+        fee_a,
+        fee_b,
+    )?;
 
     let result = run_backtest(
         vec![Box::new(feed)],
@@ -567,186 +734,15 @@ async fn main() -> anyhow::Result<()> {
     let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a).await?;
     let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b).await?;
 
-    let tick_a = cfg
-        .strategy
-        .tick_size_a
-        .unwrap_or(rust_decimal_macros::dec!(0.01));
-    let tick_b = cfg
-        .strategy
-        .tick_size_b
-        .unwrap_or(rust_decimal_macros::dec!(0.01));
-    let lot_a = cfg
-        .strategy
-        .lot_size_a
-        .unwrap_or(rust_decimal_macros::dec!(0.00001));
-    let lot_b = cfg
-        .strategy
-        .lot_size_b
-        .unwrap_or(rust_decimal_macros::dec!(0.00001));
-
-    let strategy: Box<dyn ArbitrageStrategy> = match cfg.strategy.name.as_str() {
-        "cross_exchange" => {
-            tracing::info!(venue_a = ?venue_a, venue_b = ?venue_b, "using CrossExchangeStrategy");
-            Box::new(CrossExchangeStrategy {
-                venue_a,
-                venue_b,
-                instrument_a: instrument_a.clone(),
-                instrument_b: instrument_b.clone(),
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quantity: cfg.strategy.max_quantity,
-                fee_a: fee_a.clone(),
-                fee_b: fee_b.clone(),
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-                tick_size_a: tick_a,
-                tick_size_b: tick_b,
-                lot_size_a: lot_a,
-                lot_size_b: lot_b,
-                max_book_depth: cfg.strategy.max_book_depth,
-            })
-        }
-        "multi_pair" => {
-            let extra_instruments: Vec<_> = cfg.venues[0]
-                .instruments
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|icfg| parse_instrument(icfg).ok())
-                .collect();
-            if extra_instruments.len() < 2 {
-                anyhow::bail!(
-                    "strategy.name=multi_pair requires venues[0].instruments to list ≥ 2 \
-                     entries; found {}",
-                    extra_instruments.len()
-                );
-            }
-            let pairs: Vec<PairConfig> = extra_instruments
-                .iter()
-                .map(|inst| {
-                    let mut inst_b = inst.clone();
-                    inst_b.instrument_type = instrument_b.instrument_type;
-                    inst_b.settle_currency = instrument_b.settle_currency.clone();
-                    PairConfig {
-                        venue_a,
-                        venue_b,
-                        instrument_a: inst.clone(),
-                        instrument_b: inst_b,
-                        max_quantity: cfg.strategy.max_quantity,
-                        tick_size_a: tick_a,
-                        tick_size_b: tick_b,
-                        lot_size_a: lot_a,
-                        lot_size_b: lot_b,
-                        fee_a: fee_a.clone(),
-                        fee_b: fee_b.clone(),
-                    }
-                })
-                .collect();
-            tracing::info!(
-                pairs = pairs.len(),
-                venue_a = ?venue_a,
-                venue_b = ?venue_b,
-                "using MultiPairCrossExchangeStrategy"
-            );
-            Box::new(MultiPairCrossExchangeStrategy {
-                pairs,
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-                max_book_depth: cfg.strategy.max_book_depth,
-            })
-        }
-        "ewma_spread" => {
-            let alpha = cfg
-                .strategy
-                .ewma_alpha
-                .unwrap_or(rust_decimal_macros::dec!(0.05));
-            let entry_sigma = cfg
-                .strategy
-                .ewma_entry_sigma
-                .unwrap_or(rust_decimal_macros::dec!(2.0));
-            let min_samples = cfg.strategy.ewma_min_samples.unwrap_or(60);
-            tracing::info!(
-                %alpha, %entry_sigma, min_samples,
-                venue_a = ?venue_a, venue_b = ?venue_b,
-                "using EwmaSpreadStrategy"
-            );
-            Box::new(EwmaSpreadStrategy::new(
-                venue_a,
-                venue_b,
-                instrument_a.clone(),
-                instrument_b.clone(),
-                fee_a.clone(),
-                fee_b.clone(),
-                alpha,
-                entry_sigma,
-                cfg.strategy.max_quantity,
-                cfg.strategy.min_net_profit_bps,
-                cfg.strategy.max_quote_age_ms,
-                tick_a,
-                tick_b,
-                lot_a,
-                cfg.strategy.max_book_depth,
-                min_samples,
-            ))
-        }
-        "triangular_arb" => {
-            anyhow::bail!(
-                "strategy.name=triangular_arb is not yet configurable via YAML; \
-                 TriangleCycle must be constructed in code"
-            );
-        }
-        "funding_rate" => {
-            let min_funding_rate_bps = cfg
-                .strategy
-                .funding_min_bps
-                .unwrap_or(cfg.strategy.min_net_profit_bps);
-            tracing::info!(
-                venue = ?venue_a,
-                %min_funding_rate_bps,
-                "using FundingRateStrategy (perp = instrument_a, spot = instrument_b)"
-            );
-            Box::new(FundingRateStrategy {
-                venue: venue_a,
-                instrument_perp: instrument_a.clone(),
-                instrument_spot: instrument_b.clone(),
-                min_funding_rate_bps,
-                max_quantity: cfg.strategy.max_quantity,
-                fee_perp: fee_a.clone(),
-                fee_spot: fee_b.clone(),
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-            })
-        }
-        "tw_etf_futures" => {
-            let hedge_ratio = cfg
-                .strategy
-                .tw_hedge_ratio
-                .unwrap_or(rust_decimal_macros::dec!(1));
-            let cost_of_carry_bps = cfg
-                .strategy
-                .tw_cost_of_carry_bps
-                .unwrap_or(rust_decimal_macros::dec!(0));
-            let days_to_expiry = cfg.strategy.tw_days_to_expiry.unwrap_or(30);
-            tracing::info!(
-                venue = ?venue_a,
-                %hedge_ratio,
-                %cost_of_carry_bps,
-                days_to_expiry,
-                "using TwEtfFuturesStrategy (etf = instrument_a, futures = instrument_b)"
-            );
-            Box::new(TwEtfFuturesStrategy {
-                venue: venue_a,
-                etf_instrument: instrument_a.clone(),
-                futures_instrument: instrument_b.clone(),
-                hedge_ratio,
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quantity: cfg.strategy.max_quantity,
-                fee_etf: fee_a.clone(),
-                fee_futures: fee_b.clone(),
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-                cost_of_carry_bps,
-                days_to_expiry,
-            })
-        }
-        other => anyhow::bail!("unknown strategy.name: {other}"),
-    };
+    let strategy = build_strategy_from_config(
+        &cfg,
+        venue_a,
+        venue_b,
+        instrument_a,
+        instrument_b,
+        fee_a,
+        fee_b,
+    )?;
 
     let feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a, feed_b];
 
