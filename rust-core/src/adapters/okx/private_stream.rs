@@ -118,6 +118,12 @@ impl OkxPrivateStream {
         let acc_fill_sz_str = data.get("accFillSz")?.as_str().unwrap_or("0");
         let ts_str = data.get("ts")?.as_str().unwrap_or("0");
         let orig_sz_str = data.get("sz")?.as_str().unwrap_or("0");
+        let fee_str = data.get("fee").and_then(|v| v.as_str()).unwrap_or("0");
+        let fee_currency = data
+            .get("feeCcy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let side = Self::parse_side(side_str)?;
         let instrument = Self::parse_instrument(inst_id, inst_type)?;
@@ -131,6 +137,9 @@ impl OkxPrivateStream {
         let ts_ms: i64 = ts_str.parse().unwrap_or(0);
         let filled_at = chrono::DateTime::from_timestamp_millis(ts_ms).unwrap_or_else(Utc::now);
 
+        // OKX convention: fee is negative when the user pays, positive for rebates.
+        // We store it as-is so the downstream knows the sign.
+        let fee: Decimal = fee_str.parse().unwrap_or_default();
         let fill = if fill_sz > Decimal::ZERO {
             Some(Fill {
                 order_id: ord_id.clone(),
@@ -139,8 +148,8 @@ impl OkxPrivateStream {
                 side,
                 price: fill_px,
                 quantity: fill_sz,
-                fee: Decimal::ZERO,
-                fee_currency: String::new(),
+                fee,
+                fee_currency,
                 filled_at,
             })
         } else {
@@ -333,7 +342,9 @@ mod tests {
             "accFillSz": "0.01",
             "state": "filled",
             "sz": "0.01",
-            "ts": "1620000000000"
+            "ts": "1620000000000",
+            "fee": "-0.5",
+            "feeCcy": "USDT"
         });
         let result = OkxPrivateStream::parse_order_event(&data);
         assert!(result.is_some());
@@ -347,9 +358,32 @@ mod tests {
         assert_eq!(fill.side, Side::Buy);
         assert_eq!(fill.price, dec!(50000.00));
         assert_eq!(fill.quantity, dec!(0.01));
+        // OKX reports fee as negative when user pays — preserve sign.
+        assert_eq!(fill.fee, dec!(-0.5));
+        assert_eq!(fill.fee_currency, "USDT");
         assert_eq!(update.status, OrderStatus::Filled);
         assert_eq!(update.filled_quantity, dec!(0.01));
         assert!(update.remaining_quantity.is_zero());
+    }
+
+    #[test]
+    fn parse_okx_fill_missing_fee_defaults_to_zero() {
+        let data = serde_json::json!({
+            "ordId": "ord-nofee",
+            "instId": "BTC-USDT",
+            "instType": "SPOT",
+            "side": "buy",
+            "fillSz": "0.01",
+            "fillPx": "50000",
+            "accFillSz": "0.01",
+            "state": "filled",
+            "sz": "0.01",
+            "ts": "1620000000000"
+        });
+        let (fill_opt, _) = OkxPrivateStream::parse_order_event(&data).unwrap();
+        let fill = fill_opt.expect("fill");
+        assert_eq!(fill.fee, Decimal::ZERO);
+        assert_eq!(fill.fee_currency, "");
     }
 
     #[test]
