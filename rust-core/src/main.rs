@@ -770,7 +770,12 @@ async fn run_backtest_mode(
                     result.max_drawdown,
                     result.sharpe_ratio,
                 );
-                all_trade_logs.extend(result.trade_logs);
+                // Prefix ids with window index so two windows emitting opportunities
+                // on the same nanosecond don't collide in the concatenated CSV.
+                all_trade_logs.extend(result.trade_logs.into_iter().map(|mut log| {
+                    log.id = format!("w{}-{}", i, log.id);
+                    log
+                }));
             }
 
             if let Some(path) = csv_out {
