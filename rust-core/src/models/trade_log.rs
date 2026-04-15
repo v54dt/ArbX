@@ -41,6 +41,38 @@ pub struct TradeLog {
     pub created_at: DateTime<Utc>,
 }
 
+/// Append-only JSONL writer for TradeLog records. One JSON object per line,
+/// flushed per append so a crash mid-session still leaves the prior logs on disk.
+pub struct TradeLogWriter {
+    writer: std::io::BufWriter<std::fs::File>,
+}
+
+impl TradeLogWriter {
+    pub fn create(path: &str) -> anyhow::Result<Self> {
+        if let Some(parent) = std::path::Path::new(path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+        Ok(Self {
+            writer: std::io::BufWriter::new(file),
+        })
+    }
+
+    pub fn append(&mut self, log: &TradeLog) -> anyhow::Result<()> {
+        use std::io::Write as _;
+        let line = serde_json::to_string(log)?;
+        self.writer.write_all(line.as_bytes())?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +136,49 @@ mod tests {
             let de: TradeOutcome = serde_json::from_value(json).unwrap();
             assert_eq!(de, variant);
         }
+    }
+
+    #[test]
+    fn writer_appends_one_jsonl_line_per_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trades.jsonl");
+        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        w.append(&sample_trade_log()).unwrap();
+        w.append(&sample_trade_log()).unwrap();
+        drop(w);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let parsed: TradeLog = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed.id, "t1");
+    }
+
+    #[test]
+    fn writer_creates_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/subdir/trades.jsonl");
+        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        w.append(&sample_trade_log()).unwrap();
+        drop(w);
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn writer_append_preserves_prior_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trades.jsonl");
+        {
+            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            w.append(&sample_trade_log()).unwrap();
+        }
+        {
+            // Re-open: should append, not truncate.
+            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            w.append(&sample_trade_log()).unwrap();
+        }
+        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        assert_eq!(lines, 2);
     }
 }
