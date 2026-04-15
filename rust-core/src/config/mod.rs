@@ -236,7 +236,106 @@ pub fn load(path: &str) -> anyhow::Result<AppConfig> {
             venue.passphrase = Some(resolve_env_var(pp));
         }
     }
+    validate(&config)?;
     Ok(config)
+}
+
+const KNOWN_STRATEGIES: &[&str] = &[
+    "cross_exchange",
+    "ewma_spread",
+    "funding_rate",
+    "triangular_arb",
+    "tw_etf_futures",
+];
+
+const KNOWN_VENUES: &[&str] = &["binance", "bybit", "okx", "fubon", "shioaji"];
+
+/// Structural validation beyond what serde can express. Runs after YAML parse.
+/// Fails fast with a clear message instead of letting a misconfig reach runtime.
+pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
+    if config.venues.is_empty() {
+        anyhow::bail!("config.venues must not be empty");
+    }
+    for v in &config.venues {
+        let name = v.name.to_lowercase();
+        if !KNOWN_VENUES.contains(&name.as_str()) {
+            anyhow::bail!(
+                "unknown venue.name: '{}' (known: {})",
+                v.name,
+                KNOWN_VENUES.join(", ")
+            );
+        }
+    }
+
+    let strat = config.strategy.name.to_lowercase();
+    if !KNOWN_STRATEGIES.contains(&strat.as_str()) {
+        anyhow::bail!(
+            "unknown strategy.name: '{}' (known: {})",
+            config.strategy.name,
+            KNOWN_STRATEGIES.join(", ")
+        );
+    }
+
+    if config.strategy.max_quantity <= Decimal::ZERO {
+        anyhow::bail!(
+            "strategy.max_quantity must be > 0 (got {})",
+            config.strategy.max_quantity
+        );
+    }
+    if config.strategy.min_net_profit_bps < Decimal::ZERO {
+        anyhow::bail!(
+            "strategy.min_net_profit_bps must be >= 0 (got {})",
+            config.strategy.min_net_profit_bps
+        );
+    }
+    if config.strategy.max_quote_age_ms <= 0 {
+        anyhow::bail!(
+            "strategy.max_quote_age_ms must be > 0 (got {})",
+            config.strategy.max_quote_age_ms
+        );
+    }
+
+    if strat == "triangular_arb" {
+        if config.strategy.triangle_cycles.is_empty() {
+            anyhow::bail!("strategy.name = triangular_arb requires at least one triangle_cycle");
+        }
+        for (i, cycle) in config.strategy.triangle_cycles.iter().enumerate() {
+            for (leg_name, leg) in [
+                ("leg_a", &cycle.leg_a),
+                ("leg_b", &cycle.leg_b),
+                ("leg_c", &cycle.leg_c),
+            ] {
+                let side = leg.side.to_lowercase();
+                if side != "buy" && side != "sell" {
+                    anyhow::bail!(
+                        "triangle_cycles[{}].{}.side must be 'buy' or 'sell' (got '{}')",
+                        i,
+                        leg_name,
+                        leg.side
+                    );
+                }
+            }
+        }
+    }
+
+    if strat == "ewma_spread"
+        && let Some(alpha) = config.strategy.ewma_alpha
+        && (alpha <= Decimal::ZERO || alpha >= Decimal::ONE)
+    {
+        anyhow::bail!(
+            "strategy.ewma_alpha must be in (0, 1) exclusive (got {})",
+            alpha
+        );
+    }
+
+    if config.risk.max_position_size <= Decimal::ZERO {
+        anyhow::bail!(
+            "risk.max_position_size must be > 0 (got {})",
+            config.risk.max_position_size
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -312,5 +411,67 @@ logging:
     #[test]
     fn plain_string_passes_through() {
         assert_eq!(resolve_env_var("my_key"), "my_key");
+    }
+
+    fn config_with(strategy_name: &str, venue_name: &str) -> String {
+        sample_yaml()
+            .replace("name: cross_exchange", &format!("name: {}", strategy_name))
+            .replace("- name: binance", &format!("- name: {}", venue_name))
+    }
+
+    fn try_load(yaml: &str) -> anyhow::Result<AppConfig> {
+        let mut f = NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        load(f.path().to_str().unwrap())
+    }
+
+    #[test]
+    fn rejects_unknown_strategy_name() {
+        let yaml = config_with("does_not_exist", "binance");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown strategy.name"), "got: {err}");
+        assert!(err.contains("does_not_exist"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_venue_name() {
+        let yaml = config_with("cross_exchange", "totally_fake");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("unknown venue.name"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_triangular_arb_without_cycles() {
+        let yaml = config_with("triangular_arb", "binance");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("triangular_arb requires"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_ewma_alpha_out_of_range() {
+        let yaml = sample_yaml().replace(
+            "name: cross_exchange",
+            "name: ewma_spread\n  ewma_alpha: \"1.5\"",
+        );
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("ewma_alpha"), "got: {err}");
+        assert!(err.contains("(0, 1)"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_non_positive_max_quantity() {
+        let yaml = sample_yaml().replace("max_quantity: \"0.01\"", "max_quantity: \"0\"");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("max_quantity must be > 0"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_negative_min_net_profit_bps() {
+        let yaml = sample_yaml().replace("min_net_profit_bps: \"1\"", "min_net_profit_bps: \"-5\"");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("min_net_profit_bps must be >= 0"),
+            "got: {err}"
+        );
     }
 }
