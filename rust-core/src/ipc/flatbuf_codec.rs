@@ -12,6 +12,14 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::market::{OrderBook, OrderBookLevel, Quote};
 use crate::models::order::{Fill, OrderRequest};
 
+/// 1-byte type tag prefix for IPC payloads — disambiguates which decoder to call.
+/// FlatBuffer decoders cannot reject a wrong table type, so without a tag a
+/// Quote payload would silently parse as a (garbage) OrderBook.
+pub const MSG_TAG_QUOTE: u8 = 1;
+pub const MSG_TAG_ORDER_BOOK: u8 = 2;
+pub const MSG_TAG_FILL: u8 = 3;
+pub const MSG_TAG_ORDER_REQUEST: u8 = 4;
+
 // Must match schemas/messages.fbs.
 mod vt {
     pub const QUOTE_VENUE: u16 = 4;

@@ -6,10 +6,13 @@ use tracing::{info, warn};
 use super::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::ipc::IpcSubscriber;
 use crate::ipc::aeron::AeronSubscriber;
-use crate::ipc::flatbuf_codec::{decode_order_book, decode_quote};
+use crate::ipc::flatbuf_codec::{
+    MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, decode_order_book, decode_quote,
+};
 
-/// MarketDataFeed backed by an Aeron Subscriber. Polls the IPC stream,
-/// tries Quote then OrderBook flatbuffers decoding, forwards to engine.
+/// MarketDataFeed backed by an Aeron Subscriber. Each payload is prefixed
+/// with a 1-byte type tag (see flatbuf_codec::MSG_TAG_*) so we don't blindly
+/// try both decoders (FlatBuffers can't reject the wrong table type).
 pub struct AeronMarketDataFeed {
     stream_id: i32,
     poll_task: Option<JoinHandle<()>>,
@@ -37,19 +40,28 @@ impl MarketDataFeed for AeronMarketDataFeed {
             loop {
                 match subscriber.poll().await {
                     Ok(Some(bytes)) => {
-                        if let Ok(book) = decode_order_book(&bytes) {
-                            if book_tx.send(book).is_err() {
-                                break;
-                            }
-                        } else if let Ok(quote) = decode_quote(&bytes) {
-                            if quote_tx.send(quote).is_err() {
-                                break;
-                            }
-                        } else {
-                            tracing::debug!(
-                                bytes = bytes.len(),
-                                "aeron payload not Quote or OrderBook; skipping"
-                            );
+                        let Some((tag, payload)) = bytes.split_first() else {
+                            tracing::debug!("aeron payload empty; skipping");
+                            continue;
+                        };
+                        match *tag {
+                            MSG_TAG_QUOTE => match decode_quote(payload) {
+                                Ok(quote) => {
+                                    if quote_tx.send(quote).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => tracing::debug!(error = %e, "decode_quote failed"),
+                            },
+                            MSG_TAG_ORDER_BOOK => match decode_order_book(payload) {
+                                Ok(book) => {
+                                    if book_tx.send(book).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => tracing::debug!(error = %e, "decode_order_book failed"),
+                            },
+                            other => tracing::debug!(tag = other, "unknown msg tag; skipping"),
                         }
                     }
                     Ok(None) => {

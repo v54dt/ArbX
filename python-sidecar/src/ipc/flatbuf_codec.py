@@ -4,11 +4,20 @@ Without flatc codegen, slot indices must stay in sync with the Rust side's
 vtable offsets:
     vtable_offset = slot_index * 2 + 4
 i.e. Rust's QUOTE_VENUE=4 is slot 0, QUOTE_BASE=6 is slot 1, etc.
+
+Each emitted payload is prefixed with a 1-byte MSG_TAG_* matching the
+constants in rust-core/src/ipc/flatbuf_codec.rs, since FlatBuffers
+itself cannot tell which table a buffer holds.
 """
 
 from flatbuffers import Builder
 
 from src.models.messages import Quote, Venue
+
+MSG_TAG_QUOTE = 1
+MSG_TAG_ORDER_BOOK = 2
+MSG_TAG_FILL = 3
+MSG_TAG_ORDER_REQUEST = 4
 
 _VENUE_INT = {
     Venue.BINANCE: 0,
@@ -37,4 +46,4 @@ def encode_quote(quote: Quote) -> bytes:
     builder.PrependInt64Slot(8, int(quote.timestamp_ms), 0)
     end = builder.EndObject()
     builder.Finish(end)
-    return bytes(builder.Output())
+    return bytes([MSG_TAG_QUOTE]) + bytes(builder.Output())
