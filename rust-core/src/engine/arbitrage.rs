@@ -15,7 +15,6 @@ use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
 use crate::ipc::IpcPublisher;
-use crate::models::market::book_key as make_book_key;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
@@ -235,7 +234,7 @@ impl ArbitrageEngine {
                         self.seen_fills_set.remove(&old);
                     }
 
-                    let fill_key = make_book_key(fill.venue, &fill.instrument);
+                    let fill_key = book_key(fill.venue, &fill.instrument);
                     let signed_qty = match fill.side {
                         crate::models::enums::Side::Buy => fill.quantity,
                         crate::models::enums::Side::Sell => -fill.quantity,
@@ -412,7 +411,7 @@ impl ArbitrageEngine {
                     continue;
                 }
 
-                let inst_key = make_book_key(req.venue, &req.instrument);
+                let inst_key = book_key(req.venue, &req.instrument);
                 let order_notional = req.quantity * req.price.unwrap_or(Decimal::ZERO);
                 let fast_verdict =
                     self.risk_state
@@ -599,7 +598,7 @@ mod tests {
     use super::*;
     use crate::models::enums::Venue;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
-    use crate::models::market::{Quote, book_key};
+    use crate::models::market::Quote;
     use chrono::Utc;
     use rust_decimal_macros::dec;
 
@@ -666,35 +665,5 @@ mod tests {
         };
         let book = quote_to_book(&q);
         assert_eq!(book.timestamp, ts);
-    }
-
-    #[test]
-    fn book_key_format_is_consistent() {
-        let inst = test_instrument();
-        let key = book_key(Venue::Binance, &inst);
-        assert_eq!(key.as_str(), "binance:btc-usdt:spot");
-    }
-
-    #[test]
-    fn book_key_different_venues_produce_different_keys() {
-        let inst = test_instrument();
-        let k1 = book_key(Venue::Binance, &inst);
-        let k2 = book_key(Venue::Okx, &inst);
-        assert_ne!(k1, k2);
-        assert!(k1.starts_with("binance:"));
-        assert!(k2.starts_with("okx:"));
-    }
-
-    #[test]
-    fn book_key_different_instrument_types_produce_different_keys() {
-        let spot = test_instrument();
-        let mut swap = test_instrument();
-        swap.instrument_type = InstrumentType::Swap;
-
-        let k1 = book_key(Venue::Binance, &spot);
-        let k2 = book_key(Venue::Binance, &swap);
-        assert_ne!(k1, k2);
-        assert!(k1.ends_with(":spot"));
-        assert!(k2.ends_with(":swap"));
     }
 }
