@@ -15,10 +15,11 @@ RUN apt-get update \
 
 ENV AERON_DIR=/dev/shm/aeron
 
-# Defaults tuned for dev: low-latency BUSY_SPIN, dedicated threading, 8 MB term.
+# Aeron needs these --add-opens on Java 17+ because it touches internal
+# NIO / reflection APIs. Threading and term-buffer tuned for dev, not prod.
 ENTRYPOINT ["java", \
-    "-XX:+UnlockDiagnosticVMOptions", \
-    "-XX:GuardedPatternGlobs='java.util.concurrent.ForkJoinPool$*'", \
+    "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED", \
+    "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED", \
     "-Daeron.dir=/dev/shm/aeron", \
     "-Daeron.threading.mode=DEDICATED", \
     "-Daeron.term.buffer.length=8388608", \
