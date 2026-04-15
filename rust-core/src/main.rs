@@ -693,6 +693,7 @@ async fn run_backtest_mode(
             max_orders_per_minute: cfg.risk.circuit_breaker.max_orders_per_minute,
             max_consecutive_failures: cfg.risk.circuit_breaker.max_consecutive_failures,
         },
+        max_position_per_venue: cfg.risk.max_position_per_venue.clone(),
     };
 
     match window_size {
