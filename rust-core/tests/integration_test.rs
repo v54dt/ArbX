@@ -99,6 +99,7 @@ fn build_engine(
         Box::new(position_manager),
         Vec::new(),
         3600,
+        0,
         shutdown_rx,
     )
 }
@@ -257,6 +258,7 @@ async fn private_stream_fill_updates_position_manager() {
         Box::new(position_manager),
         vec![private_stream],
         3600,
+        0,
         shutdown_rx,
     );
 

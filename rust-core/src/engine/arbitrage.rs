@@ -42,7 +42,9 @@ pub struct ArbitrageEngine {
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
     intended_fills: HashMap<String, IntendedFill>,
+    pending_cancels: Vec<(chrono::DateTime<Utc>, String)>,
     reconcile_interval_secs: u64,
+    order_ttl_secs: u64,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
 }
 
@@ -58,6 +60,7 @@ impl ArbitrageEngine {
         position_manager: Box<dyn PositionManager>,
         private_streams: Vec<Box<dyn PrivateStream>>,
         reconcile_interval_secs: u64,
+        order_ttl_secs: u64,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
@@ -73,7 +76,9 @@ impl ArbitrageEngine {
             portfolios: HashMap::new(),
             trade_logs: vec![],
             intended_fills: HashMap::new(),
+            pending_cancels: Vec::new(),
             reconcile_interval_secs,
+            order_ttl_secs,
             shutdown_rx,
         }
     }
@@ -160,6 +165,8 @@ impl ArbitrageEngine {
 
         let mut reconcile_interval =
             tokio::time::interval(std::time::Duration::from_secs(self.reconcile_interval_secs));
+        let mut cancel_check_interval =
+            tokio::time::interval(std::time::Duration::from_millis(500));
 
         loop {
             tokio::select! {
@@ -218,6 +225,33 @@ impl ArbitrageEngine {
                         }
                         info!("position reconciliation completed");
                     }
+                }
+                _ = cancel_check_interval.tick() => {
+                    let now = Utc::now();
+                    let mut still_pending: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
+                    for (deadline, order_id) in self.pending_cancels.drain(..) {
+                        if now < deadline {
+                            still_pending.push((deadline, order_id));
+                            continue;
+                        }
+                        if !self.intended_fills.contains_key(&order_id) {
+                            continue;
+                        }
+                        match self.executor.cancel_order(&order_id).await {
+                            Ok(true) => {
+                                info!(order_id = order_id.as_str(), "order cancelled after TTL");
+                                self.intended_fills.remove(&order_id);
+                            }
+                            Ok(false) => {
+                                tracing::debug!(order_id = order_id.as_str(), "TTL cancel: already filled or unknown");
+                                self.intended_fills.remove(&order_id);
+                            }
+                            Err(e) => {
+                                warn!(error = %e, order_id = order_id.as_str(), "TTL cancel failed");
+                            }
+                        }
+                    }
+                    self.pending_cancels = still_pending;
                 }
                 _ = self.shutdown_rx.changed() => {
                     if *self.shutdown_rx.borrow() {
@@ -407,6 +441,11 @@ impl ArbitrageEngine {
                                     intended_price,
                                 },
                             );
+                        }
+                        if self.order_ttl_secs > 0 {
+                            let deadline =
+                                Utc::now() + chrono::Duration::seconds(self.order_ttl_secs as i64);
+                            self.pending_cancels.push((deadline, order_id.clone()));
                         }
                         trade_legs.push(TradeLeg {
                             venue: order.venue,

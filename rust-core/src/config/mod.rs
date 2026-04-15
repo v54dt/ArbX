@@ -16,9 +16,15 @@ pub struct AppConfig {
 pub struct EngineConfig {
     #[serde(default = "default_reconcile_interval")]
     pub reconcile_interval_secs: u64,
+    #[serde(default = "default_order_ttl")]
+    pub order_ttl_secs: u64,
 }
 
 fn default_reconcile_interval() -> u64 {
+    30
+}
+
+fn default_order_ttl() -> u64 {
     30
 }
 
@@ -26,6 +32,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             reconcile_interval_secs: default_reconcile_interval(),
+            order_ttl_secs: default_order_ttl(),
         }
     }
 }
