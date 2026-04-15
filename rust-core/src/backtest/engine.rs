@@ -7,7 +7,9 @@ use crate::config::RiskConfig;
 use crate::engine::arbitrage::ArbitrageEngine;
 use crate::models::trade_log::{TradeLog, TradeOutcome};
 use crate::risk::circuit_breaker::CircuitBreaker;
-use crate::risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
+use crate::risk::limits::{
+    MaxDailyLoss, MaxNotionalExposure, MaxPositionPerVenue, MaxPositionSize, RiskLimit,
+};
 use crate::risk::manager::RiskManager;
 use crate::risk::state::RiskState;
 use crate::strategy::base::ArbitrageStrategy;
@@ -29,7 +31,7 @@ pub async fn run_backtest(
 ) -> Result<BacktestResult> {
     let start = std::time::Instant::now();
 
-    let risk_manager = RiskManager::new(vec![
+    let mut risk_limits: Vec<Box<dyn RiskLimit>> = vec![
         Box::new(MaxPositionSize {
             max_quantity: risk_config.max_position_size,
         }),
@@ -39,7 +41,25 @@ pub async fn run_backtest(
         Box::new(MaxNotionalExposure {
             max_notional: risk_config.max_notional_exposure,
         }),
-    ]);
+    ];
+    if let Some(per_venue) = risk_config.max_position_per_venue.as_ref()
+        && !per_venue.is_empty()
+    {
+        let mut caps = std::collections::HashMap::new();
+        for (name, cap) in per_venue {
+            let venue = match name.to_lowercase().as_str() {
+                "binance" => crate::models::enums::Venue::Binance,
+                "bybit" => crate::models::enums::Venue::Bybit,
+                "okx" => crate::models::enums::Venue::Okx,
+                "fubon" => crate::models::enums::Venue::Fubon,
+                "shioaji" => crate::models::enums::Venue::Shioaji,
+                other => anyhow::bail!("unknown venue in max_position_per_venue: {}", other),
+            };
+            caps.insert(venue, *cap);
+        }
+        risk_limits.push(Box::new(MaxPositionPerVenue { caps }));
+    }
+    let risk_manager = RiskManager::new(risk_limits);
 
     let risk_state = RiskState::new(
         risk_config.max_position_size,
@@ -197,6 +217,7 @@ mod tests {
             max_daily_loss: dec!(100000),
             max_notional_exposure: dec!(10000000),
             circuit_breaker: CircuitBreakerConfig::default(),
+            max_position_per_venue: None,
         }
     }
 
