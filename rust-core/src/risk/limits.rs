@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+
 use rust_decimal::Decimal;
 
+use crate::models::enums::Venue;
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
@@ -57,6 +60,47 @@ impl RiskLimit for MaxDailyLoss {
 
     fn name(&self) -> &str {
         "max_daily_loss"
+    }
+}
+
+/// Per-venue position cap: a different absolute-quantity limit for each venue.
+/// Only enforces when `portfolio.venue == order.venue` so it doesn't double-count
+/// against an unrelated venue's snapshot. Venues not present in `caps` are skipped
+/// (approved) — so you can cap Binance tightly while leaving Bybit uncapped.
+pub struct MaxPositionPerVenue {
+    pub caps: HashMap<Venue, Decimal>,
+}
+
+impl RiskLimit for MaxPositionPerVenue {
+    fn check(&self, order: &OrderRequest, portfolio: &PortfolioSnapshot) -> RiskVerdict {
+        if portfolio.venue != order.venue {
+            return RiskVerdict::approved();
+        }
+        let cap = match self.caps.get(&order.venue) {
+            Some(c) => *c,
+            None => return RiskVerdict::approved(),
+        };
+        let current = portfolio
+            .positions
+            .iter()
+            .find(|p| p.instrument == order.instrument)
+            .map(|p| p.quantity.abs())
+            .unwrap_or(Decimal::ZERO);
+        let projected = current + order.quantity;
+        if projected > cap {
+            let allowed = cap - current;
+            if allowed > Decimal::ZERO {
+                RiskVerdict::adjusted(allowed, "per-venue position cap")
+            } else {
+                RiskVerdict::rejected("per-venue position cap reached")
+            }
+        } else {
+            RiskVerdict::approved()
+        }
+    }
+
+    fn name(&self) -> &str {
+        "max_position_per_venue"
     }
 }
 
@@ -288,6 +332,88 @@ mod tests {
                 .unwrap_or("")
                 .contains("max notional exposure")
         );
+    }
+
+    fn buy_order_on(venue: Venue, qty: Decimal, price: Option<Decimal>) -> OrderRequest {
+        OrderRequest {
+            venue,
+            instrument: test_instrument(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            time_in_force: None,
+            price,
+            quantity: qty,
+        }
+    }
+
+    fn portfolio_on(venue: Venue, qty: Decimal) -> PortfolioSnapshot {
+        PortfolioSnapshot {
+            venue,
+            positions: vec![Position {
+                venue,
+                instrument: test_instrument(),
+                quantity: qty,
+                average_cost: dec!(100),
+                unrealized_pnl: Decimal::ZERO,
+                realized_pnl: Decimal::ZERO,
+                settlement_date: None,
+            }],
+            total_equity: Decimal::ZERO,
+            available_balance: Decimal::ZERO,
+            unrealized_pnl: Decimal::ZERO,
+            realized_pnl: Decimal::ZERO,
+        }
+    }
+
+    #[test]
+    fn max_position_per_venue_caps_binance_tightly_leaves_bybit_uncapped() {
+        let mut caps = HashMap::new();
+        caps.insert(Venue::Binance, dec!(1));
+        let limit = MaxPositionPerVenue { caps };
+
+        let bybit_order = buy_order_on(Venue::Bybit, dec!(100), Some(dec!(50000)));
+        let bybit_pf = portfolio_on(Venue::Bybit, dec!(0));
+        assert!(limit.check(&bybit_order, &bybit_pf).approved);
+
+        let binance_order = buy_order_on(Venue::Binance, dec!(2), Some(dec!(50000)));
+        let binance_pf = portfolio_on(Venue::Binance, dec!(0));
+        let verdict = limit.check(&binance_order, &binance_pf);
+        assert!(verdict.approved, "should adjust, not reject");
+        assert_eq!(verdict.adjusted_qty, Some(dec!(1)));
+    }
+
+    #[test]
+    fn max_position_per_venue_rejects_when_at_cap() {
+        let mut caps = HashMap::new();
+        caps.insert(Venue::Binance, dec!(1));
+        let limit = MaxPositionPerVenue { caps };
+
+        let pf = portfolio_on(Venue::Binance, dec!(1));
+        let order = buy_order_on(Venue::Binance, dec!(1), Some(dec!(50000)));
+        let verdict = limit.check(&order, &pf);
+
+        assert!(!verdict.approved);
+        assert!(
+            verdict
+                .reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("per-venue position cap")
+        );
+    }
+
+    #[test]
+    fn max_position_per_venue_skips_when_portfolio_is_different_venue() {
+        // An order to Binance but portfolio snapshot is Bybit's — can't compare,
+        // so approved. Another per-venue limit (or the engine's Binance-side
+        // portfolio) will enforce.
+        let mut caps = HashMap::new();
+        caps.insert(Venue::Binance, dec!(1));
+        let limit = MaxPositionPerVenue { caps };
+
+        let bybit_pf = portfolio_on(Venue::Bybit, dec!(5));
+        let binance_order = buy_order_on(Venue::Binance, dec!(10), Some(dec!(50000)));
+        assert!(limit.check(&binance_order, &bybit_pf).approved);
     }
 
     #[test]

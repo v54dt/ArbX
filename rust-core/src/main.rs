@@ -42,7 +42,7 @@ use models::enums::{Side, Venue};
 use models::fee::FeeSchedule;
 use models::instrument::{AssetClass, Instrument, InstrumentType};
 use risk::circuit_breaker::CircuitBreaker;
-use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionSize};
+use risk::limits::{MaxDailyLoss, MaxNotionalExposure, MaxPositionPerVenue, MaxPositionSize};
 use risk::manager::RiskManager;
 use risk::state::RiskState;
 use strategy::base::ArbitrageStrategy;
@@ -914,7 +914,7 @@ async fn main() -> anyhow::Result<()> {
         feeds.push(b);
     }
 
-    let risk_manager = RiskManager::new(vec![
+    let mut risk_limits: Vec<Box<dyn risk::limits::RiskLimit>> = vec![
         Box::new(MaxPositionSize {
             max_quantity: cfg.risk.max_position_size,
         }),
@@ -924,7 +924,17 @@ async fn main() -> anyhow::Result<()> {
         Box::new(MaxNotionalExposure {
             max_notional: cfg.risk.max_notional_exposure,
         }),
-    ]);
+    ];
+    if let Some(per_venue) = cfg.risk.max_position_per_venue.as_ref()
+        && !per_venue.is_empty()
+    {
+        let mut caps = std::collections::HashMap::new();
+        for (name, cap) in per_venue {
+            caps.insert(parse_venue(name)?, *cap);
+        }
+        risk_limits.push(Box::new(MaxPositionPerVenue { caps }));
+    }
+    let risk_manager = RiskManager::new(risk_limits);
 
     let risk_state = RiskState::new(
         cfg.risk.max_position_size,

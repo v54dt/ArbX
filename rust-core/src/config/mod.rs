@@ -173,6 +173,11 @@ pub struct RiskConfig {
     pub max_notional_exposure: Decimal,
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerConfig,
+    /// Optional per-venue absolute-qty caps, e.g. { binance: 1, bybit: 2 }.
+    /// Applied as an additional MaxPositionPerVenue limit on top of the global
+    /// max_position_size. Venues omitted are uncapped (only global applies).
+    #[serde(default)]
+    pub max_position_per_venue: Option<std::collections::HashMap<String, Decimal>>,
 }
 
 #[derive(Debug, Deserialize)]
