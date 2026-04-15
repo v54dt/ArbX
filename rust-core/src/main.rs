@@ -74,6 +74,10 @@ struct Cli {
     /// Publish each Quote / OrderBook to the default Aeron IPC stream (requires media driver).
     #[arg(long)]
     aeron_publish: bool,
+
+    /// Replace WS feeds with an Aeron Subscriber on the given stream id (requires media driver).
+    #[arg(long, value_name = "STREAM_ID")]
+    aeron_subscribe: Option<i32>,
 }
 
 fn parse_venue(name: &str) -> anyhow::Result<Venue> {
@@ -732,8 +736,23 @@ async fn main() -> anyhow::Result<()> {
         &cfg.strategy.instrument_b.quote,
     );
 
-    let feed_a = build_market_data(&cfg.venues[0], &symbol_a, instrument_a.clone())?;
-    let feed_b = build_market_data(&cfg.venues[idx_b], &symbol_b, instrument_b.clone())?;
+    let (feed_a, feed_b): (Box<dyn MarketDataFeed>, Option<Box<dyn MarketDataFeed>>) =
+        if let Some(stream_id) = cli.aeron_subscribe {
+            tracing::info!(stream_id, "Aeron subscriber feed (replaces WS feeds)");
+            (
+                Box::new(adapters::aeron_feed::AeronMarketDataFeed::new(stream_id)),
+                None,
+            )
+        } else {
+            (
+                build_market_data(&cfg.venues[0], &symbol_a, instrument_a.clone())?,
+                Some(build_market_data(
+                    &cfg.venues[idx_b],
+                    &symbol_b,
+                    instrument_b.clone(),
+                )?),
+            )
+        };
 
     let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a).await?;
     let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b).await?;
@@ -748,7 +767,10 @@ async fn main() -> anyhow::Result<()> {
         fee_b,
     )?;
 
-    let feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a, feed_b];
+    let mut feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a];
+    if let Some(b) = feed_b {
+        feeds.push(b);
+    }
 
     let risk_manager = RiskManager::new(vec![
         Box::new(MaxPositionSize {
