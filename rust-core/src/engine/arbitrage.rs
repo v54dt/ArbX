@@ -28,6 +28,18 @@ struct IntendedFill {
     intended_price: Decimal,
 }
 
+const FILL_DEDUP_CAPACITY: usize = 1024;
+
+fn fill_fingerprint(fill: &Fill) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        fill.order_id,
+        fill.filled_at.timestamp_millis(),
+        fill.price,
+        fill.quantity
+    )
+}
+
 /// Main loop: receive quote → update local book → evaluate strategy → log opportunity.
 pub struct ArbitrageEngine {
     feeds: Vec<Box<dyn MarketDataFeed>>,
@@ -43,6 +55,8 @@ pub struct ArbitrageEngine {
     trade_logs: Vec<TradeLog>,
     intended_fills: HashMap<String, IntendedFill>,
     pending_cancels: Vec<(chrono::DateTime<Utc>, String)>,
+    seen_fills: std::collections::VecDeque<String>,
+    seen_fills_set: std::collections::HashSet<String>,
     reconcile_interval_secs: u64,
     order_ttl_secs: u64,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -77,6 +91,8 @@ impl ArbitrageEngine {
             trade_logs: vec![],
             intended_fills: HashMap::new(),
             pending_cancels: Vec::new(),
+            seen_fills: std::collections::VecDeque::with_capacity(FILL_DEDUP_CAPACITY),
+            seen_fills_set: std::collections::HashSet::with_capacity(FILL_DEDUP_CAPACITY),
             reconcile_interval_secs,
             order_ttl_secs,
             shutdown_rx,
@@ -179,6 +195,21 @@ impl ArbitrageEngine {
                     self.books.insert(key, book);
                 }
                 Some(fill) = fill_rx.recv() => {
+                    let fp = fill_fingerprint(&fill);
+                    if !self.seen_fills_set.insert(fp.clone()) {
+                        tracing::debug!(
+                            order_id = fill.order_id.as_str(),
+                            "duplicate fill suppressed (likely WS reconnect replay)"
+                        );
+                        continue;
+                    }
+                    self.seen_fills.push_back(fp);
+                    while self.seen_fills.len() > FILL_DEDUP_CAPACITY
+                        && let Some(old) = self.seen_fills.pop_front()
+                    {
+                        self.seen_fills_set.remove(&old);
+                    }
+
                     let fill_key = make_book_key(fill.venue, &fill.instrument);
                     let signed_qty = match fill.side {
                         crate::models::enums::Side::Buy => fill.quantity,
