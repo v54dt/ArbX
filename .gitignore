@@ -3,6 +3,7 @@ target/
 
 # Secrets
 .env
+.keys
 
 # IDE
 .vscode/
