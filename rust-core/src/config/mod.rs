@@ -115,6 +115,43 @@ pub struct StrategyConfig {
     /// TwEtfFuturesStrategy: days to futures expiry (default 30)
     #[serde(default)]
     pub tw_days_to_expiry: Option<i64>,
+    /// TriangularArbStrategy: list of A→B→C→A cycles
+    #[serde(default)]
+    pub triangle_cycles: Vec<TriangleCycleConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TriangleCycleConfig {
+    pub leg_a: TriangleLegConfig,
+    pub leg_b: TriangleLegConfig,
+    pub leg_c: TriangleLegConfig,
+    #[serde(default = "default_triangle_max_notional")]
+    pub max_notional_usdt: Decimal,
+    #[serde(default)]
+    pub min_net_profit_bps: Option<Decimal>,
+    #[serde(default = "default_triangle_tick")]
+    pub tick_size: Decimal,
+    #[serde(default = "default_triangle_lot")]
+    pub lot_size: Decimal,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TriangleLegConfig {
+    pub base: String,
+    pub quote: String,
+    pub side: String,
+}
+
+fn default_triangle_max_notional() -> Decimal {
+    Decimal::new(1000, 0)
+}
+
+fn default_triangle_tick() -> Decimal {
+    Decimal::new(1, 2)
+}
+
+fn default_triangle_lot() -> Decimal {
+    Decimal::new(1, 5)
 }
 
 fn default_max_book_depth() -> usize {
