@@ -132,8 +132,11 @@ impl ArbitrageEngine {
                     tokio::select! {
                         Some(q) = quotes.recv() => {
                             for pub_ in publishers.iter() {
-                                let bytes = crate::ipc::flatbuf_codec::encode_quote(&q);
-                                if let Err(e) = pub_.publish(&bytes).await {
+                                let payload = crate::ipc::flatbuf_codec::encode_quote(&q);
+                                let mut tagged = Vec::with_capacity(payload.len() + 1);
+                                tagged.push(crate::ipc::flatbuf_codec::MSG_TAG_QUOTE);
+                                tagged.extend_from_slice(&payload);
+                                if let Err(e) = pub_.publish(&tagged).await {
                                     tracing::debug!(error = %e, "ipc quote publish failed");
                                 }
                             }
@@ -141,8 +144,11 @@ impl ArbitrageEngine {
                         }
                         Some(ob) = order_books.recv() => {
                             for pub_ in publishers.iter() {
-                                let bytes = crate::ipc::flatbuf_codec::encode_order_book(&ob);
-                                if let Err(e) = pub_.publish(&bytes).await {
+                                let payload = crate::ipc::flatbuf_codec::encode_order_book(&ob);
+                                let mut tagged = Vec::with_capacity(payload.len() + 1);
+                                tagged.push(crate::ipc::flatbuf_codec::MSG_TAG_ORDER_BOOK);
+                                tagged.extend_from_slice(&payload);
+                                if let Err(e) = pub_.publish(&tagged).await {
                                     tracing::debug!(error = %e, "ipc order_book publish failed");
                                 }
                             }
