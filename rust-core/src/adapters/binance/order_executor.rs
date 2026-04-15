@@ -92,6 +92,34 @@ impl BinanceOrderExecutor {
         }
     }
 
+    /// Derive an average fill price from a Binance GET /order response.
+    /// Spot returns `cummulativeQuoteQty` and no `avgPrice`; futures returns
+    /// `avgPrice` directly. Try the direct field first, then compute from
+    /// cum-quote / filled.
+    fn extract_average_price(
+        json: &serde_json::Value,
+        filled_quantity: Decimal,
+    ) -> Option<Decimal> {
+        if let Some(p) = json["avgPrice"]
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .filter(|p| !p.is_zero())
+        {
+            return Some(p);
+        }
+        if filled_quantity.is_zero() {
+            return None;
+        }
+        let cum_quote_str = json["cummulativeQuoteQty"]
+            .as_str()
+            .or_else(|| json["cumQuote"].as_str())?;
+        let cum_quote = cum_quote_str.parse::<Decimal>().ok()?;
+        if cum_quote.is_zero() {
+            return None;
+        }
+        Some(cum_quote / filled_quantity)
+    }
+
     fn parse_status(s: &str) -> OrderStatus {
         match s {
             // "NEW" = accepted and resting — matches private_stream mapping.
@@ -268,10 +296,7 @@ impl OrderExecutor for BinanceOrderExecutor {
             .parse::<Decimal>()
             .unwrap_or(Decimal::ZERO);
         let remaining_quantity = orig_qty - filled_quantity;
-        let average_price = json["avgPrice"]
-            .as_str()
-            .and_then(|s| s.parse::<Decimal>().ok())
-            .filter(|p| !p.is_zero());
+        let average_price = Self::extract_average_price(&json, filled_quantity);
 
         Ok(OrderUpdate {
             order_id: order_id.to_string(),
@@ -430,6 +455,39 @@ mod tests {
         let result = executor.cancel_order("nonexistent-id").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown order_id"));
+    }
+
+    #[test]
+    fn extract_average_price_uses_avg_price_for_futures() {
+        let json = serde_json::json!({ "avgPrice": "50123.45" });
+        let avg =
+            BinanceOrderExecutor::extract_average_price(&json, rust_decimal_macros::dec!(0.5));
+        assert_eq!(avg, Some(rust_decimal_macros::dec!(50123.45)));
+    }
+
+    #[test]
+    fn extract_average_price_computes_from_cum_quote_for_spot() {
+        // Spot has no avgPrice; compute cummulativeQuoteQty / executedQty.
+        let json = serde_json::json!({ "cummulativeQuoteQty": "25000" });
+        let avg =
+            BinanceOrderExecutor::extract_average_price(&json, rust_decimal_macros::dec!(0.5));
+        assert_eq!(avg, Some(rust_decimal_macros::dec!(50000)));
+    }
+
+    #[test]
+    fn extract_average_price_returns_none_when_unfilled() {
+        let json = serde_json::json!({ "cummulativeQuoteQty": "0" });
+        let avg = BinanceOrderExecutor::extract_average_price(&json, Decimal::ZERO);
+        assert_eq!(avg, None);
+    }
+
+    #[test]
+    fn extract_average_price_skips_zero_avg_price() {
+        // avgPrice="0" happens on unfilled futures orders; should fall back to cum-quote.
+        let json = serde_json::json!({ "avgPrice": "0", "cumQuote": "100" });
+        let avg =
+            BinanceOrderExecutor::extract_average_price(&json, rust_decimal_macros::dec!(0.01));
+        assert_eq!(avg, Some(rust_decimal_macros::dec!(10000)));
     }
 
     #[tokio::test]
