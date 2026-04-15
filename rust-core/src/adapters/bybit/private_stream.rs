@@ -97,6 +97,12 @@ impl BybitPrivateStream {
         let category = data.get("category")?.as_str().unwrap_or("spot");
         let cum_exec_qty_str = data.get("cumExecQty")?.as_str().unwrap_or("0");
         let leaves_qty_str = data.get("leavesQty")?.as_str().unwrap_or("0");
+        let exec_fee_str = data.get("execFee").and_then(|v| v.as_str()).unwrap_or("0");
+        let fee_currency = data
+            .get("feeCurrency")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let side = Self::parse_side(side_str)?;
         let (base, quote) = Self::split_symbol(symbol);
@@ -125,6 +131,7 @@ impl BybitPrivateStream {
         let ts_ms: i64 = exec_time_str.parse().unwrap_or(0);
         let filled_at = chrono::DateTime::from_timestamp_millis(ts_ms).unwrap_or_else(Utc::now);
 
+        let exec_fee: Decimal = exec_fee_str.parse().unwrap_or_default();
         let fill = if exec_qty > Decimal::ZERO {
             Some(Fill {
                 order_id: order_id.clone(),
@@ -133,8 +140,8 @@ impl BybitPrivateStream {
                 side,
                 price: exec_price,
                 quantity: exec_qty,
-                fee: Decimal::ZERO,
-                fee_currency: String::new(),
+                fee: exec_fee,
+                fee_currency,
                 filled_at,
             })
         } else {
@@ -320,7 +327,9 @@ mod tests {
             "execTime": "1620000000000",
             "category": "spot",
             "cumExecQty": "0.01",
-            "leavesQty": "0"
+            "leavesQty": "0",
+            "execFee": "0.5",
+            "feeCurrency": "USDT"
         });
         let result = BybitPrivateStream::parse_execution(&data);
         assert!(result.is_some());
@@ -334,8 +343,31 @@ mod tests {
         assert_eq!(fill.side, Side::Buy);
         assert_eq!(fill.price, dec!(50000.00));
         assert_eq!(fill.quantity, dec!(0.01));
+        assert_eq!(fill.fee, dec!(0.5));
+        assert_eq!(fill.fee_currency, "USDT");
         assert_eq!(update.status, OrderStatus::Filled);
         assert!(update.remaining_quantity.is_zero());
+    }
+
+    #[test]
+    fn parse_bybit_execution_missing_fee_defaults_to_zero() {
+        // Older events or cancels may omit execFee entirely.
+        let data = serde_json::json!({
+            "orderId": "ord-nofee",
+            "symbol": "ETHUSDT",
+            "side": "Buy",
+            "execQty": "0.1",
+            "execPrice": "3000",
+            "orderStatus": "Filled",
+            "execTime": "1620000000000",
+            "category": "spot",
+            "cumExecQty": "0.1",
+            "leavesQty": "0"
+        });
+        let (fill_opt, _) = BybitPrivateStream::parse_execution(&data).unwrap();
+        let fill = fill_opt.expect("fill");
+        assert_eq!(fill.fee, Decimal::ZERO);
+        assert_eq!(fill.fee_currency, "");
     }
 
     #[test]
