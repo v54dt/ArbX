@@ -255,6 +255,47 @@ const KNOWN_STRATEGIES: &[&str] = &[
 
 const KNOWN_VENUES: &[&str] = &["binance", "bybit", "okx", "fubon", "shioaji"];
 
+/// For a triangular-arb leg, return (input_currency, output_currency) given
+/// its side. A buy takes quote in and gives base out; a sell takes base in
+/// and gives quote out. Caller must have already validated side ∈ {buy, sell}.
+fn leg_io(leg: &TriangleLegConfig) -> (&str, &str) {
+    match leg.side.to_lowercase().as_str() {
+        "buy" => (leg.quote.as_str(), leg.base.as_str()),
+        _ => (leg.base.as_str(), leg.quote.as_str()),
+    }
+}
+
+fn validate_triangle_connectivity(idx: usize, cycle: &TriangleCycleConfig) -> anyhow::Result<()> {
+    let (a_in, a_out) = leg_io(&cycle.leg_a);
+    let (b_in, b_out) = leg_io(&cycle.leg_b);
+    let (c_in, c_out) = leg_io(&cycle.leg_c);
+    if !a_out.eq_ignore_ascii_case(b_in) {
+        anyhow::bail!(
+            "triangle_cycles[{}]: leg_a output '{}' must equal leg_b input '{}'",
+            idx,
+            a_out,
+            b_in
+        );
+    }
+    if !b_out.eq_ignore_ascii_case(c_in) {
+        anyhow::bail!(
+            "triangle_cycles[{}]: leg_b output '{}' must equal leg_c input '{}'",
+            idx,
+            b_out,
+            c_in
+        );
+    }
+    if !c_out.eq_ignore_ascii_case(a_in) {
+        anyhow::bail!(
+            "triangle_cycles[{}]: cycle does not close — leg_c output '{}' must equal leg_a input '{}'",
+            idx,
+            c_out,
+            a_in
+        );
+    }
+    Ok(())
+}
+
 /// Structural validation beyond what serde can express. Runs after YAML parse.
 /// Fails fast with a clear message instead of letting a misconfig reach runtime.
 pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
@@ -329,6 +370,7 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
                     );
                 }
             }
+            validate_triangle_connectivity(i, cycle)?;
         }
     }
 
@@ -530,6 +572,115 @@ logging:
         );
         let err = try_load(&yaml).unwrap_err().to_string();
         assert!(err.contains("duplicate venue"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_triangle_cycle_that_does_not_close() {
+        // leg_a: buy BTC/USDT  → in USDT, out BTC
+        // leg_b: buy ETH/BTC   → in BTC, out ETH  (chains)
+        // leg_c: sell ETH/USDC → in ETH, out USDC (does NOT return to USDT)
+        let yaml = r#"
+venues:
+  - name: binance
+    market: spot
+    api_key: ""
+    api_secret: ""
+    paper_trading: true
+
+strategy:
+  name: triangular_arb
+  instrument_a: { base: BTC, quote: USDT, instrument_type: spot }
+  instrument_b: { base: ETH, quote: USDT, instrument_type: spot }
+  min_net_profit_bps: "2"
+  max_quantity: "0.01"
+  max_quote_age_ms: 2000
+  triangle_cycles:
+    - leg_a: { base: BTC, quote: USDT, side: buy }
+      leg_b: { base: ETH, quote: BTC,  side: buy }
+      leg_c: { base: ETH, quote: USDC, side: sell }
+
+risk:
+  max_position_size: "0.5"
+  max_daily_loss: "500"
+  max_notional_exposure: "50000"
+
+logging:
+  level: info
+"#;
+        let err = try_load(yaml).unwrap_err().to_string();
+        assert!(err.contains("cycle does not close"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_triangle_cycle_with_broken_mid_leg() {
+        // leg_a output = BTC; leg_b input should be BTC but is USDT → mismatch.
+        let yaml = r#"
+venues:
+  - name: binance
+    market: spot
+    api_key: ""
+    api_secret: ""
+    paper_trading: true
+
+strategy:
+  name: triangular_arb
+  instrument_a: { base: BTC, quote: USDT, instrument_type: spot }
+  instrument_b: { base: ETH, quote: USDT, instrument_type: spot }
+  min_net_profit_bps: "2"
+  max_quantity: "0.01"
+  max_quote_age_ms: 2000
+  triangle_cycles:
+    - leg_a: { base: BTC, quote: USDT, side: buy }
+      leg_b: { base: ETH, quote: USDT, side: buy }
+      leg_c: { base: ETH, quote: USDT, side: sell }
+
+risk:
+  max_position_size: "0.5"
+  max_daily_loss: "500"
+  max_notional_exposure: "50000"
+
+logging:
+  level: info
+"#;
+        let err = try_load(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("leg_a output") && err.contains("leg_b input"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn accepts_valid_usdt_btc_eth_triangle() {
+        // Matches config/triangular.yaml's reference cycle.
+        let yaml = r#"
+venues:
+  - name: binance
+    market: spot
+    api_key: ""
+    api_secret: ""
+    paper_trading: true
+
+strategy:
+  name: triangular_arb
+  instrument_a: { base: BTC, quote: USDT, instrument_type: spot }
+  instrument_b: { base: ETH, quote: USDT, instrument_type: spot }
+  min_net_profit_bps: "2"
+  max_quantity: "0.01"
+  max_quote_age_ms: 2000
+  triangle_cycles:
+    - leg_a: { base: BTC, quote: USDT, side: buy }
+      leg_b: { base: ETH, quote: BTC,  side: buy }
+      leg_c: { base: ETH, quote: USDT, side: sell }
+
+risk:
+  max_position_size: "0.5"
+  max_daily_loss: "500"
+  max_notional_exposure: "50000"
+
+logging:
+  level: info
+"#;
+        assert!(try_load(yaml).is_ok());
     }
 
     #[test]
