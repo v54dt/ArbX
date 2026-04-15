@@ -67,7 +67,8 @@ impl OkxOrderExecutor {
         match s {
             "filled" => OrderStatus::Filled,
             "partially_filled" => OrderStatus::PartiallyFilled,
-            "live" => OrderStatus::Pending,
+            // "live" = accepted and resting — matches private_stream mapping.
+            "live" => OrderStatus::Submitted,
             "canceled" => OrderStatus::Cancelled,
             _ => OrderStatus::Pending,
         }
@@ -323,7 +324,10 @@ mod tests {
             OkxOrderExecutor::parse_status("partially_filled"),
             OrderStatus::PartiallyFilled
         );
-        assert_eq!(OkxOrderExecutor::parse_status("live"), OrderStatus::Pending);
+        assert_eq!(
+            OkxOrderExecutor::parse_status("live"),
+            OrderStatus::Submitted
+        );
         assert_eq!(
             OkxOrderExecutor::parse_status("canceled"),
             OrderStatus::Cancelled

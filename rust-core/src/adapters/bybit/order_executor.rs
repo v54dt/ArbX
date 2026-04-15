@@ -86,7 +86,8 @@ impl BybitOrderExecutor {
         match s {
             "Filled" => OrderStatus::Filled,
             "PartiallyFilled" => OrderStatus::PartiallyFilled,
-            "New" => OrderStatus::Pending,
+            // "New" = accepted and resting — matches private_stream mapping.
+            "New" => OrderStatus::Submitted,
             "Cancelled" => OrderStatus::Cancelled,
             "Rejected" => OrderStatus::Rejected,
             _ => OrderStatus::Pending,
@@ -355,7 +356,7 @@ mod tests {
         );
         assert_eq!(
             BybitOrderExecutor::parse_status("New"),
-            OrderStatus::Pending
+            OrderStatus::Submitted
         );
         assert_eq!(
             BybitOrderExecutor::parse_status("Cancelled"),

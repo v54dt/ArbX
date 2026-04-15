@@ -48,6 +48,20 @@ impl BinancePrivateStream {
         })
     }
 
+    /// Split a concatenated Binance symbol like "BTCUSDT" into (base, quote).
+    /// Tries common quote currencies by longest-suffix-first to handle "USDC" vs "USDT".
+    fn split_symbol(symbol: &str) -> (String, String) {
+        for quote in ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "BTC", "ETH", "BNB"] {
+            if let Some(base) = symbol.strip_suffix(quote)
+                && !base.is_empty()
+            {
+                return (base.to_string(), quote.to_string());
+            }
+        }
+        let (base, quote) = symbol.split_at(symbol.len().saturating_sub(3));
+        (base.to_string(), quote.to_string())
+    }
+
     fn parse_execution_report(msg: &serde_json::Value) -> Option<(Fill, OrderUpdate)> {
         if msg.get("e")?.as_str()? != "executionReport" {
             return None;
@@ -91,11 +105,12 @@ impl BinancePrivateStream {
             None
         };
 
+        let (base, quote_ccy) = Self::split_symbol(symbol);
         let instrument = Instrument {
             asset_class: AssetClass::Crypto,
             instrument_type: InstrumentType::Spot,
-            base: symbol.to_string(),
-            quote: String::new(),
+            base,
+            quote: quote_ccy,
             settle_currency: None,
             expiry: None,
             last_trade_time: None,
@@ -315,6 +330,8 @@ mod tests {
         assert_eq!(fill.quantity, Decimal::new(1, 3));
         assert_eq!(fill.fee, Decimal::new(1, 2));
         assert_eq!(fill.fee_currency, "USDT");
+        assert_eq!(fill.instrument.base, "BTC");
+        assert_eq!(fill.instrument.quote, "USDT");
         assert_eq!(update.status, OrderStatus::Filled);
         assert_eq!(update.filled_quantity, Decimal::new(1, 3));
         assert!(update.remaining_quantity.is_zero());
@@ -375,5 +392,25 @@ mod tests {
         let (fill, update) = BinancePrivateStream::parse_execution_report(&msg).unwrap();
         assert_eq!(fill.filled_at.timestamp_millis(), tx_time_ms);
         assert_eq!(update.updated_at.timestamp_millis(), tx_time_ms);
+    }
+
+    #[test]
+    fn split_symbol_common_quote_currencies() {
+        assert_eq!(
+            BinancePrivateStream::split_symbol("BTCUSDT"),
+            ("BTC".to_string(), "USDT".to_string())
+        );
+        assert_eq!(
+            BinancePrivateStream::split_symbol("ETHUSDC"),
+            ("ETH".to_string(), "USDC".to_string())
+        );
+        assert_eq!(
+            BinancePrivateStream::split_symbol("SOLBTC"),
+            ("SOL".to_string(), "BTC".to_string())
+        );
+        assert_eq!(
+            BinancePrivateStream::split_symbol("MATICBUSD"),
+            ("MATIC".to_string(), "BUSD".to_string())
+        );
     }
 }
