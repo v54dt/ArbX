@@ -48,7 +48,19 @@ table Fill {
     timestamp_ms: long;
 }
 
-union MessageBody { Quote, OrderRequest, OrderResponse, Fill }
+table OrderBook {
+    venue: Venue;
+    base: string;
+    quote_currency: string;
+    instrument_type: string;
+    bid_prices: [double];
+    bid_sizes: [double];
+    ask_prices: [double];
+    ask_sizes: [double];
+    timestamp_ms: long;
+}
+
+union MessageBody { Quote, OrderRequest, OrderResponse, Fill, OrderBook }
 
 table Message {
     body: MessageBody;
