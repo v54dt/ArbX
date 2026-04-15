@@ -76,6 +76,11 @@ struct Cli {
     #[arg(long, value_name = "CSV")]
     backtest_csv_out: Option<String>,
 
+    /// When --backtest is set, split quotes into windows of this size and
+    /// report per-window stats (walk-forward style).
+    #[arg(long, value_name = "N")]
+    backtest_window_size: Option<usize>,
+
     /// Publish each Quote / OrderBook to the default Aeron IPC stream (requires media driver).
     #[arg(long)]
     aeron_publish: bool,
@@ -648,6 +653,7 @@ fn build_strategy_from_config(
 async fn run_backtest_mode(
     csv_path: &str,
     csv_out: Option<&str>,
+    window_size: Option<usize>,
     cfg: &config::AppConfig,
 ) -> anyhow::Result<()> {
     use backtest::data_feed::HistoricalDataFeed;
@@ -655,6 +661,7 @@ async fn run_backtest_mode(
 
     tracing::info!(csv = csv_path, "loading historical quotes");
     let feed = HistoricalDataFeed::from_csv(csv_path)?;
+    let quotes = feed.into_quotes();
 
     let venue_a = parse_venue(&cfg.venues[0].name)?;
     let venue_b = parse_venue(&cfg.venues[1 % cfg.venues.len()].name)?;
@@ -677,43 +684,105 @@ async fn run_backtest_mode(
             .unwrap_or(fee_default),
     );
 
-    let strategy = build_strategy_from_config(
-        cfg,
-        venue_a,
-        venue_b,
-        instrument_a,
-        instrument_b,
-        fee_a,
-        fee_b,
-    )?;
-
-    let result = run_backtest(
-        vec![Box::new(feed)],
-        strategy,
-        config::RiskConfig {
-            max_position_size: cfg.risk.max_position_size,
-            max_daily_loss: cfg.risk.max_daily_loss,
-            max_notional_exposure: cfg.risk.max_notional_exposure,
-            circuit_breaker: config::CircuitBreakerConfig {
-                max_drawdown: cfg.risk.circuit_breaker.max_drawdown,
-                max_orders_per_minute: cfg.risk.circuit_breaker.max_orders_per_minute,
-                max_consecutive_failures: cfg.risk.circuit_breaker.max_consecutive_failures,
-            },
+    let make_risk_cfg = || config::RiskConfig {
+        max_position_size: cfg.risk.max_position_size,
+        max_daily_loss: cfg.risk.max_daily_loss,
+        max_notional_exposure: cfg.risk.max_notional_exposure,
+        circuit_breaker: config::CircuitBreakerConfig {
+            max_drawdown: cfg.risk.circuit_breaker.max_drawdown,
+            max_orders_per_minute: cfg.risk.circuit_breaker.max_orders_per_minute,
+            max_consecutive_failures: cfg.risk.circuit_breaker.max_consecutive_failures,
         },
-    )
-    .await?;
+    };
 
-    println!("─── Backtest result ───");
-    println!("total_trades:      {}", result.total_trades);
-    println!("profitable_trades: {}", result.profitable_trades);
-    println!("total_pnl:         {}", result.total_pnl);
-    println!("max_drawdown:      {}", result.max_drawdown);
-    println!("sharpe_ratio:      {:.4}", result.sharpe_ratio);
-    println!("duration_ms:       {}", result.duration_ms);
+    match window_size {
+        None => {
+            let strategy = build_strategy_from_config(
+                cfg,
+                venue_a,
+                venue_b,
+                instrument_a.clone(),
+                instrument_b.clone(),
+                fee_a.clone(),
+                fee_b.clone(),
+            )?;
+            let feed = HistoricalDataFeed::from_quotes(quotes);
+            let result = run_backtest(vec![Box::new(feed)], strategy, make_risk_cfg()).await?;
 
-    if let Some(path) = csv_out {
-        backtest::report::write_trade_csv(path, &result.trade_logs)?;
-        println!("trade rows written: {}", path);
+            println!("─── Backtest result ───");
+            println!("total_trades:      {}", result.total_trades);
+            println!("profitable_trades: {}", result.profitable_trades);
+            println!("total_pnl:         {}", result.total_pnl);
+            println!("max_drawdown:      {}", result.max_drawdown);
+            println!("sharpe_ratio:      {:.4}", result.sharpe_ratio);
+            println!("duration_ms:       {}", result.duration_ms);
+
+            if let Some(path) = csv_out {
+                backtest::report::write_trade_csv(path, &result.trade_logs)?;
+                println!("trade rows written: {}", path);
+            }
+        }
+        Some(0) => anyhow::bail!("--backtest-window-size must be > 0"),
+        Some(n) => {
+            println!(
+                "─── Walk-forward backtest: window={} quotes, total_quotes={} ───",
+                n,
+                quotes.len()
+            );
+            println!(
+                "window,start_ts,end_ts,quotes,total_trades,profitable,total_pnl,max_drawdown,sharpe"
+            );
+            let mut all_trade_logs = Vec::new();
+            for (i, chunk) in quotes.chunks(n).enumerate() {
+                let start_ts = chunk
+                    .first()
+                    .map(|q| q.timestamp.timestamp_millis())
+                    .unwrap_or(0);
+                let end_ts = chunk
+                    .last()
+                    .map(|q| q.timestamp.timestamp_millis())
+                    .unwrap_or(0);
+                let window_feed = HistoricalDataFeed::from_quotes(chunk.to_vec());
+                let window_strategy = build_strategy_from_config(
+                    cfg,
+                    venue_a,
+                    venue_b,
+                    instrument_a.clone(),
+                    instrument_b.clone(),
+                    fee_a.clone(),
+                    fee_b.clone(),
+                )?;
+                let result = run_backtest(
+                    vec![Box::new(window_feed)],
+                    window_strategy,
+                    make_risk_cfg(),
+                )
+                .await?;
+                println!(
+                    "{},{},{},{},{},{},{},{},{:.4}",
+                    i,
+                    start_ts,
+                    end_ts,
+                    chunk.len(),
+                    result.total_trades,
+                    result.profitable_trades,
+                    result.total_pnl,
+                    result.max_drawdown,
+                    result.sharpe_ratio,
+                );
+                // Prefix ids with window index so two windows emitting opportunities
+                // on the same nanosecond don't collide in the concatenated CSV.
+                all_trade_logs.extend(result.trade_logs.into_iter().map(|mut log| {
+                    log.id = format!("w{}-{}", i, log.id);
+                    log
+                }));
+            }
+
+            if let Some(path) = csv_out {
+                backtest::report::write_trade_csv(path, &all_trade_logs)?;
+                println!("trade rows written: {}", path);
+            }
+        }
     }
     Ok(())
 }
@@ -772,7 +841,13 @@ async fn main() -> anyhow::Result<()> {
     metrics::setup_metrics_server(9090);
 
     if let Some(csv_path) = cli.backtest.as_ref() {
-        return run_backtest_mode(csv_path, cli.backtest_csv_out.as_deref(), &cfg).await;
+        return run_backtest_mode(
+            csv_path,
+            cli.backtest_csv_out.as_deref(),
+            cli.backtest_window_size,
+            &cfg,
+        )
+        .await;
     }
 
     // Pin main thread to a dedicated core to reduce OS context-switch jitter.

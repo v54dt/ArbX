@@ -20,6 +20,10 @@ impl HistoricalDataFeed {
         Self { quotes }
     }
 
+    pub fn into_quotes(self) -> Vec<Quote> {
+        self.quotes
+    }
+
     pub fn from_csv(path: &str) -> anyhow::Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let mut quotes = Vec::new();
@@ -165,6 +169,23 @@ mod tests {
         assert_eq!(received.len(), 2);
         assert_eq!(received[0].bid, dec!(100));
         assert_eq!(received[1].bid, dec!(102));
+    }
+
+    #[test]
+    fn into_quotes_returns_sorted_quotes_for_chunking() {
+        let feed = HistoricalDataFeed::from_quotes(vec![
+            make_quote(Venue::Binance, dec!(1), dec!(2), 3000),
+            make_quote(Venue::Binance, dec!(1), dec!(2), 1000),
+            make_quote(Venue::Binance, dec!(1), dec!(2), 2000),
+        ]);
+        let quotes = feed.into_quotes();
+        assert_eq!(quotes.len(), 3);
+        let chunks: Vec<Vec<_>> = quotes.chunks(2).map(|c| c.to_vec()).collect();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 2);
+        assert_eq!(chunks[1].len(), 1);
+        assert_eq!(chunks[0][0].timestamp.timestamp_millis(), 1000);
+        assert_eq!(chunks[1][0].timestamp.timestamp_millis(), 3000);
     }
 
     #[test]
