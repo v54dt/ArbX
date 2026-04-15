@@ -8,10 +8,13 @@ use tracing::{info, warn};
 use chrono::Utc;
 use smallvec::SmallVec;
 
+use std::sync::Arc;
+
 use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
+use crate::ipc::IpcPublisher;
 use crate::models::market::book_key as make_book_key;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
@@ -50,6 +53,7 @@ pub struct ArbitrageEngine {
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
     private_streams: Vec<Box<dyn PrivateStream>>,
+    quote_publishers: Vec<Arc<dyn IpcPublisher>>,
     books: BookMap,
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: Vec<TradeLog>,
@@ -73,6 +77,7 @@ impl ArbitrageEngine {
         executor: Box<dyn OrderExecutor>,
         position_manager: Box<dyn PositionManager>,
         private_streams: Vec<Box<dyn PrivateStream>>,
+        quote_publishers: Vec<Arc<dyn IpcPublisher>>,
         reconcile_interval_secs: u64,
         order_ttl_secs: u64,
         shutdown_rx: tokio::sync::watch::Receiver<bool>,
@@ -86,6 +91,7 @@ impl ArbitrageEngine {
             executor,
             position_manager,
             private_streams,
+            quote_publishers,
             books: BookMap::default(),
             portfolios: HashMap::new(),
             trade_logs: vec![],
@@ -120,13 +126,26 @@ impl ArbitrageEngine {
             } = feed.connect().await?;
             let tx = merged_tx.clone();
             let btx = merged_book_tx.clone();
+            let publishers = self.quote_publishers.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         Some(q) = quotes.recv() => {
+                            for pub_ in publishers.iter() {
+                                let bytes = crate::ipc::flatbuf_codec::encode_quote(&q);
+                                if let Err(e) = pub_.publish(&bytes).await {
+                                    tracing::debug!(error = %e, "ipc quote publish failed");
+                                }
+                            }
                             if tx.send(q).is_err() { break; }
                         }
                         Some(ob) = order_books.recv() => {
+                            for pub_ in publishers.iter() {
+                                let bytes = crate::ipc::flatbuf_codec::encode_order_book(&ob);
+                                if let Err(e) = pub_.publish(&bytes).await {
+                                    tracing::debug!(error = %e, "ipc order_book publish failed");
+                                }
+                            }
                             if btx.send(ob).is_err() { break; }
                         }
                         else => break,

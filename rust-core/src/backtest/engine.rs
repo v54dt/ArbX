@@ -67,6 +67,7 @@ pub async fn run_backtest(
         Box::new(executor),
         Box::new(position_manager),
         Vec::new(),
+        Vec::new(),
         86400,
         0,
         shutdown_rx,

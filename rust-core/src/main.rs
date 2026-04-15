@@ -70,6 +70,10 @@ struct Cli {
     /// Run offline backtest over the given quote CSV and exit.
     #[arg(long, value_name = "CSV")]
     backtest: Option<String>,
+
+    /// Publish each Quote / OrderBook to the default Aeron IPC stream (requires media driver).
+    #[arg(long)]
+    aeron_publish: bool,
 }
 
 fn parse_venue(name: &str) -> anyhow::Result<Venue> {
@@ -791,6 +795,21 @@ async fn main() -> anyhow::Result<()> {
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    let quote_publishers: Vec<std::sync::Arc<dyn ipc::IpcPublisher>> = if cli.aeron_publish {
+        match ipc::aeron::AeronPublisher::with_default_stream() {
+            Ok(p) => {
+                tracing::info!("Aeron publisher attached to quote/order_book stream");
+                vec![std::sync::Arc::new(p)]
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "AeronPublisher init failed; running without IPC publish");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let mut engine = ArbitrageEngine::new(
         feeds,
         strategy,
@@ -800,6 +819,7 @@ async fn main() -> anyhow::Result<()> {
         executor,
         position_manager,
         private_streams,
+        quote_publishers,
         cfg.engine.reconcile_interval_secs,
         cfg.engine.order_ttl_secs,
         shutdown_rx,
