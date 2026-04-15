@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures_util::StreamExt;
 use rust_decimal::Decimal;
 use tokio::sync::mpsc;
@@ -75,6 +76,14 @@ impl BinancePrivateStream {
         let cum_qty: Decimal = msg.get("z")?.as_str()?.parse().ok()?;
         let cum_quote: Decimal = msg.get("Z")?.as_str()?.parse().ok()?;
         let orig_qty: Decimal = msg.get("q")?.as_str()?.parse().ok()?;
+        let tx_time_ms = msg.get("T").and_then(|v| v.as_i64()).unwrap_or(0);
+        let event_time_ms = msg.get("E").and_then(|v| v.as_i64()).unwrap_or(0);
+        let stamp_ms = if tx_time_ms > 0 {
+            tx_time_ms
+        } else {
+            event_time_ms
+        };
+        let filled_at = chrono::DateTime::from_timestamp_millis(stamp_ms).unwrap_or_else(Utc::now);
 
         let avg_price = if !cum_qty.is_zero() {
             Some(cum_quote / cum_qty)
@@ -102,7 +111,7 @@ impl BinancePrivateStream {
             quantity: last_qty,
             fee: commission,
             fee_currency: commission_asset,
-            filled_at: chrono::Utc::now(),
+            filled_at,
         };
 
         let order_update = OrderUpdate {
@@ -111,7 +120,7 @@ impl BinancePrivateStream {
             filled_quantity: cum_qty,
             remaining_quantity: orig_qty - cum_qty,
             average_price: avg_price,
-            updated_at: chrono::Utc::now(),
+            updated_at: filled_at,
         };
 
         Some((fill, order_update))
@@ -342,5 +351,29 @@ mod tests {
         assert_eq!(fill.side, Side::Sell);
         assert_eq!(update.status, OrderStatus::PartiallyFilled);
         assert_eq!(update.remaining_quantity, Decimal::new(5, 1));
+    }
+
+    #[test]
+    fn parse_execution_report_uses_transaction_time() {
+        let tx_time_ms: i64 = 1_700_000_000_000;
+        let msg = serde_json::json!({
+            "e": "executionReport",
+            "s": "BTCUSDT",
+            "S": "BUY",
+            "X": "FILLED",
+            "l": "0.1",
+            "L": "50000",
+            "n": "0.05",
+            "N": "USDT",
+            "i": 1,
+            "z": "0.1",
+            "Z": "5000",
+            "q": "0.1",
+            "T": tx_time_ms,
+            "E": tx_time_ms - 50,
+        });
+        let (fill, update) = BinancePrivateStream::parse_execution_report(&msg).unwrap();
+        assert_eq!(fill.filled_at.timestamp_millis(), tx_time_ms);
+        assert_eq!(update.updated_at.timestamp_millis(), tx_time_ms);
     }
 }
