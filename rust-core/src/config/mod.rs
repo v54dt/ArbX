@@ -261,6 +261,7 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
     if config.venues.is_empty() {
         anyhow::bail!("config.venues must not be empty");
     }
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for v in &config.venues {
         let name = v.name.to_lowercase();
         if !KNOWN_VENUES.contains(&name.as_str()) {
@@ -268,6 +269,14 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
                 "unknown venue.name: '{}' (known: {})",
                 v.name,
                 KNOWN_VENUES.join(", ")
+            );
+        }
+        let market = v.market.to_lowercase();
+        if !seen.insert((name.clone(), market.clone())) {
+            anyhow::bail!(
+                "duplicate venue entry: name='{}' market='{}' (same pair already defined)",
+                v.name,
+                v.market
             );
         }
     }
@@ -337,6 +346,18 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
         anyhow::bail!(
             "risk.max_position_size must be > 0 (got {})",
             config.risk.max_position_size
+        );
+    }
+    if config.risk.max_daily_loss <= Decimal::ZERO {
+        anyhow::bail!(
+            "risk.max_daily_loss must be > 0 (got {}) — non-positive disables the check",
+            config.risk.max_daily_loss
+        );
+    }
+    if config.risk.max_notional_exposure <= Decimal::ZERO {
+        anyhow::bail!(
+            "risk.max_notional_exposure must be > 0 (got {}) — non-positive disables the check",
+            config.risk.max_notional_exposure
         );
     }
 
@@ -478,5 +499,46 @@ logging:
             err.contains("min_net_profit_bps must be >= 0"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn rejects_non_positive_max_daily_loss() {
+        let yaml = sample_yaml().replace("max_daily_loss: \"1000\"", "max_daily_loss: \"0\"");
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("max_daily_loss must be > 0"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_non_positive_max_notional_exposure() {
+        let yaml = sample_yaml().replace(
+            "max_notional_exposure: \"100000\"",
+            "max_notional_exposure: \"-1\"",
+        );
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("max_notional_exposure must be > 0"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_venue_name_and_market() {
+        // Two venues with identical (name, market) should fail.
+        let yaml = sample_yaml().replace(
+            "- name: binance\n    market: spot\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true",
+            "- name: binance\n    market: spot\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true\n  - name: binance\n    market: spot\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true",
+        );
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("duplicate venue"), "got: {err}");
+    }
+
+    #[test]
+    fn allows_same_venue_name_with_different_market() {
+        // binance spot + binance usdt_futures is a valid pattern (see default.yaml).
+        let yaml = sample_yaml().replace(
+            "- name: binance\n    market: spot\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true",
+            "- name: binance\n    market: spot\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true\n  - name: binance\n    market: usdt_futures\n    api_key: \"\"\n    api_secret: \"\"\n    paper_trading: true",
+        );
+        assert!(try_load(&yaml).is_ok());
     }
 }
