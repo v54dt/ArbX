@@ -303,6 +303,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backtest_runs_multi_pair_without_panic() {
+        use crate::strategy::multi_pair_cross_exchange::{
+            MultiPairCrossExchangeStrategy, PairConfig,
+        };
+        let inst = test_instrument(InstrumentType::Spot);
+        let pair = PairConfig {
+            venue_a: Venue::Binance,
+            venue_b: Venue::Bybit,
+            instrument_a: inst.clone(),
+            instrument_b: inst.clone(),
+            max_quantity: dec!(1),
+            tick_size_a: dec!(0.01),
+            tick_size_b: dec!(0.01),
+            lot_size_a: dec!(0.001),
+            lot_size_b: dec!(0.001),
+            fee_a: FeeSchedule::new(Venue::Binance, dec!(0.001), dec!(0.001)),
+            fee_b: FeeSchedule::new(Venue::Bybit, dec!(0.001), dec!(0.001)),
+        };
+        let strategy = MultiPairCrossExchangeStrategy {
+            pairs: vec![pair],
+            min_net_profit_bps: dec!(1),
+            max_quote_age_ms: 60_000,
+            max_book_depth: 10,
+        };
+        let feed = HistoricalDataFeed::from_quotes(profitable_quotes(50));
+        let result = run_backtest(vec![Box::new(feed)], Box::new(strategy), make_risk_config())
+            .await
+            .unwrap();
+        assert!(result.duration_ms < 60_000, "backtest took too long");
+    }
+
+    #[tokio::test]
+    async fn backtest_runs_ewma_spread_without_panic() {
+        use crate::strategy::ewma_spread::EwmaSpreadStrategy;
+        let inst = test_instrument(InstrumentType::Spot);
+        let strategy = EwmaSpreadStrategy::new(
+            Venue::Binance,
+            Venue::Bybit,
+            inst.clone(),
+            inst.clone(),
+            FeeSchedule::new(Venue::Binance, dec!(0.001), dec!(0.001)),
+            FeeSchedule::new(Venue::Bybit, dec!(0.001), dec!(0.001)),
+            dec!(0.05),
+            dec!(2.0),
+            dec!(1),
+            dec!(1),
+            60_000,
+            dec!(0.01),
+            dec!(0.01),
+            dec!(0.001),
+            10,
+            5,
+        );
+        let feed = HistoricalDataFeed::from_quotes(profitable_quotes(50));
+        let result = run_backtest(vec![Box::new(feed)], Box::new(strategy), make_risk_config())
+            .await
+            .unwrap();
+        assert!(result.duration_ms < 60_000);
+    }
+
+    #[tokio::test]
     async fn backtest_result_calculates_drawdown() {
         let trade_logs = vec![
             make_trade_log("t1", dec!(100)),
