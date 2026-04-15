@@ -1,14 +1,13 @@
 import asyncio
-import json
 import logging
 import sys
-from dataclasses import asdict
 
 from src.adapters.base import BaseAdapter
 from src.adapters.fubon_adapter import FubonAdapter
 from src.adapters.shioaji_adapter import ShioajiAdapter
 from src.config import load_config
 from src.ipc.aeron_client import AeronClient
+from src.ipc.flatbuf_codec import encode_quote
 from src.models.messages import Quote
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -63,9 +62,8 @@ async def run(config_path: str) -> None:
     try:
         while True:
             quote = await quote_queue.get()
-            # TODO: replace JSON bridge with real FlatBuffers serialization once flatc codegen is available
             logger.debug("Quote: %s %s bid=%s ask=%s", quote.venue, quote.base, quote.bid, quote.ask)
-            payload = json.dumps(asdict(quote), default=str).encode("utf-8")
+            payload = encode_quote(quote)
             await aeron.publish(payload)
     except asyncio.CancelledError:
         pass
