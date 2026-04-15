@@ -25,6 +25,7 @@ pub struct MockExchange {
     fill_rate: f64,
     fills_tx: Option<mpsc::UnboundedSender<Fill>>,
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
+    fail_submit: bool,
     cancels: Arc<Mutex<Vec<String>>>,
 }
 
@@ -40,12 +41,20 @@ impl MockExchange {
             fill_rate,
             fills_tx: None,
             updates_tx: None,
+            fail_submit: false,
             cancels: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn with_quote_interval(mut self, ms: u64) -> Self {
         self.quote_interval_ms = ms;
+        self
+    }
+
+    /// Causes submit_order to return Err every time — lets tests drive the
+    /// CircuitBreaker via record_failure without needing real exchange down-time.
+    pub fn with_submit_failure(mut self) -> Self {
+        self.fail_submit = true;
         self
     }
 
@@ -116,6 +125,9 @@ impl OrderExecutor for MockExchange {
     }
 
     async fn submit_order(&self, order: &Order) -> anyhow::Result<String> {
+        if self.fail_submit {
+            anyhow::bail!("mock submit forced-fail");
+        }
         let order_id = format!(
             "mock-{}",
             self.next_order_id.fetch_add(1, Ordering::Relaxed)
