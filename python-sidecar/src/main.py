@@ -4,11 +4,12 @@ import sys
 
 from src.adapters.base import BaseAdapter
 from src.adapters.fubon_adapter import FubonAdapter
+from src.adapters.mock_adapter import MockAdapter
 from src.adapters.shioaji_adapter import ShioajiAdapter
 from src.config import load_config
 from src.ipc.aeron_client import AeronClient
 from src.ipc.flatbuf_codec import encode_quote
-from src.models.messages import Quote
+from src.models.messages import Quote, Venue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -30,13 +31,19 @@ def build_adapter(venue_cfg: dict) -> BaseAdapter:
             pfx_path=venue_cfg.get("pfx_path", ""),
             pfx_password=venue_cfg.get("pfx_password", ""),
         )
+    if venue == "mock":
+        return MockAdapter(
+            venue=Venue(venue_cfg.get("as_venue", "binance")),
+            interval_ms=int(venue_cfg.get("interval_ms", 100)),
+            start_bid=float(venue_cfg.get("start_bid", 50_000.0)),
+            spread=float(venue_cfg.get("spread", 10.0)),
+        )
     raise ValueError(f"Unknown venue: {venue}")
 
 
 async def run(config_path: str) -> None:
     cfg = load_config(config_path)
     aeron = AeronClient(
-        channel=cfg.get("ipc", {}).get("channel", "aeron:ipc"),
         stream_id=cfg.get("ipc", {}).get("stream_id", 1001),
     )
     await aeron.connect()
