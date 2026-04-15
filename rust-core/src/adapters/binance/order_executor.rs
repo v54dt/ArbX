@@ -94,7 +94,8 @@ impl BinanceOrderExecutor {
 
     fn parse_status(s: &str) -> OrderStatus {
         match s {
-            "NEW" => OrderStatus::Pending,
+            // "NEW" = accepted and resting — matches private_stream mapping.
+            "NEW" => OrderStatus::Submitted,
             "PARTIALLY_FILLED" => OrderStatus::PartiallyFilled,
             "FILLED" => OrderStatus::Filled,
             "CANCELED" => OrderStatus::Cancelled,
@@ -385,7 +386,7 @@ mod tests {
     fn parse_status_maps_all_states() {
         assert_eq!(
             BinanceOrderExecutor::parse_status("NEW"),
-            OrderStatus::Pending
+            OrderStatus::Submitted
         );
         assert_eq!(
             BinanceOrderExecutor::parse_status("PARTIALLY_FILLED"),
