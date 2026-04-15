@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use arbx_core::ipc::flatbuf_codec::{decode_quote, encode_quote};
 use arbx_core::models::enums::{OrderType, Side, Venue};
@@ -197,6 +197,105 @@ fn bench_bookmap_insert_lookup(c: &mut Criterion) {
     });
 }
 
+const DEDUP_CAP: usize = 1024;
+
+fn fill_fingerprint(order_id: &str, ts_ms: i64, price: Decimal, qty: Decimal) -> String {
+    format!("{}:{}:{}:{}", order_id, ts_ms, price, qty)
+}
+
+fn bench_dedup_check(c: &mut Criterion) {
+    // Mirrors engine's fill-dedup hot path: HashSet<String> + VecDeque<String>
+    // at 1024 capacity, steady-state insert+evict.
+    let mut seen_set: HashSet<String> = HashSet::with_capacity(DEDUP_CAP);
+    let mut seen_queue: VecDeque<String> = VecDeque::with_capacity(DEDUP_CAP);
+    for i in 0..DEDUP_CAP {
+        let fp = fill_fingerprint(
+            &format!("ord{}", i),
+            1_700_000_000 + i as i64,
+            dec!(50000),
+            dec!(1),
+        );
+        seen_set.insert(fp.clone());
+        seen_queue.push_back(fp);
+    }
+
+    let mut next_id: usize = DEDUP_CAP;
+    c.bench_function("dedup_check_at_capacity", |b| {
+        b.iter(|| {
+            let fp = fill_fingerprint(
+                black_box(&format!("ord{}", next_id)),
+                black_box(1_700_000_000 + next_id as i64),
+                black_box(dec!(50000)),
+                black_box(dec!(1)),
+            );
+            let inserted = seen_set.insert(fp.clone());
+            black_box(inserted);
+            seen_queue.push_back(fp);
+            while seen_queue.len() > DEDUP_CAP
+                && let Some(old) = seen_queue.pop_front()
+            {
+                seen_set.remove(&old);
+            }
+            next_id += 1;
+        })
+    });
+}
+
+fn bench_dedup_check_duplicate(c: &mut Criterion) {
+    // Measures the fast path where the incoming fill was already seen —
+    // HashSet::insert returns false and we short-circuit.
+    let mut seen_set: HashSet<String> = HashSet::with_capacity(DEDUP_CAP);
+    seen_set.insert(fill_fingerprint(
+        "ord0",
+        1_700_000_000,
+        dec!(50000),
+        dec!(1),
+    ));
+    for i in 1..DEDUP_CAP {
+        let fp = fill_fingerprint(
+            &format!("ord{}", i),
+            1_700_000_000 + i as i64,
+            dec!(50000),
+            dec!(1),
+        );
+        seen_set.insert(fp);
+    }
+
+    c.bench_function("dedup_check_duplicate", |b| {
+        b.iter(|| {
+            let fp = fill_fingerprint(
+                black_box("ord0"),
+                black_box(1_700_000_000),
+                black_box(dec!(50000)),
+                black_box(dec!(1)),
+            );
+            black_box(seen_set.contains(&fp))
+        })
+    });
+}
+
+fn bench_intended_fills_lookup(c: &mut Criterion) {
+    // Mirrors engine's intended_fills HashMap<String, IntendedFill> used to
+    // compute signed slippage on each fill. Size reflects roughly the number
+    // of unacked orders — benchmark at 256 live entries.
+    const LIVE: usize = 256;
+    let mut map: HashMap<String, (Side, Decimal)> = HashMap::with_capacity(LIVE);
+    for i in 0..LIVE {
+        map.insert(format!("ord{}", i), (Side::Buy, dec!(50000)));
+    }
+
+    let mut idx: usize = 0;
+    c.bench_function("intended_fills_remove", |b| {
+        b.iter(|| {
+            let key = format!("ord{}", idx % LIVE);
+            if let Some((side, price)) = map.remove(black_box(&key)) {
+                map.insert(key, (side, price));
+            }
+            idx += 1;
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_strategy_evaluate,
@@ -207,5 +306,8 @@ criterion_group!(
     bench_orderbook_mid_price,
     bench_orderbook_spread_bps,
     bench_bookmap_insert_lookup,
+    bench_dedup_check,
+    bench_dedup_check_duplicate,
+    bench_intended_fills_lookup,
 );
 criterion_main!(benches);
