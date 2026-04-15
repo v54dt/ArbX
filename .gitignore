@@ -9,10 +9,17 @@ target/
 .vscode/
 .idea/
 
+# Python build/cache artifacts
+**/__pycache__/
+*.egg-info/
+python-sidecar/.venv/
+.pytest_cache/
+
 # Local-only notes (planning / review / per-machine agent state)
 plan.md
 CLAUDE.md
 review.md
+session-plan.md
 .claude/
 config/observe.yaml
 config/pipeline_test.yaml
