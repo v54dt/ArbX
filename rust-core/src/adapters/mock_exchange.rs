@@ -66,6 +66,13 @@ impl MockExchange {
     pub fn cancels_handle(&self) -> Arc<Mutex<Vec<String>>> {
         self.cancels.clone()
     }
+
+    /// Handle for tests to inspect which orders were submitted (keyed by
+    /// generated venue order_id). Useful for verifying multi-executor
+    /// routing — each per-venue executor only sees orders for its venue.
+    pub fn orders_handle(&self) -> Arc<Mutex<HashMap<String, Order>>> {
+        self.orders.clone()
+    }
 }
 
 #[async_trait]

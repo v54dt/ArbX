@@ -105,6 +105,93 @@ fn build_engine(
     )
 }
 
+/// D-3 PR1 — verifies that orders submitted to a per-venue executor (registered
+/// via `with_executor_for`) actually reach that executor and not the legacy
+/// fallback. Fills produced by per-venue executor get merged into the engine's
+/// fill stream like any other.
+#[tokio::test]
+async fn per_venue_executor_routes_by_order_venue() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+
+    // Legacy single executor — should receive nothing because we register
+    // explicit per-venue executors below.
+    let legacy_executor = MockExchange::new(vec![], 0, 1.0);
+    let legacy_orders_handle = legacy_executor.orders_handle();
+
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let binance_exec = MockExchange::new(vec![], 0, 1.0);
+    let binance_orders_handle = binance_exec.orders_handle();
+
+    let bybit_exec = MockExchange::new(vec![], 0, 1.0);
+    let bybit_orders_handle = bybit_exec.orders_handle();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(legacy_executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        0,
+        shutdown_rx,
+    )
+    .with_executor_for(Venue::Binance, Box::new(binance_exec))
+    .with_executor_for(Venue::Bybit, Box::new(bybit_exec));
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    let logs = engine.trade_logs();
+    assert!(!logs.is_empty(), "expected at least one trade log");
+
+    // Per-venue executors received their orders; legacy got nothing.
+    let legacy_n = legacy_orders_handle.lock().await.len();
+    let binance_n = binance_orders_handle.lock().await.len();
+    let bybit_n = bybit_orders_handle.lock().await.len();
+    assert_eq!(
+        legacy_n, 0,
+        "legacy executor must receive no orders when per-venue routing is active"
+    );
+    assert!(binance_n > 0, "binance per-venue executor saw no orders");
+    assert!(bybit_n > 0, "bybit per-venue executor saw no orders");
+
+    // Every order in binance_exec must have venue == Binance, and same for bybit.
+    for order in binance_orders_handle.lock().await.values() {
+        assert_eq!(
+            order.venue,
+            Venue::Binance,
+            "binance executor saw foreign-venue order"
+        );
+    }
+    for order in bybit_orders_handle.lock().await.values() {
+        assert_eq!(
+            order.venue,
+            Venue::Bybit,
+            "bybit executor saw foreign-venue order"
+        );
+    }
+}
+
 #[tokio::test]
 async fn engine_detects_opportunity_and_submits_orders() {
     let (spot_quotes, perp_quotes) = profitable_quotes();
