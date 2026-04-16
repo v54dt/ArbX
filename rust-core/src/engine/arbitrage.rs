@@ -154,6 +154,8 @@ impl ArbitrageEngine {
     /// for orders whose `venue` matches this key route through `executor`
     /// instead of the legacy single executor passed to `new()`. Use one
     /// call per venue when running a cross-exchange strategy.
+    // PR1 ships the API + integration test; main.rs wires actual callers in PR2.
+    #[allow(dead_code)]
     pub fn with_executor_for(mut self, venue: Venue, executor: Box<dyn OrderExecutor>) -> Self {
         self.executors_by_venue.insert(venue, executor);
         self
@@ -163,6 +165,8 @@ impl ArbitrageEngine {
     /// `with_executor_for`, but applied at fill time. Position reconciliation
     /// (the periodic `sync_positions` call) still uses the legacy single PM
     /// — this builder controls only the per-fill `apply_fill` dispatch.
+    // PR1 ships the API + integration test; main.rs wires actual callers in PR2.
+    #[allow(dead_code)]
     pub fn with_position_manager_for(mut self, venue: Venue, pm: Box<dyn PositionManager>) -> Self {
         self.position_managers_by_venue.insert(venue, pm);
         self
