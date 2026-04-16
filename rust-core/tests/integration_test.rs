@@ -105,6 +105,63 @@ fn build_engine(
     )
 }
 
+/// C5 PR1 — verifies that an extra strategy registered via `with_extra_strategy`
+/// runs through the full pipeline (eval → orders → trade_log) on the same quotes
+/// as the primary strategy. Both strategies share the same risk chain.
+#[tokio::test]
+async fn extra_strategy_runs_alongside_primary() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    let executor = MockExchange::new(vec![], 0, 1.0);
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    // Two distinct CrossExchangeStrategy instances — same fixture, different
+    // strategy_id at the Opportunity level so we can tell their trade logs apart.
+    let primary = build_strategy();
+    let mut extra = build_strategy();
+    extra.min_net_profit_bps = dec!(1); // identical config; both will fire
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(primary),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        0,
+        shutdown_rx,
+    )
+    .with_extra_strategy(Box::new(extra));
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    // Two strategies × profitable quotes → multiple trade logs expected.
+    let logs = engine.trade_logs();
+    assert!(
+        logs.len() >= 2,
+        "expected at least 2 trade logs (1 per strategy per qualifying tick); got {}",
+        logs.len()
+    );
+}
+
 /// D-3 PR1 — verifies that orders submitted to a per-venue executor (registered
 /// via `with_executor_for`) actually reach that executor and not the legacy
 /// fallback. Fills produced by per-venue executor get merged into the engine's

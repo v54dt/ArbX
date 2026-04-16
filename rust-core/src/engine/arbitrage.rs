@@ -20,11 +20,13 @@ use crate::ipc::IpcPublisher;
 use crate::models::enums::Venue;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
+use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 use crate::models::trade_log::{TradeLeg, TradeLog, TradeLogWriter, TradeOutcome};
 use crate::risk::circuit_breaker::CircuitBreaker;
 use crate::risk::manager::RiskManager;
 use crate::risk::state::RiskState;
+use crate::strategy::Opportunity;
 use crate::strategy::base::ArbitrageStrategy;
 use rust_decimal::Decimal;
 
@@ -50,6 +52,12 @@ fn fill_fingerprint(fill: &Fill) -> String {
 pub struct ArbitrageEngine {
     feeds: Vec<Box<dyn MarketDataFeed>>,
     strategy: Box<dyn ArbitrageStrategy>,
+    /// Additional strategies evaluated on every quote in addition to the
+    /// primary `strategy`. Each extra runs through the full pipeline (eval →
+    /// compute_hedge_orders → risk → submit → trade_log) sharing the same
+    /// `risk_state` / `circuit_breaker` (no per-strategy risk budget yet —
+    /// see plan.md NEEDS-DECISION D-3+).
+    extra_strategies: Vec<Box<dyn ArbitrageStrategy>>,
     risk_manager: RiskManager,
     risk_state: RiskState,
     circuit_breaker: CircuitBreaker,
@@ -104,6 +112,7 @@ impl ArbitrageEngine {
         Self {
             feeds,
             strategy,
+            extra_strategies: Vec::new(),
             risk_manager,
             risk_state,
             circuit_breaker,
@@ -147,6 +156,17 @@ impl ArbitrageEngine {
     /// dead-man's-switch shutdown on stuck loops.
     pub fn with_heartbeat(mut self, heartbeat: Arc<Heartbeat>) -> Self {
         self.heartbeat = Some(heartbeat);
+        self
+    }
+
+    /// Register an extra strategy. Each registered strategy is evaluated on
+    /// every quote in addition to the primary `strategy` passed to `new()`.
+    /// All strategies share the same risk chain and circuit breaker. Per-
+    /// strategy risk budgeting is a future decision (`plan.md` D-3+).
+    // PR1 ships the API + integration test; main.rs config wiring lands in PR2.
+    #[allow(dead_code)]
+    pub fn with_extra_strategy(mut self, strategy: Box<dyn ArbitrageStrategy>) -> Self {
+        self.extra_strategies.push(strategy);
         self
     }
 
@@ -470,44 +490,78 @@ impl ArbitrageEngine {
             .and_modify(|b| b.update_from_quote(&quote))
             .or_insert_with(|| quote_to_book(&quote));
 
+        // Primary strategy
         let eval_start = std::time::Instant::now();
         let eval_result = self.strategy.evaluate(&self.books, &self.portfolios).await;
         let eval_us = eval_start.elapsed().as_micros();
-
-        crate::metrics::record_eval_latency_us(self.strategy.name(), eval_us as f64);
-
+        let primary_name = self.strategy.name().to_string();
+        crate::metrics::record_eval_latency_us(&primary_name, eval_us as f64);
         if let Some(opp) = eval_result {
-            tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
-            crate::metrics::record_opportunity_detected(self.strategy.name());
-            let direction = opp
-                .legs
-                .iter()
-                .map(|leg| {
-                    format!(
-                        "{:?} {:?} {:?}@{}x{}",
-                        leg.side,
-                        leg.venue,
-                        leg.instrument.instrument_type,
-                        leg.order_price,
-                        leg.quantity
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" | ");
-
-            info!(
-                id = opp.id.as_str(),
-                direction = direction.as_str(),
-                gross = %opp.economics.gross_profit,
-                fees = %opp.economics.fees_total,
-                net = %opp.economics.net_profit,
-                net_bps = %opp.economics.net_profit_bps,
-                notional = %opp.economics.notional,
-                "opportunity detected"
-            );
-
             let orders = self.strategy.compute_hedge_orders(&opp);
+            self.process_opportunity(&primary_name, eval_us, opp, orders)
+                .await?;
+        }
 
+        // Extra strategies — same pipeline, shared risk + circuit breaker.
+        for i in 0..self.extra_strategies.len() {
+            let (name, eval_us, opp_and_orders) = {
+                let s = &self.extra_strategies[i];
+                let t0 = std::time::Instant::now();
+                let opp = s.evaluate(&self.books, &self.portfolios).await;
+                let us = t0.elapsed().as_micros();
+                let n = s.name().to_string();
+                let orders = opp.as_ref().map(|o| s.compute_hedge_orders(o));
+                (n, us, opp.zip(orders))
+            };
+            crate::metrics::record_eval_latency_us(&name, eval_us as f64);
+            if let Some((opp, orders)) = opp_and_orders {
+                self.process_opportunity(&name, eval_us, opp, orders)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run one opportunity through risk → submit → trade-log pipeline.
+    /// Extracted from handle_quote so primary + extra strategies share one path.
+    async fn process_opportunity(
+        &mut self,
+        strategy_name: &str,
+        eval_us: u128,
+        opp: Opportunity,
+        orders: Vec<OrderRequest>,
+    ) -> Result<()> {
+        tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
+        crate::metrics::record_opportunity_detected(strategy_name);
+        let direction = opp
+            .legs
+            .iter()
+            .map(|leg| {
+                format!(
+                    "{:?} {:?} {:?}@{}x{}",
+                    leg.side,
+                    leg.venue,
+                    leg.instrument.instrument_type,
+                    leg.order_price,
+                    leg.quantity
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        info!(
+            id = opp.id.as_str(),
+            direction = direction.as_str(),
+            gross = %opp.economics.gross_profit,
+            fees = %opp.economics.fees_total,
+            net = %opp.economics.net_profit,
+            net_bps = %opp.economics.net_profit_bps,
+            notional = %opp.economics.notional,
+            "opportunity detected"
+        );
+
+        {
             let submit_start = std::time::Instant::now();
             let mut trade_legs: SmallVec<[TradeLeg; 4]> = SmallVec::new();
             let mut submitted_count: usize = 0;
@@ -529,7 +583,7 @@ impl ArbitrageEngine {
                         "order skipped: circuit breaker tripped"
                     );
                     crate::metrics::record_circuit_breaker_trip();
-                    crate::metrics::record_order_rejected(self.strategy.name());
+                    crate::metrics::record_order_rejected(strategy_name);
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -554,7 +608,7 @@ impl ArbitrageEngine {
                         reason = fast_verdict.reason.as_deref().unwrap_or("unknown"),
                         "order rejected by risk state (O(1))"
                     );
-                    crate::metrics::record_order_rejected(self.strategy.name());
+                    crate::metrics::record_order_rejected(strategy_name);
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -579,7 +633,7 @@ impl ArbitrageEngine {
                         reason = verdict.reason.as_deref().unwrap_or("unknown"),
                         "order rejected by risk manager"
                     );
-                    crate::metrics::record_order_rejected(self.strategy.name());
+                    crate::metrics::record_order_rejected(strategy_name);
                     risk_rejected_count += 1;
                     trade_legs.push(TradeLeg {
                         venue: req.venue,
@@ -615,7 +669,7 @@ impl ArbitrageEngine {
                             qty = %order.quantity,
                             "order submitted"
                         );
-                        crate::metrics::record_order_submitted(self.strategy.name());
+                        crate::metrics::record_order_submitted(strategy_name);
                         self.circuit_breaker.record_success();
                         self.circuit_breaker.record_order();
                         submitted_count += 1;
@@ -647,7 +701,7 @@ impl ArbitrageEngine {
                     }
                     Err(e) => {
                         warn!(error = %e, "order submission failed");
-                        crate::metrics::record_order_failed(self.strategy.name());
+                        crate::metrics::record_order_failed(strategy_name);
                         self.circuit_breaker.record_failure();
                         self.circuit_breaker.record_order();
                         trade_legs.push(TradeLeg {
@@ -664,7 +718,7 @@ impl ArbitrageEngine {
             }
 
             let submit_us = submit_start.elapsed().as_micros();
-            crate::metrics::record_submit_latency_us(self.strategy.name(), submit_us as f64);
+            crate::metrics::record_submit_latency_us(strategy_name, submit_us as f64);
             tracing::info!(
                 submit_latency_us = submit_us,
                 orders = total_orders,
