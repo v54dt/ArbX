@@ -18,6 +18,11 @@ pub struct EngineConfig {
     pub reconcile_interval_secs: u64,
     #[serde(default = "default_order_ttl")]
     pub order_ttl_secs: u64,
+    /// Optional path. When set, every TradeLog the engine emits is appended
+    /// (one JSONL line, flushed per write) to this file for audit / crash
+    /// recovery. Engine.trade_logs() in-memory is unchanged.
+    #[serde(default)]
+    pub trade_log_file: Option<String>,
 }
 
 fn default_reconcile_interval() -> u64 {
@@ -33,6 +38,7 @@ impl Default for EngineConfig {
         Self {
             reconcile_interval_secs: default_reconcile_interval(),
             order_ttl_secs: default_order_ttl(),
+            trade_log_file: None,
         }
     }
 }

@@ -999,6 +999,17 @@ async fn main() -> anyhow::Result<()> {
         cfg.engine.order_ttl_secs,
         shutdown_rx,
     );
+    if let Some(ref path) = cfg.engine.trade_log_file {
+        match models::trade_log::TradeLogWriter::create(path) {
+            Ok(writer) => {
+                tracing::info!(path = path.as_str(), "TradeLog audit writer attached");
+                engine = engine.with_trade_log_writer(writer);
+            }
+            Err(e) => {
+                tracing::warn!(path = path.as_str(), error = %e, "failed to open trade_log_file; running without audit writer");
+            }
+        }
+    }
 
     tokio::select! {
         result = engine.run() => {
