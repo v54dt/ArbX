@@ -17,6 +17,7 @@ use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
 use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
+use crate::models::enums::Venue;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
@@ -30,6 +31,7 @@ use rust_decimal::Decimal;
 struct IntendedFill {
     side: crate::models::enums::Side,
     intended_price: Decimal,
+    venue: Venue,
 }
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
@@ -53,6 +55,14 @@ pub struct ArbitrageEngine {
     circuit_breaker: CircuitBreaker,
     executor: Box<dyn OrderExecutor>,
     position_manager: Box<dyn PositionManager>,
+    /// Per-venue order executors. When `order.venue` matches a key here,
+    /// the engine routes that order's submit/cancel via the mapped executor
+    /// instead of the legacy single `executor` field. Empty by default,
+    /// so single-venue setups keep working unchanged.
+    executors_by_venue: HashMap<Venue, Box<dyn OrderExecutor>>,
+    /// Per-venue position managers. Same routing rule as `executors_by_venue`,
+    /// but for `apply_fill` on incoming fills.
+    position_managers_by_venue: HashMap<Venue, Box<dyn PositionManager>>,
     private_streams: Vec<Box<dyn PrivateStream>>,
     quote_publishers: Vec<Arc<dyn IpcPublisher>>,
     books: BookMap,
@@ -99,6 +109,8 @@ impl ArbitrageEngine {
             circuit_breaker,
             executor,
             position_manager,
+            executors_by_venue: HashMap::new(),
+            position_managers_by_venue: HashMap::new(),
             private_streams,
             quote_publishers,
             books: BookMap::default(),
@@ -136,6 +148,38 @@ impl ArbitrageEngine {
     pub fn with_heartbeat(mut self, heartbeat: Arc<Heartbeat>) -> Self {
         self.heartbeat = Some(heartbeat);
         self
+    }
+
+    /// Register a per-venue order executor. Subsequent `submit_order` calls
+    /// for orders whose `venue` matches this key route through `executor`
+    /// instead of the legacy single executor passed to `new()`. Use one
+    /// call per venue when running a cross-exchange strategy.
+    pub fn with_executor_for(mut self, venue: Venue, executor: Box<dyn OrderExecutor>) -> Self {
+        self.executors_by_venue.insert(venue, executor);
+        self
+    }
+
+    /// Register a per-venue position manager. Same routing rule as
+    /// `with_executor_for`, but applied at fill time. Position reconciliation
+    /// (the periodic `sync_positions` call) still uses the legacy single PM
+    /// — this builder controls only the per-fill `apply_fill` dispatch.
+    pub fn with_position_manager_for(mut self, venue: Venue, pm: Box<dyn PositionManager>) -> Self {
+        self.position_managers_by_venue.insert(venue, pm);
+        self
+    }
+
+    fn executor_for(&self, venue: Venue) -> &dyn OrderExecutor {
+        self.executors_by_venue
+            .get(&venue)
+            .map(|b| b.as_ref())
+            .unwrap_or_else(|| self.executor.as_ref())
+    }
+
+    fn position_manager_for(&self, venue: Venue) -> &dyn PositionManager {
+        self.position_managers_by_venue
+            .get(&venue)
+            .map(|b| b.as_ref())
+            .unwrap_or_else(|| self.position_manager.as_ref())
     }
 
     pub fn trade_logs(&self) -> &[TradeLog] {
@@ -196,7 +240,10 @@ impl ArbitrageEngine {
         drop(merged_tx);
         drop(merged_book_tx);
 
-        // Connect executor and forward fills into a merged channel.
+        // Connect the legacy single executor and forward its fills into a
+        // merged channel. Per-venue executors registered via
+        // `with_executor_for` are connected next; their fills land in the
+        // same channel.
         let exec_receivers = self.executor.connect().await?;
         let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
         {
@@ -209,6 +256,30 @@ impl ArbitrageEngine {
                     }
                 }
             });
+        }
+
+        for (venue, exec) in self.executors_by_venue.iter_mut() {
+            match exec.connect().await {
+                Ok(rcv) => {
+                    let tx = fill_tx.clone();
+                    let mut fills = rcv.fills;
+                    let venue_label = format!("{:?}", venue);
+                    tokio::spawn(async move {
+                        while let Some(f) = fills.recv().await {
+                            if tx.send(f).is_err() {
+                                break;
+                            }
+                        }
+                        tracing::debug!(
+                            venue = venue_label.as_str(),
+                            "per-venue executor fill channel closed"
+                        );
+                    });
+                }
+                Err(e) => {
+                    warn!(?venue, error = %e, "per-venue executor connect failed, skipping");
+                }
+            }
         }
 
         for stream in self.private_streams.iter_mut() {
@@ -301,9 +372,10 @@ impl ArbitrageEngine {
                     crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
                     crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
 
-                    self.position_manager.apply_fill(&fill).await?;
+                    let pm = self.position_manager_for(fill.venue);
+                    pm.apply_fill(&fill).await?;
                     let key = format!("{:?}", fill.venue).to_lowercase();
-                    if let Ok(snapshot) = self.position_manager.get_portfolio().await {
+                    if let Ok(snapshot) = pm.get_portfolio().await {
                         self.portfolios.insert(key, snapshot);
                     }
                 }
@@ -326,10 +398,11 @@ impl ArbitrageEngine {
                             still_pending.push((deadline, order_id));
                             continue;
                         }
-                        if !self.intended_fills.contains_key(&order_id) {
+                        let Some(intended) = self.intended_fills.get(&order_id) else {
                             continue;
-                        }
-                        match self.executor.cancel_order(&order_id).await {
+                        };
+                        let venue = intended.venue;
+                        match self.executor_for(venue).cancel_order(&order_id).await {
                             Ok(true) => {
                                 info!(order_id = order_id.as_str(), "order cancelled after TTL");
                                 self.intended_fills.remove(&order_id);
@@ -516,7 +589,7 @@ impl ArbitrageEngine {
 
             let futures: Vec<_> = approved_orders
                 .iter()
-                .map(|order| self.executor.submit_order(order))
+                .map(|order| self.executor_for(order.venue).submit_order(order))
                 .collect();
             let results = join_all(futures).await;
 
@@ -540,6 +613,7 @@ impl ArbitrageEngine {
                                 IntendedFill {
                                     side: order.side,
                                     intended_price,
+                                    venue: order.venue,
                                 },
                             );
                         }
