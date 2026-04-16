@@ -27,6 +27,12 @@ pub struct EngineConfig {
     /// /kill). Default 9091. Metrics stays on 9090.
     #[serde(default)]
     pub admin_port: Option<u16>,
+    /// Dead-man's-switch stall threshold in milliseconds. If the engine's
+    /// main loop doesn't stamp its heartbeat within this window, a
+    /// watchdog fires `shutdown_tx` so supervisors can restart a wedged
+    /// process. `None` = watchdog disabled. Typical value: 5000 (5s).
+    #[serde(default)]
+    pub heartbeat_stall_ms: Option<u64>,
 }
 
 fn default_reconcile_interval() -> u64 {
@@ -44,6 +50,7 @@ impl Default for EngineConfig {
             order_ttl_secs: default_order_ttl(),
             trade_log_file: None,
             admin_port: None,
+            heartbeat_stall_ms: None,
         }
     }
 }

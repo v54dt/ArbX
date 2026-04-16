@@ -15,6 +15,7 @@ use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
+use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
@@ -70,6 +71,8 @@ pub struct ArbitrageEngine {
     /// Optional admin handle — when present, the engine reads paused() and
     /// writes runtime stats so the admin HTTP endpoint can serve /status.
     admin: Option<EngineHandle>,
+    /// Optional dead-man's-switch heartbeat, stamped on every main-loop iteration.
+    heartbeat: Option<Arc<Heartbeat>>,
 }
 
 impl ArbitrageEngine {
@@ -110,6 +113,7 @@ impl ArbitrageEngine {
             shutdown_rx,
             trade_log_writer: None,
             admin: None,
+            heartbeat: None,
         }
     }
 
@@ -123,6 +127,14 @@ impl ArbitrageEngine {
     /// Attach an admin handle — engine reads paused(), writes status fields.
     pub fn with_admin(mut self, admin: EngineHandle) -> Self {
         self.admin = Some(admin);
+        self
+    }
+
+    /// Attach a heartbeat that the main loop stamps every iteration. Pair
+    /// with a `watchdog::run_watchdog` task reading the same `Arc` to get
+    /// dead-man's-switch shutdown on stuck loops.
+    pub fn with_heartbeat(mut self, heartbeat: Arc<Heartbeat>) -> Self {
+        self.heartbeat = Some(heartbeat);
         self
     }
 
@@ -231,6 +243,9 @@ impl ArbitrageEngine {
             tokio::time::interval(std::time::Duration::from_millis(500));
 
         loop {
+            if let Some(hb) = self.heartbeat.as_ref() {
+                hb.beat();
+            }
             tokio::select! {
                 Some(quote) = merged_rx.recv() => {
                     self.handle_quote(quote).await?;
