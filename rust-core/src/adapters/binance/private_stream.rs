@@ -243,6 +243,26 @@ async fn run_binance_stream(
         .ok_or_else(|| anyhow::anyhow!("missing listenKey in response"))?
         .to_string();
 
+    // Startup reconciliation: query open orders before subscribing so the
+    // engine learns about anything left dangling from a previous crash.
+    // Synthetic OrderUpdate(Submitted) per open order — receivers can use
+    // these to repopulate intended_fills / pending_cancels.
+    match fetch_open_orders(&rest, market).await {
+        Ok(updates) => {
+            info!(
+                count = updates.len(),
+                "Binance startup reconciliation: open orders fetched"
+            );
+            for update in updates {
+                if order_tx.send(update).is_err() {
+                    warn!("order_tx closed during startup reconciliation");
+                    break;
+                }
+            }
+        }
+        Err(e) => warn!(error = %e, "Binance startup reconciliation failed (continuing)"),
+    }
+
     let url = format!("{}{}", ws_base_url, listen_key);
     let (ws_stream, _) = connect_async(&url).await?;
     info!(url = url.as_str(), "connected to Binance private WebSocket");
@@ -294,6 +314,74 @@ async fn run_binance_stream(
     anyhow::bail!("stream ended");
 }
 
+/// Query Binance for any orders that are still resting on the book and produce
+/// synthetic OrderUpdate(Submitted) entries for each one. Lets the engine
+/// recover order state after a crash without waiting for fills to arrive.
+async fn fetch_open_orders(
+    rest: &BinanceRestClient,
+    market: BinanceMarket,
+) -> anyhow::Result<Vec<OrderUpdate>> {
+    let path = match market {
+        BinanceMarket::Spot => "/api/v3/openOrders",
+        BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => "/fapi/v1/openOrders",
+    };
+    let req = RestRequest {
+        method: HttpMethod::Get,
+        path: path.to_string(),
+        params: HashMap::new(),
+    };
+    let resp = rest.send(req).await?;
+    if resp.status != 200 {
+        anyhow::bail!(
+            "openOrders failed: status={} body={}",
+            resp.status,
+            resp.body
+        );
+    }
+    let arr: serde_json::Value = serde_json::from_str(&resp.body)?;
+    Ok(parse_open_orders(&arr))
+}
+
+/// Parse the openOrders REST response shape into OrderUpdate entries.
+/// Extracted so the JSON shape can be tested without a real REST client.
+fn parse_open_orders(payload: &serde_json::Value) -> Vec<OrderUpdate> {
+    let items = payload.as_array().cloned().unwrap_or_default();
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let order_id = item["orderId"]
+            .as_u64()
+            .map(|n| n.to_string())
+            .or_else(|| item["orderId"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        if order_id.is_empty() {
+            continue;
+        }
+        let orig_qty: Decimal = item["origQty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or_default();
+        let executed_qty: Decimal = item["executedQty"]
+            .as_str()
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or_default();
+        let price_dec: Option<Decimal> = item["price"]
+            .as_str()
+            .and_then(|s| s.parse::<Decimal>().ok())
+            .filter(|p| !p.is_zero());
+        out.push(OrderUpdate {
+            order_id,
+            status: OrderStatus::Submitted,
+            filled_quantity: executed_qty,
+            remaining_quantity: orig_qty - executed_qty,
+            average_price: price_dec,
+            updated_at: Utc::now(),
+        });
+    }
+    out
+}
+
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -304,6 +392,7 @@ impl Drop for AbortOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_decimal_macros::dec;
 
     #[test]
     fn parse_execution_report_valid() {
@@ -392,6 +481,54 @@ mod tests {
         let (fill, update) = BinancePrivateStream::parse_execution_report(&msg).unwrap();
         assert_eq!(fill.filled_at.timestamp_millis(), tx_time_ms);
         assert_eq!(update.updated_at.timestamp_millis(), tx_time_ms);
+    }
+
+    #[test]
+    fn parse_open_orders_emits_submitted_per_resting_order() {
+        let payload = serde_json::json!([
+            {
+                "symbol": "BTCUSDT",
+                "orderId": 12345,
+                "origQty": "0.01",
+                "executedQty": "0.003",
+                "price": "50000.00",
+                "status": "PARTIALLY_FILLED"
+            },
+            {
+                "symbol": "ETHUSDT",
+                "orderId": 67890,
+                "origQty": "0.5",
+                "executedQty": "0",
+                "price": "3000.00",
+                "status": "NEW"
+            }
+        ]);
+        let updates = parse_open_orders(&payload);
+        assert_eq!(updates.len(), 2);
+        // Always Submitted regardless of upstream status — engine treats this
+        // as "this order_id exists at the venue right now".
+        assert_eq!(updates[0].status, OrderStatus::Submitted);
+        assert_eq!(updates[0].order_id, "12345");
+        assert_eq!(updates[0].filled_quantity, dec!(0.003));
+        assert_eq!(updates[0].remaining_quantity, dec!(0.007));
+        assert_eq!(updates[0].average_price, Some(dec!(50000)));
+        assert_eq!(updates[1].order_id, "67890");
+        assert_eq!(updates[1].filled_quantity, Decimal::ZERO);
+        assert_eq!(updates[1].remaining_quantity, dec!(0.5));
+    }
+
+    #[test]
+    fn parse_open_orders_returns_empty_for_no_orders() {
+        let payload = serde_json::json!([]);
+        assert!(parse_open_orders(&payload).is_empty());
+    }
+
+    #[test]
+    fn parse_open_orders_skips_entries_with_no_order_id() {
+        let payload = serde_json::json!([
+            { "symbol": "BTCUSDT", "origQty": "0.01" }
+        ]);
+        assert!(parse_open_orders(&payload).is_empty());
     }
 
     #[test]
