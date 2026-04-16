@@ -24,15 +24,19 @@ venues:
 
 strategy:
   name: cross_exchange
+  # instrument_a is paired with venues[0] (binance usdt_futures) → swap.
+  # instrument_b is paired with venues[1] (binance spot) → spot.
+  # Mismatching the instrument_type with the venue's market silently mis-labels
+  # books in the engine's BookMap (e.g. swap-stream data filed under :spot).
   instrument_a:
-    base: BTC
-    quote: USDT
-    instrument_type: spot
-  instrument_b:
     base: BTC
     quote: USDT
     instrument_type: swap
     settle_currency: USDT
+  instrument_b:
+    base: BTC
+    quote: USDT
+    instrument_type: spot
   min_net_profit_bps: "1"
   max_quantity: "0.01"
   max_quote_age_ms: 5000
