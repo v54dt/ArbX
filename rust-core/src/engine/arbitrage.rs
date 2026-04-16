@@ -178,9 +178,9 @@ impl ArbitrageEngine {
     }
 
     /// Register a per-venue position manager. Same routing rule as
-    /// `with_executor_for`, but applied at fill time. Position reconciliation
-    /// (the periodic `sync_positions` call) still uses the legacy single PM
-    /// — this builder controls only the per-fill `apply_fill` dispatch.
+    /// `with_executor_for`: per-fill `apply_fill` and the periodic
+    /// `sync_positions` reconciliation cycle both dispatch to this PM when
+    /// the fill / target venue matches.
     pub fn with_position_manager_for(mut self, venue: Venue, pm: Box<dyn PositionManager>) -> Self {
         self.position_managers_by_venue.insert(venue, pm);
         self
@@ -406,15 +406,41 @@ impl ArbitrageEngine {
                     }
                 }
                 _ = reconcile_interval.tick() => {
+                    // D-3 PR3: reconcile each PM (legacy + per-venue) so a
+                    // multi-venue setup actually pulls fresh state from every
+                    // venue, not just venues[idx_b].
+                    let venues: Vec<Venue> =
+                        self.position_managers_by_venue.keys().copied().collect();
+                    let mut succeeded = 0usize;
+                    let mut failed = 0usize;
                     if let Err(e) = self.position_manager.sync_positions().await {
-                        warn!(error = %e, "position reconciliation failed");
+                        warn!(error = %e, target = "legacy", "position sync failed");
+                        failed += 1;
                     } else {
+                        succeeded += 1;
                         if let Ok(snapshot) = self.position_manager.get_portfolio().await {
-                            let key = "reconciled".to_string();
-                            self.portfolios.insert(key, snapshot);
+                            self.portfolios.insert("reconciled".to_string(), snapshot);
                         }
-                        info!("position reconciliation completed");
                     }
+                    for v in venues {
+                        if let Err(e) = self
+                            .position_manager_mut_for(v)
+                            .sync_positions()
+                            .await
+                        {
+                            warn!(error = %e, ?v, "position sync failed");
+                            failed += 1;
+                        } else {
+                            succeeded += 1;
+                            if let Ok(snapshot) =
+                                self.position_manager_for(v).get_portfolio().await
+                            {
+                                let key = format!("reconciled:{:?}", v).to_lowercase();
+                                self.portfolios.insert(key, snapshot);
+                            }
+                        }
+                    }
+                    info!(succeeded, failed, "position reconciliation cycle complete");
                 }
                 _ = cancel_check_interval.tick() => {
                     let now = Utc::now();
