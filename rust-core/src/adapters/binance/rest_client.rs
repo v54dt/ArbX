@@ -79,76 +79,94 @@ impl BinanceRestClient {
     }
 }
 
+/// Cap on consecutive 429 retries before bailing — prevents unbounded recursion
+/// if the venue keeps returning Retry-After (e.g. IP banned for the day).
+const MAX_429_RETRIES: u32 = 3;
+
 #[async_trait]
 impl ExchangeRestClient for BinanceRestClient {
     async fn send(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
-        self.rate_limiter.acquire().await;
+        for attempt in 0..=MAX_429_RETRIES {
+            self.rate_limiter.acquire().await;
 
-        let qs = self.build_signed_params(&request.params);
-        let url = format!("{}{}?{}", self.base_url, request.path, qs);
+            let qs = self.build_signed_params(&request.params);
+            let url = format!("{}{}?{}", self.base_url, request.path, qs);
 
-        let req = match request.method {
-            HttpMethod::Get => self.http.get(&url),
-            HttpMethod::Post => self.http.post(&url),
-            HttpMethod::Put => self.http.put(&url),
-            HttpMethod::Delete => self.http.delete(&url),
-        };
+            let req = match request.method {
+                HttpMethod::Get => self.http.get(&url),
+                HttpMethod::Post => self.http.post(&url),
+                HttpMethod::Put => self.http.put(&url),
+                HttpMethod::Delete => self.http.delete(&url),
+            };
 
-        let resp = req.header("X-MBX-APIKEY", &self.api_key).send().await?;
+            let resp = req.header("X-MBX-APIKEY", &self.api_key).send().await?;
 
-        if resp.status() == 429 {
-            let retry_after = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            warn!(retry_after_secs = retry_after, "rate limited by exchange");
-            tokio::time::sleep(Duration::from_secs(retry_after)).await;
-            return self.send(request).await;
+            if resp.status() == 429 && attempt < MAX_429_RETRIES {
+                let retry_after = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5);
+                warn!(
+                    retry_after_secs = retry_after,
+                    attempt = attempt + 1,
+                    "rate limited by exchange, retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            return Ok(RestResponse {
+                status: resp.status().as_u16(),
+                body: resp.text().await?,
+            });
         }
-
-        Ok(RestResponse {
-            status: resp.status().as_u16(),
-            body: resp.text().await?,
-        })
+        anyhow::bail!("exhausted {} retries on 429", MAX_429_RETRIES)
     }
 
     async fn send_public(&self, request: RestRequest) -> anyhow::Result<RestResponse> {
-        self.rate_limiter.acquire().await;
+        for attempt in 0..=MAX_429_RETRIES {
+            self.rate_limiter.acquire().await;
 
-        let qs = Self::build_query_string(&request.params);
-        let url = if qs.is_empty() {
-            format!("{}{}", self.base_url, request.path)
-        } else {
-            format!("{}{}?{}", self.base_url, request.path, qs)
-        };
+            let qs = Self::build_query_string(&request.params);
+            let url = if qs.is_empty() {
+                format!("{}{}", self.base_url, request.path)
+            } else {
+                format!("{}{}?{}", self.base_url, request.path, qs)
+            };
 
-        let req = match request.method {
-            HttpMethod::Get => self.http.get(&url),
-            HttpMethod::Post => self.http.post(&url),
-            HttpMethod::Put => self.http.put(&url),
-            HttpMethod::Delete => self.http.delete(&url),
-        };
+            let req = match request.method {
+                HttpMethod::Get => self.http.get(&url),
+                HttpMethod::Post => self.http.post(&url),
+                HttpMethod::Put => self.http.put(&url),
+                HttpMethod::Delete => self.http.delete(&url),
+            };
 
-        let resp = req.send().await?;
+            let resp = req.send().await?;
 
-        if resp.status() == 429 {
-            let retry_after = resp
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(5);
-            warn!(retry_after_secs = retry_after, "rate limited by exchange");
-            tokio::time::sleep(Duration::from_secs(retry_after)).await;
-            return self.send_public(request).await;
+            if resp.status() == 429 && attempt < MAX_429_RETRIES {
+                let retry_after = resp
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(5);
+                warn!(
+                    retry_after_secs = retry_after,
+                    attempt = attempt + 1,
+                    "rate limited by exchange (public), retrying"
+                );
+                tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                continue;
+            }
+
+            return Ok(RestResponse {
+                status: resp.status().as_u16(),
+                body: resp.text().await?,
+            });
         }
-
-        Ok(RestResponse {
-            status: resp.status().as_u16(),
-            body: resp.text().await?,
-        })
+        anyhow::bail!("exhausted {} retries on 429 (public)", MAX_429_RETRIES)
     }
 }
 
