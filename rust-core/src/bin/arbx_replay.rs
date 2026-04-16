@@ -80,7 +80,7 @@ struct Report {
     per_strategy: BTreeMap<String, StrategyStats>,
 }
 
-pub fn load_trade_log(path: &str) -> anyhow::Result<Vec<TradeLog>> {
+fn load_trade_log(path: &str) -> anyhow::Result<Vec<TradeLog>> {
     let file =
         std::fs::File::open(path).with_context(|| format!("opening trade_log file {path}"))?;
     let reader = std::io::BufReader::new(file);
@@ -98,7 +98,7 @@ pub fn load_trade_log(path: &str) -> anyhow::Result<Vec<TradeLog>> {
     Ok(logs)
 }
 
-pub fn analyze(logs: &[TradeLog]) -> Report {
+fn analyze(logs: &[TradeLog]) -> Report {
     let mut report = Report::default();
     for log in logs {
         report.total_trades += 1;
