@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: arbx-core
+    static_configs:
+      - targets:
+          - host.docker.internal:9090
+        labels:
+          service: arbx-core
