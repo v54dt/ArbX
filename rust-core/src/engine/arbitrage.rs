@@ -18,7 +18,7 @@ use crate::ipc::IpcPublisher;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
 use crate::models::position::PortfolioSnapshot;
-use crate::models::trade_log::{TradeLeg, TradeLog, TradeOutcome};
+use crate::models::trade_log::{TradeLeg, TradeLog, TradeLogWriter, TradeOutcome};
 use crate::risk::circuit_breaker::CircuitBreaker;
 use crate::risk::manager::RiskManager;
 use crate::risk::state::RiskState;
@@ -63,6 +63,9 @@ pub struct ArbitrageEngine {
     reconcile_interval_secs: u64,
     order_ttl_secs: u64,
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// Optional append-only audit-trail writer. If Some, every TradeLog is
+    /// flushed to disk on creation; logs survive engine crash.
+    trade_log_writer: Option<TradeLogWriter>,
 }
 
 impl ArbitrageEngine {
@@ -101,7 +104,15 @@ impl ArbitrageEngine {
             reconcile_interval_secs,
             order_ttl_secs,
             shutdown_rx,
+            trade_log_writer: None,
         }
+    }
+
+    /// Attach an append-only TradeLogWriter so every recorded TradeLog is also
+    /// flushed to disk for audit / crash recovery.
+    pub fn with_trade_log_writer(mut self, writer: TradeLogWriter) -> Self {
+        self.trade_log_writer = Some(writer);
+        self
     }
 
     pub fn trade_logs(&self) -> &[TradeLog] {
@@ -566,6 +577,12 @@ impl ArbitrageEngine {
                 expected_net = %trade_log.expected_net_profit,
                 "trade log recorded"
             );
+
+            if let Some(writer) = self.trade_log_writer.as_mut()
+                && let Err(e) = writer.append(&trade_log)
+            {
+                warn!(error = %e, "trade log writer append failed");
+            }
 
             self.trade_logs.push(trade_log);
         }
