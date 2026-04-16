@@ -88,7 +88,6 @@ impl ArbitrageStrategy for MultiPairCrossExchangeStrategy {
                 self.max_book_depth,
             );
 
-            // pick better direction for this pair
             let pair_best = match (a_to_b, b_to_a) {
                 (Some(x), Some(y)) => {
                     if x.economics.net_profit_bps >= y.economics.net_profit_bps {

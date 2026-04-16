@@ -200,7 +200,6 @@ fn checked_root_as_table<'a>(data: &'a [u8], label: &str) -> anyhow::Result<Tabl
     Ok(unsafe { flatbuffers::root_unchecked::<Table>(data) })
 }
 
-// Helper to read a field from a FlatBuffer table.
 unsafe fn get_field<'a, T: Follow<'a> + 'a>(
     table: &Table<'a>,
     vt: u16,

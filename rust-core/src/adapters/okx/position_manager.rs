@@ -12,8 +12,6 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
-// ── Balance deserialization ───────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct OkxBalanceDetail {
     ccy: String,
@@ -37,8 +35,6 @@ struct OkxBalanceResponse {
     data: Vec<OkxBalanceData>,
 }
 
-// ── Positions deserialization ─────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct OkxPositionEntry {
     #[serde(rename = "instId")]
@@ -55,8 +51,6 @@ struct OkxPositionEntry {
 struct OkxPositionResponse {
     data: Vec<OkxPositionEntry>,
 }
-
-// ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct OkxPositionManager {
     rest_client: Option<OkxRestClient>,
@@ -145,8 +139,6 @@ impl OkxPositionManager {
         );
     }
 
-    // ── Parsing helpers (pub(crate) for unit tests) ───────────────────────────
-
     pub(crate) fn parse_balance_response(
         balance_json: &str,
         positions_json: &str,
@@ -193,7 +185,6 @@ impl OkxPositionManager {
                 (Decimal::ZERO, Decimal::ZERO, Vec::new())
             };
 
-        // Merge in open derivative positions from /account/positions
         let mut positions = balance_positions;
         for p in pos_resp.data {
             let amt: Decimal = p.pos.parse().unwrap_or(Decimal::ZERO);

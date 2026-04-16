@@ -13,8 +13,6 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
-// ── Spot deserialization ──────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct SpotBalance {
     asset: String,
@@ -26,8 +24,6 @@ struct SpotBalance {
 struct SpotAccountInfo {
     balances: Vec<SpotBalance>,
 }
-
-// ── Futures deserialization ───────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
 struct FuturesPosition {
@@ -50,8 +46,6 @@ struct FuturesAccountInfo {
     total_unrealized_profit: String,
     positions: Vec<FuturesPosition>,
 }
-
-// ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct BinancePositionManager {
     market: BinanceMarket,
@@ -150,8 +144,6 @@ impl BinancePositionManager {
             "apply_fill: position updated"
         );
     }
-
-    // ── Parsing helpers (pub(crate) for unit tests) ───────────────────────────
 
     pub(crate) fn parse_spot_portfolio(
         json: &str,

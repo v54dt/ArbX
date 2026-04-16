@@ -75,11 +75,8 @@ fn simulate_cycle(
     let fee_rate = cycle.fee.taker();
     let start = cycle.max_notional_usdt;
 
-    // Leg A
     let (wallet_after_a, qty_a, fee_a) = apply_leg(&cycle.leg_a, start, price_a, fee_rate);
-    // Leg B
     let (wallet_after_b, qty_b, fee_b) = apply_leg(&cycle.leg_b, wallet_after_a, price_b, fee_rate);
-    // Leg C
     let (final_wallet, qty_c, fee_c) = apply_leg(&cycle.leg_c, wallet_after_b, price_c, fee_rate);
 
     CycleResult {

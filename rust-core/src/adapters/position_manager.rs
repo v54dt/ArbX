@@ -3,7 +3,6 @@ use async_trait::async_trait;
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
-/// Trait for position tracking and reconciliation.
 #[async_trait]
 pub trait PositionManager: Send + Sync {
     async fn get_position(&self, symbol: &str) -> anyhow::Result<Option<Position>>;

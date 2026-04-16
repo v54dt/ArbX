@@ -75,7 +75,6 @@ impl BinanceMarket {
     }
 }
 
-/// Binance WebSocket book ticker message
 #[derive(Debug, Deserialize)]
 struct BookTickerMsg {
     #[serde(rename = "s")]
@@ -158,7 +157,6 @@ impl BinanceMarketData {
         }
     }
 
-    /// Register a Binance symbol -> Instrument mapping.
     pub fn register_instrument(&mut self, binance_symbol: &str, instrument: Instrument) {
         self.instruments
             .insert(binance_symbol.to_uppercase(), instrument);
@@ -323,8 +321,8 @@ impl MarketDataFeed for BinanceMarketData {
     }
 
     async fn subscribe(&mut self, symbols: &[String]) -> Result<()> {
-        // Symbols must already be registered via `register_instrument()`.
-        // This method only sends the dynamic SUBSCRIBE frame if already connected.
+        // Requires symbols pre-registered via `register_instrument()`; this only
+        // emits the dynamic SUBSCRIBE frame when already connected.
         let id = self.next_id();
         if let Some(tx) = &self.ws_write_tx {
             let params: Vec<String> = symbols

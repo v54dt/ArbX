@@ -176,9 +176,8 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
     }
 }
 
-/// Align an order price to the venue's tick grid. Buy rounds UP (more
-/// aggressive — still crosses the ask), Sell rounds DOWN (more aggressive —
-/// still hits the bid). Tick=0 leaves the price as-is.
+/// Align to tick grid. Buy rounds UP, Sell rounds DOWN — both stay aggressive
+/// (crossing). Tick=0 passes through.
 fn align_to_tick(price: Decimal, tick: Decimal, side: Side) -> Decimal {
     if tick.is_zero() {
         return price;

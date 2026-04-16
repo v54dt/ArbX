@@ -19,8 +19,7 @@ impl FeeSchedule {
         }
     }
 
-    /// For market/IOC orders we pay taker fee. For resting limit orders, maker fee.
-    /// Arbitrage legs are IOC (taker), so this is the default for arb strategies.
+    /// Taker rate; default for IOC arbitrage legs.
     pub fn taker(&self) -> Decimal {
         self.taker_rate
     }

@@ -1,4 +1,3 @@
-// Modules carrying items the binary doesn't yet exercise (tested + lib-reachable).
 #[allow(dead_code)]
 mod adapters;
 #[allow(dead_code)]
@@ -780,8 +779,8 @@ async fn run_backtest_mode(
                     result.max_drawdown,
                     result.sharpe_ratio,
                 );
-                // Prefix ids with window index so two windows emitting opportunities
-                // on the same nanosecond don't collide in the concatenated CSV.
+                // Prefix ids with window index to avoid collisions when two windows
+                // emit opportunities on the same nanosecond.
                 all_trade_logs.extend(result.trade_logs.into_iter().map(|mut log| {
                     log.id = format!("w{}-{}", i, log.id);
                     log
@@ -949,9 +948,8 @@ async fn main() -> anyhow::Result<()> {
         .await;
     }
 
-    // Pin main thread to a dedicated core to reduce OS context-switch jitter.
+    // Pin main thread to reduce OS context-switch jitter; leave core 0 to the OS.
     if let Some(cores) = core_affinity::get_core_ids() {
-        // Prefer core 1 (leave core 0 to the OS / interrupt handlers).
         let target = if cores.len() > 1 { cores[1] } else { cores[0] };
         if core_affinity::set_for_current(target) {
             tracing::info!(core = target.id, "engine thread pinned to CPU core");
@@ -1114,10 +1112,8 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Dead-man's-switch watchdog: only active when the operator opted in
-    // via `engine.heartbeat_stall_ms`. If the engine main loop hasn't
-    // stamped its heartbeat within that window, the watchdog fires
-    // shutdown_tx so supervisors can restart the process.
+    // Dead-man's-switch: if the engine loop stops stamping heartbeat within
+    // `engine.heartbeat_stall_ms`, fire shutdown_tx so supervisors can restart.
     if let Some(stall_ms) = cfg.engine.heartbeat_stall_ms {
         let hb = std::sync::Arc::new(engine::watchdog::Heartbeat::new());
         engine = engine.with_heartbeat(hb.clone());
@@ -1128,10 +1124,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // Spawn the engine on its own task so Ctrl+C can signal shutdown_tx
-    // and the engine's internal select! actually polls shutdown_rx (the
-    // previous outer select! cancelled engine.run() before it could see
-    // the signal — pending_cancels never flushed, streams never disconnected).
+    // Spawn engine on its own task so Ctrl+C drives shutdown_tx and the engine's
+    // internal select! observes shutdown_rx; wrapping the engine in an outer
+    // select! cancelled run() before pending_cancels could flush.
     let mut engine_handle = tokio::spawn(async move {
         let result = engine.run().await;
         (result, engine)

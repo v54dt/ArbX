@@ -13,8 +13,6 @@ use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::Fill;
 use crate::models::position::{PortfolioSnapshot, Position};
 
-// ── Wallet balance deserialization ────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct BybitCoin {
     coin: String,
@@ -43,8 +41,6 @@ struct BybitWalletResponse {
     result: BybitWalletResult,
 }
 
-// ── Position list deserialization ─────────────────────────────────────────────
-
 #[derive(Debug, Deserialize)]
 struct BybitPositionEntry {
     symbol: String,
@@ -64,8 +60,6 @@ struct BybitPositionList {
 struct BybitPositionResponse {
     result: BybitPositionList,
 }
-
-// ── Manager ───────────────────────────────────────────────────────────────────
 
 pub struct BybitPositionManager {
     market: BybitMarket,
@@ -184,8 +178,6 @@ impl BybitPositionManager {
             "apply_fill: position updated"
         );
     }
-
-    // ── Parsing helpers (pub(crate) for unit tests) ───────────────────────────
 
     pub(crate) fn parse_wallet_and_positions(
         wallet_json: &str,

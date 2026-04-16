@@ -5,9 +5,9 @@ use super::manager::RiskVerdict;
 
 pub struct RiskState {
     pub position_by_instrument: HashMap<String, Decimal>,
-    /// Per-instrument |signed_position * last_mark_price|. Recomputed from scratch
-    /// on each apply_fill so sells/closes shrink the entry. The aggregate
-    /// `total_notional_exposure` is the sum across this map.
+    /// Per-instrument |signed_position * last_mark_price|; recomputed each
+    /// `apply_fill` so closes shrink the entry. `total_notional_exposure` is
+    /// the sum across this map.
     pub position_notional: HashMap<String, Decimal>,
     pub total_notional_exposure: Decimal,
     pub realized_pnl_today: Decimal,
@@ -70,9 +70,9 @@ impl RiskState {
         RiskVerdict::approved()
     }
 
-    /// Apply a fill: update signed position, then recompute that instrument's
-    /// notional from |new_position * mark_price| (so sells/closes actually shrink
-    /// total_notional_exposure instead of growing it forever).
+    /// Apply a fill and rebuild that instrument's notional from
+    /// |new_position * mark_price|; critical so closes shrink exposure
+    /// instead of accumulating forever.
     pub fn apply_fill(
         &mut self,
         instrument_key: &str,

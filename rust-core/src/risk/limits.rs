@@ -63,10 +63,8 @@ impl RiskLimit for MaxDailyLoss {
     }
 }
 
-/// Per-venue position cap: a different absolute-quantity limit for each venue.
-/// Only enforces when `portfolio.venue == order.venue` so it doesn't double-count
-/// against an unrelated venue's snapshot. Venues not present in `caps` are skipped
-/// (approved) — so you can cap Binance tightly while leaving Bybit uncapped.
+/// Per-venue absolute-quantity cap. Only enforces when `portfolio.venue ==
+/// order.venue` to avoid double-counting; venues absent from `caps` are approved.
 pub struct MaxPositionPerVenue {
     pub caps: HashMap<Venue, Decimal>,
 }

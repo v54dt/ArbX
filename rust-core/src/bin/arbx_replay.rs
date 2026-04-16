@@ -442,7 +442,6 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Phase 1: analyzer-only path.
     let path = cli
         .trade_log
         .as_deref()

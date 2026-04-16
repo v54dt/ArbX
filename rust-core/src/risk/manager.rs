@@ -6,7 +6,6 @@ use crate::models::position::PortfolioSnapshot;
 
 use super::limits::RiskLimit;
 
-/// Result of a risk check
 #[derive(Debug, Clone)]
 pub struct RiskVerdict {
     pub approved: bool,
@@ -40,7 +39,6 @@ impl RiskVerdict {
     }
 }
 
-/// Chains multiple RiskLimit checks.
 pub struct RiskManager {
     limits: Vec<Box<dyn RiskLimit>>,
     halted: bool,
