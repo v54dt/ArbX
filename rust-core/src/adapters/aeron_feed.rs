@@ -10,9 +10,9 @@ use crate::ipc::flatbuf_codec::{
     MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, decode_order_book, decode_quote,
 };
 
-/// MarketDataFeed backed by an Aeron Subscriber. Each payload is prefixed
-/// with a 1-byte type tag (see flatbuf_codec::MSG_TAG_*) so we don't blindly
-/// try both decoders (FlatBuffers can't reject the wrong table type).
+/// MarketDataFeed backed by an Aeron Subscriber. Payloads carry a 1-byte type
+/// tag (see flatbuf_codec::MSG_TAG_*) because FlatBuffers can't reject the
+/// wrong table type at decode time.
 pub struct AeronMarketDataFeed {
     stream_id: i32,
     poll_task: Option<JoinHandle<()>>,

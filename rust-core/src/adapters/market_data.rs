@@ -8,7 +8,6 @@ pub struct MarketDataReceivers {
     pub order_books: mpsc::UnboundedReceiver<OrderBook>,
 }
 
-/// Trait for all market data feeds.
 #[async_trait]
 pub trait MarketDataFeed: Send + Sync {
     async fn connect(&mut self) -> anyhow::Result<MarketDataReceivers>;
