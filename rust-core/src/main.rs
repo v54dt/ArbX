@@ -1111,22 +1111,42 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    tokio::select! {
-        result = engine.run() => {
+    // Spawn the engine on its own task so Ctrl+C can signal shutdown_tx
+    // and the engine's internal select! actually polls shutdown_rx (the
+    // previous outer select! cancelled engine.run() before it could see
+    // the signal — pending_cancels never flushed, streams never disconnected).
+    let mut engine_handle = tokio::spawn(async move {
+        let result = engine.run().await;
+        (result, engine)
+    });
+
+    let outcome = tokio::select! {
+        biased;
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Ctrl+C received, signalling shutdown...");
+            let _ = shutdown_tx.send(true);
+            engine_handle.await
+        }
+        joined = &mut engine_handle => {
+            tracing::info!("engine task exited on its own");
+            joined
+        }
+    };
+
+    match outcome {
+        Ok((result, engine)) => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "engine error");
             }
+            tracing::info!(
+                total_trades = engine.trade_logs().len(),
+                "shutdown complete"
+            );
         }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Ctrl+C received, initiating shutdown...");
-            let _ = shutdown_tx.send(true);
+        Err(e) => {
+            tracing::error!(error = %e, "engine task panicked");
         }
     }
-
-    tracing::info!(
-        total_trades = engine.trade_logs().len(),
-        "shutdown complete"
-    );
 
     Ok(())
 }
