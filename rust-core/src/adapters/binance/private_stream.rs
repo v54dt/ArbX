@@ -17,6 +17,15 @@ use crate::models::enums::{OrderStatus, Side, Venue};
 use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::{Fill, OrderUpdate};
 
+/// One open order discovered during startup reconciliation. Carries the
+/// minimum (`order_id`, `symbol`) needed to cancel via the Binance REST
+/// `DELETE /api/v3/order` endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveredOrder {
+    pub order_id: String,
+    pub symbol: String,
+}
+
 pub struct BinancePrivateStream {
     market: BinanceMarket,
     rest_base_url: String,
@@ -243,22 +252,24 @@ async fn run_binance_stream(
         .ok_or_else(|| anyhow::anyhow!("missing listenKey in response"))?
         .to_string();
 
-    // Startup reconciliation: query open orders before subscribing so the
-    // engine learns about anything left dangling from a previous crash.
-    // Synthetic OrderUpdate(Submitted) per open order — receivers can use
-    // these to repopulate intended_fills / pending_cancels.
+    // Startup reconciliation policy = cancel-all (NEEDS-DECISION D-1 / Option A).
+    // Anything resting on the book at connect time is from a previous run we
+    // can no longer reason about — `intended_fills` / `pending_cancels` are
+    // gone, so we cannot tell working orders from stale ones. Cancelling all
+    // is the simplest correct choice; D-1B (persisted intended_fills) is the
+    // future upgrade.
     match fetch_open_orders(&rest, market).await {
-        Ok(updates) => {
+        Ok(recovered) => {
             info!(
-                count = updates.len(),
-                "Binance startup reconciliation: open orders fetched"
+                count = recovered.len(),
+                "Binance startup reconciliation: cancelling all open orders"
             );
-            for update in updates {
-                if order_tx.send(update).is_err() {
-                    warn!("order_tx closed during startup reconciliation");
-                    break;
-                }
-            }
+            let cancelled = cancel_recovered_orders(&rest, market, &recovered).await;
+            info!(
+                attempted = recovered.len(),
+                succeeded = cancelled,
+                "Binance startup reconciliation complete"
+            );
         }
         Err(e) => warn!(error = %e, "Binance startup reconciliation failed (continuing)"),
     }
@@ -314,13 +325,13 @@ async fn run_binance_stream(
     anyhow::bail!("stream ended");
 }
 
-/// Query Binance for any orders that are still resting on the book and produce
-/// synthetic OrderUpdate(Submitted) entries for each one. Lets the engine
-/// recover order state after a crash without waiting for fills to arrive.
+/// Query Binance for any orders that are still resting on the book at
+/// connect time. Returns a list of (order_id, symbol) pairs so the caller
+/// can cancel them via REST during startup reconciliation.
 async fn fetch_open_orders(
     rest: &BinanceRestClient,
     market: BinanceMarket,
-) -> anyhow::Result<Vec<OrderUpdate>> {
+) -> anyhow::Result<Vec<RecoveredOrder>> {
     let path = match market {
         BinanceMarket::Spot => "/api/v3/openOrders",
         BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => "/fapi/v1/openOrders",
@@ -342,9 +353,9 @@ async fn fetch_open_orders(
     Ok(parse_open_orders(&arr))
 }
 
-/// Parse the openOrders REST response shape into OrderUpdate entries.
+/// Parse the openOrders REST response shape into `RecoveredOrder` entries.
 /// Extracted so the JSON shape can be tested without a real REST client.
-fn parse_open_orders(payload: &serde_json::Value) -> Vec<OrderUpdate> {
+fn parse_open_orders(payload: &serde_json::Value) -> Vec<RecoveredOrder> {
     let items = payload.as_array().cloned().unwrap_or_default();
     let mut out = Vec::with_capacity(items.len());
     for item in items {
@@ -356,30 +367,74 @@ fn parse_open_orders(payload: &serde_json::Value) -> Vec<OrderUpdate> {
         if order_id.is_empty() {
             continue;
         }
-        let orig_qty: Decimal = item["origQty"]
-            .as_str()
-            .unwrap_or("0")
-            .parse()
-            .unwrap_or_default();
-        let executed_qty: Decimal = item["executedQty"]
-            .as_str()
-            .unwrap_or("0")
-            .parse()
-            .unwrap_or_default();
-        let price_dec: Option<Decimal> = item["price"]
-            .as_str()
-            .and_then(|s| s.parse::<Decimal>().ok())
-            .filter(|p| !p.is_zero());
-        out.push(OrderUpdate {
-            order_id,
-            status: OrderStatus::Submitted,
-            filled_quantity: executed_qty,
-            remaining_quantity: orig_qty - executed_qty,
-            average_price: price_dec,
-            updated_at: Utc::now(),
-        });
+        let symbol = item["symbol"].as_str().unwrap_or("").to_string();
+        if symbol.is_empty() {
+            continue;
+        }
+        out.push(RecoveredOrder { order_id, symbol });
     }
     out
+}
+
+/// Build the REST request body for cancelling a single Binance order.
+/// Pure helper, separated from network I/O so the loop is unit-testable.
+fn build_cancel_request(market: BinanceMarket, order_id: &str, symbol: &str) -> RestRequest {
+    let path = match market {
+        BinanceMarket::Spot => "/api/v3/order",
+        BinanceMarket::UsdtFutures => "/fapi/v1/order",
+        BinanceMarket::CoinFutures => "/dapi/v1/order",
+    };
+    let mut params = HashMap::new();
+    params.insert("symbol".to_string(), symbol.to_string());
+    params.insert("orderId".to_string(), order_id.to_string());
+    RestRequest {
+        method: HttpMethod::Delete,
+        path: path.to_string(),
+        params,
+    }
+}
+
+/// Iterate `recovered` and DELETE each via REST. Per-order errors are logged
+/// at `warn!` and do not abort the loop — a single 404 (already filled) or
+/// 5xx shouldn't strand the rest of the cancel batch. Returns the count of
+/// orders successfully cancelled.
+async fn cancel_recovered_orders(
+    rest: &BinanceRestClient,
+    market: BinanceMarket,
+    recovered: &[RecoveredOrder],
+) -> usize {
+    let mut succeeded = 0usize;
+    for order in recovered {
+        let req = build_cancel_request(market, &order.order_id, &order.symbol);
+        match rest.send(req).await {
+            Ok(resp) if (200..300).contains(&resp.status) => {
+                info!(
+                    order_id = order.order_id.as_str(),
+                    symbol = order.symbol.as_str(),
+                    "cancelled recovered order"
+                );
+                succeeded += 1;
+            }
+            Ok(resp) => {
+                warn!(
+                    order_id = order.order_id.as_str(),
+                    symbol = order.symbol.as_str(),
+                    status = resp.status,
+                    body = resp.body.as_str(),
+                    "recovered-order cancel rejected"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    order_id = order.order_id.as_str(),
+                    symbol = order.symbol.as_str(),
+                    error = %e,
+                    "recovered-order cancel network error"
+                );
+            }
+        }
+    }
+    succeeded
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -392,7 +447,6 @@ impl Drop for AbortOnDrop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rust_decimal_macros::dec;
 
     #[test]
     fn parse_execution_report_valid() {
@@ -484,7 +538,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_open_orders_emits_submitted_per_resting_order() {
+    fn parse_open_orders_returns_recovered_per_entry() {
         let payload = serde_json::json!([
             {
                 "symbol": "BTCUSDT",
@@ -503,18 +557,12 @@ mod tests {
                 "status": "NEW"
             }
         ]);
-        let updates = parse_open_orders(&payload);
-        assert_eq!(updates.len(), 2);
-        // Always Submitted regardless of upstream status — engine treats this
-        // as "this order_id exists at the venue right now".
-        assert_eq!(updates[0].status, OrderStatus::Submitted);
-        assert_eq!(updates[0].order_id, "12345");
-        assert_eq!(updates[0].filled_quantity, dec!(0.003));
-        assert_eq!(updates[0].remaining_quantity, dec!(0.007));
-        assert_eq!(updates[0].average_price, Some(dec!(50000)));
-        assert_eq!(updates[1].order_id, "67890");
-        assert_eq!(updates[1].filled_quantity, Decimal::ZERO);
-        assert_eq!(updates[1].remaining_quantity, dec!(0.5));
+        let recovered = parse_open_orders(&payload);
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[0].order_id, "12345");
+        assert_eq!(recovered[0].symbol, "BTCUSDT");
+        assert_eq!(recovered[1].order_id, "67890");
+        assert_eq!(recovered[1].symbol, "ETHUSDT");
     }
 
     #[test]
@@ -529,6 +577,35 @@ mod tests {
             { "symbol": "BTCUSDT", "origQty": "0.01" }
         ]);
         assert!(parse_open_orders(&payload).is_empty());
+    }
+
+    #[test]
+    fn parse_open_orders_skips_entries_with_no_symbol() {
+        let payload = serde_json::json!([
+            { "orderId": 12345, "origQty": "0.01" }
+        ]);
+        assert!(parse_open_orders(&payload).is_empty());
+    }
+
+    #[test]
+    fn build_cancel_request_spot_targets_v3_order() {
+        let req = build_cancel_request(BinanceMarket::Spot, "12345", "BTCUSDT");
+        assert_eq!(req.path, "/api/v3/order");
+        assert!(matches!(req.method, HttpMethod::Delete));
+        assert_eq!(req.params.get("orderId"), Some(&"12345".to_string()));
+        assert_eq!(req.params.get("symbol"), Some(&"BTCUSDT".to_string()));
+    }
+
+    #[test]
+    fn build_cancel_request_usdt_futures_targets_fapi() {
+        let req = build_cancel_request(BinanceMarket::UsdtFutures, "1", "BTCUSDT");
+        assert_eq!(req.path, "/fapi/v1/order");
+    }
+
+    #[test]
+    fn build_cancel_request_coin_futures_targets_dapi() {
+        let req = build_cancel_request(BinanceMarket::CoinFutures, "1", "BTCUSD_PERP");
+        assert_eq!(req.path, "/dapi/v1/order");
     }
 
     #[test]
