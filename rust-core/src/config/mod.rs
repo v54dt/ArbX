@@ -6,6 +6,12 @@ use std::fs;
 pub struct AppConfig {
     pub venues: Vec<VenueConfig>,
     pub strategy: StrategyConfig,
+    /// Optional additional strategies. When present, each entry is built and
+    /// registered via `ArbitrageEngine::with_extra_strategy` so it runs on
+    /// every quote alongside `strategy`. All strategies share the same risk
+    /// chain and circuit breaker — per-strategy budget is a future decision.
+    #[serde(default)]
+    pub extra_strategies: Vec<StrategyConfig>,
     pub risk: RiskConfig,
     pub logging: LoggingConfig,
     #[serde(default)]

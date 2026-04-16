@@ -432,6 +432,7 @@ fn build_triangle_leg(cfg: &config::TriangleLegConfig) -> anyhow::Result<Triangl
 #[allow(clippy::too_many_arguments)]
 fn build_strategy_from_config(
     cfg: &config::AppConfig,
+    strategy_cfg: &config::StrategyConfig,
     venue_a: Venue,
     venue_b: Venue,
     instrument_a: Instrument,
@@ -439,24 +440,20 @@ fn build_strategy_from_config(
     fee_a: FeeSchedule,
     fee_b: FeeSchedule,
 ) -> anyhow::Result<Box<dyn ArbitrageStrategy>> {
-    let tick_a = cfg
-        .strategy
+    let tick_a = strategy_cfg
         .tick_size_a
         .unwrap_or(rust_decimal_macros::dec!(0.01));
-    let tick_b = cfg
-        .strategy
+    let tick_b = strategy_cfg
         .tick_size_b
         .unwrap_or(rust_decimal_macros::dec!(0.01));
-    let lot_a = cfg
-        .strategy
+    let lot_a = strategy_cfg
         .lot_size_a
         .unwrap_or(rust_decimal_macros::dec!(0.00001));
-    let lot_b = cfg
-        .strategy
+    let lot_b = strategy_cfg
         .lot_size_b
         .unwrap_or(rust_decimal_macros::dec!(0.00001));
 
-    let strategy: Box<dyn ArbitrageStrategy> = match cfg.strategy.name.as_str() {
+    let strategy: Box<dyn ArbitrageStrategy> = match strategy_cfg.name.as_str() {
         "cross_exchange" => {
             tracing::info!(venue_a = ?venue_a, venue_b = ?venue_b, "using CrossExchangeStrategy");
             Box::new(CrossExchangeStrategy {
@@ -464,16 +461,16 @@ fn build_strategy_from_config(
                 venue_b,
                 instrument_a,
                 instrument_b,
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quantity: cfg.strategy.max_quantity,
+                min_net_profit_bps: strategy_cfg.min_net_profit_bps,
+                max_quantity: strategy_cfg.max_quantity,
                 fee_a,
                 fee_b,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_quote_age_ms: strategy_cfg.max_quote_age_ms,
                 tick_size_a: tick_a,
                 tick_size_b: tick_b,
                 lot_size_a: lot_a,
                 lot_size_b: lot_b,
-                max_book_depth: cfg.strategy.max_book_depth,
+                max_book_depth: strategy_cfg.max_book_depth,
             })
         }
         "multi_pair" => {
@@ -502,7 +499,7 @@ fn build_strategy_from_config(
                         venue_b,
                         instrument_a: inst.clone(),
                         instrument_b: inst_b,
-                        max_quantity: cfg.strategy.max_quantity,
+                        max_quantity: strategy_cfg.max_quantity,
                         tick_size_a: tick_a,
                         tick_size_b: tick_b,
                         lot_size_a: lot_a,
@@ -520,9 +517,9 @@ fn build_strategy_from_config(
             );
             Box::new(MultiPairCrossExchangeStrategy {
                 pairs,
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-                max_book_depth: cfg.strategy.max_book_depth,
+                min_net_profit_bps: strategy_cfg.min_net_profit_bps,
+                max_quote_age_ms: strategy_cfg.max_quote_age_ms,
+                max_book_depth: strategy_cfg.max_book_depth,
             })
         }
         "ewma_spread" => {
@@ -534,7 +531,7 @@ fn build_strategy_from_config(
                 .strategy
                 .ewma_entry_sigma
                 .unwrap_or(rust_decimal_macros::dec!(2.0));
-            let min_samples = cfg.strategy.ewma_min_samples.unwrap_or(60);
+            let min_samples = strategy_cfg.ewma_min_samples.unwrap_or(60);
             tracing::info!(
                 %alpha, %entry_sigma, min_samples,
                 venue_a = ?venue_a, venue_b = ?venue_b,
@@ -549,18 +546,18 @@ fn build_strategy_from_config(
                 fee_b,
                 alpha,
                 entry_sigma,
-                cfg.strategy.max_quantity,
-                cfg.strategy.min_net_profit_bps,
-                cfg.strategy.max_quote_age_ms,
+                strategy_cfg.max_quantity,
+                strategy_cfg.min_net_profit_bps,
+                strategy_cfg.max_quote_age_ms,
                 tick_a,
                 tick_b,
                 lot_a,
-                cfg.strategy.max_book_depth,
+                strategy_cfg.max_book_depth,
                 min_samples,
             ))
         }
         "triangular_arb" => {
-            if cfg.strategy.triangle_cycles.is_empty() {
+            if strategy_cfg.triangle_cycles.is_empty() {
                 anyhow::bail!(
                     "strategy.name=triangular_arb requires at least one entry in \
                      strategy.triangle_cycles"
@@ -580,7 +577,7 @@ fn build_strategy_from_config(
                         max_notional_usdt: c.max_notional_usdt,
                         min_net_profit_bps: c
                             .min_net_profit_bps
-                            .unwrap_or(cfg.strategy.min_net_profit_bps),
+                            .unwrap_or(strategy_cfg.min_net_profit_bps),
                         tick_size: c.tick_size,
                         lot_size: c.lot_size,
                     })
@@ -593,15 +590,15 @@ fn build_strategy_from_config(
             );
             Box::new(TriangularArbStrategy {
                 cycles,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-                max_book_depth: cfg.strategy.max_book_depth,
+                max_quote_age_ms: strategy_cfg.max_quote_age_ms,
+                max_book_depth: strategy_cfg.max_book_depth,
             })
         }
         "funding_rate" => {
             let min_funding_rate_bps = cfg
                 .strategy
                 .funding_min_bps
-                .unwrap_or(cfg.strategy.min_net_profit_bps);
+                .unwrap_or(strategy_cfg.min_net_profit_bps);
             tracing::info!(
                 venue = ?venue_a,
                 %min_funding_rate_bps,
@@ -612,10 +609,10 @@ fn build_strategy_from_config(
                 instrument_perp: instrument_a,
                 instrument_spot: instrument_b,
                 min_funding_rate_bps,
-                max_quantity: cfg.strategy.max_quantity,
+                max_quantity: strategy_cfg.max_quantity,
                 fee_perp: fee_a,
                 fee_spot: fee_b,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_quote_age_ms: strategy_cfg.max_quote_age_ms,
                 funding_interval_hours: cfg
                     .strategy
                     .funding_interval_hours
@@ -631,7 +628,7 @@ fn build_strategy_from_config(
                 .strategy
                 .tw_cost_of_carry_bps
                 .unwrap_or(rust_decimal_macros::dec!(0));
-            let days_to_expiry = cfg.strategy.tw_days_to_expiry.unwrap_or(30);
+            let days_to_expiry = strategy_cfg.tw_days_to_expiry.unwrap_or(30);
             tracing::info!(
                 venue = ?venue_a,
                 %hedge_ratio,
@@ -644,11 +641,11 @@ fn build_strategy_from_config(
                 etf_instrument: instrument_a,
                 futures_instrument: instrument_b,
                 hedge_ratio,
-                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-                max_quantity: cfg.strategy.max_quantity,
+                min_net_profit_bps: strategy_cfg.min_net_profit_bps,
+                max_quantity: strategy_cfg.max_quantity,
                 fee_etf: fee_a,
                 fee_futures: fee_b,
-                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_quote_age_ms: strategy_cfg.max_quote_age_ms,
                 cost_of_carry_bps,
                 days_to_expiry,
             })
@@ -708,6 +705,7 @@ async fn run_backtest_mode(
         None => {
             let strategy = build_strategy_from_config(
                 cfg,
+                &cfg.strategy,
                 venue_a,
                 venue_b,
                 instrument_a.clone(),
@@ -754,6 +752,7 @@ async fn run_backtest_mode(
                 let window_feed = HistoricalDataFeed::from_quotes(chunk.to_vec());
                 let window_strategy = build_strategy_from_config(
                     cfg,
+                    &cfg.strategy,
                     venue_a,
                     venue_b,
                     instrument_a.clone(),
@@ -998,12 +997,13 @@ async fn main() -> anyhow::Result<()> {
 
     let strategy = build_strategy_from_config(
         &cfg,
+        &cfg.strategy,
         venue_a,
         venue_b,
-        instrument_a,
-        instrument_b,
-        fee_a,
-        fee_b,
+        instrument_a.clone(),
+        instrument_b.clone(),
+        fee_a.clone(),
+        fee_b.clone(),
     )?;
 
     let mut feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a];
@@ -1125,6 +1125,28 @@ async fn main() -> anyhow::Result<()> {
                 .with_executor_for(v, venue_exec)
                 .with_position_manager_for(v, venue_pm);
         }
+    }
+
+    // C5 PR2: build each cfg.extra_strategies entry and register on the engine.
+    // All extras share the primary strategy's venue + instrument + fee context;
+    // cross-strategy heterogeneity (different venues / instruments per strategy)
+    // is a future schema change.
+    for extra_cfg in cfg.extra_strategies.iter() {
+        let extra = build_strategy_from_config(
+            &cfg,
+            extra_cfg,
+            venue_a,
+            venue_b,
+            instrument_a.clone(),
+            instrument_b.clone(),
+            fee_a.clone(),
+            fee_b.clone(),
+        )?;
+        tracing::info!(
+            extra_strategy = extra_cfg.name.as_str(),
+            "registering extra strategy"
+        );
+        engine = engine.with_extra_strategy(extra);
     }
 
     let admin_port = cfg.engine.admin_port.unwrap_or(9091);

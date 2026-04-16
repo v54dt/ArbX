@@ -163,8 +163,6 @@ impl ArbitrageEngine {
     /// every quote in addition to the primary `strategy` passed to `new()`.
     /// All strategies share the same risk chain and circuit breaker. Per-
     /// strategy risk budgeting is a future decision (`plan.md` D-3+).
-    // PR1 ships the API + integration test; main.rs config wiring lands in PR2.
-    #[allow(dead_code)]
     pub fn with_extra_strategy(mut self, strategy: Box<dyn ArbitrageStrategy>) -> Self {
         self.extra_strategies.push(strategy);
         self
