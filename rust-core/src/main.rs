@@ -1103,6 +1103,30 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // D-3 PR2: register per-venue executor + position manager for every
+    // venue except the legacy one (cfg.venues[idx_b], already passed to
+    // engine.new() above). Paper / dry-run venues stay on the legacy
+    // venue-agnostic PaperExecutor — venue-specific routing only matters
+    // when real REST endpoints diverge per venue.
+    if !cli.dry_run {
+        for (i, vc) in cfg.venues.iter().enumerate() {
+            if i == idx_b || vc.paper_trading {
+                continue;
+            }
+            let v = parse_venue(&vc.name)?;
+            let venue_exec = build_executor(vc)?;
+            let venue_pm = build_position_manager(vc)?;
+            tracing::info!(
+                venue = vc.name.as_str(),
+                market = vc.market.as_str(),
+                "registering per-venue executor + position manager"
+            );
+            engine = engine
+                .with_executor_for(v, venue_exec)
+                .with_position_manager_for(v, venue_pm);
+        }
+    }
+
     let admin_port = cfg.engine.admin_port.unwrap_or(9091);
     let admin_handle = engine::admin::EngineHandle::new(shutdown_tx.clone());
     engine = engine.with_admin(admin_handle.clone());
