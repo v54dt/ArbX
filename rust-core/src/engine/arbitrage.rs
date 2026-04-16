@@ -169,17 +169,24 @@ impl ArbitrageEngine {
     }
 
     fn executor_for(&self, venue: Venue) -> &dyn OrderExecutor {
-        self.executors_by_venue
-            .get(&venue)
-            .map(|b| b.as_ref())
-            .unwrap_or_else(|| self.executor.as_ref())
+        if let Some(e) = self.executors_by_venue.get(&venue) {
+            return e.as_ref();
+        }
+        self.executor.as_ref()
+    }
+
+    fn position_manager_mut_for(&mut self, venue: Venue) -> &mut dyn PositionManager {
+        if let Some(p) = self.position_managers_by_venue.get_mut(&venue) {
+            return p.as_mut();
+        }
+        self.position_manager.as_mut()
     }
 
     fn position_manager_for(&self, venue: Venue) -> &dyn PositionManager {
-        self.position_managers_by_venue
-            .get(&venue)
-            .map(|b| b.as_ref())
-            .unwrap_or_else(|| self.position_manager.as_ref())
+        if let Some(p) = self.position_managers_by_venue.get(&venue) {
+            return p.as_ref();
+        }
+        self.position_manager.as_ref()
     }
 
     pub fn trade_logs(&self) -> &[TradeLog] {
@@ -372,10 +379,11 @@ impl ArbitrageEngine {
                     crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
                     crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
 
-                    let pm = self.position_manager_for(fill.venue);
-                    pm.apply_fill(&fill).await?;
-                    let key = format!("{:?}", fill.venue).to_lowercase();
-                    if let Ok(snapshot) = pm.get_portfolio().await {
+                    let venue = fill.venue;
+                    self.position_manager_mut_for(venue).apply_fill(&fill).await?;
+                    let snapshot_result = self.position_manager_for(venue).get_portfolio().await;
+                    let key = format!("{:?}", venue).to_lowercase();
+                    if let Ok(snapshot) = snapshot_result {
                         self.portfolios.insert(key, snapshot);
                     }
                 }
@@ -393,7 +401,12 @@ impl ArbitrageEngine {
                 _ = cancel_check_interval.tick() => {
                     let now = Utc::now();
                     let mut still_pending: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
-                    for (deadline, order_id) in self.pending_cancels.drain(..) {
+                    // Collect first so the drain's mutable borrow of self.pending_cancels
+                    // doesn't overlap with the immutable borrows of self for executor_for /
+                    // intended_fills inside the loop body.
+                    let to_check: Vec<(chrono::DateTime<Utc>, String)> =
+                        self.pending_cancels.drain(..).collect();
+                    for (deadline, order_id) in to_check {
                         if now < deadline {
                             still_pending.push((deadline, order_id));
                             continue;
