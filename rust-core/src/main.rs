@@ -612,6 +612,10 @@ fn build_strategy_from_config(
                 fee_perp: fee_a,
                 fee_spot: fee_b,
                 max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                funding_interval_hours: cfg
+                    .strategy
+                    .funding_interval_hours
+                    .unwrap_or(strategy::funding_rate::DEFAULT_FUNDING_INTERVAL_HOURS),
             })
         }
         "tw_etf_futures" => {
