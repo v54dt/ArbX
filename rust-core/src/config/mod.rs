@@ -106,6 +106,10 @@ pub struct StrategyConfig {
     /// FundingRateStrategy: annualized bps threshold to trigger (default = min_net_profit_bps)
     #[serde(default)]
     pub funding_min_bps: Option<Decimal>,
+    /// FundingRateStrategy: funding interval in hours (default 8 for Binance/Bybit/OKX
+    /// standard; some symbols use 4)
+    #[serde(default)]
+    pub funding_interval_hours: Option<i64>,
     /// TwEtfFuturesStrategy: hedge ratio (futures : ETF; default 1.0)
     #[serde(default)]
     pub tw_hedge_ratio: Option<Decimal>,

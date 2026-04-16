@@ -16,7 +16,7 @@ use super::base::ArbitrageStrategy;
 use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
 
 const HOURS_PER_YEAR: i64 = 8760;
-const FUNDING_INTERVAL_HOURS: i64 = 8;
+pub const DEFAULT_FUNDING_INTERVAL_HOURS: i64 = 8;
 const BPS_MULTIPLIER: i64 = 10_000;
 
 pub struct FundingRateStrategy {
@@ -28,6 +28,9 @@ pub struct FundingRateStrategy {
     pub fee_perp: FeeSchedule,
     pub fee_spot: FeeSchedule,
     pub max_quote_age_ms: i64,
+    /// Funding interval in hours. Defaults to 8 (Binance / Bybit / OKX standard),
+    /// but some symbols use 4 — drive from config.
+    pub funding_interval_hours: i64,
 }
 
 impl FundingRateStrategy {
@@ -38,8 +41,8 @@ impl FundingRateStrategy {
         (perp_mid - spot_mid) / spot_mid
     }
 
-    fn annualize_bps(rate: Decimal) -> Decimal {
-        rate * Decimal::from(HOURS_PER_YEAR) / Decimal::from(FUNDING_INTERVAL_HOURS)
+    fn annualize_bps(rate: Decimal, funding_interval_hours: i64) -> Decimal {
+        rate * Decimal::from(HOURS_PER_YEAR) / Decimal::from(funding_interval_hours)
             * Decimal::from(BPS_MULTIPLIER)
     }
 }
@@ -64,7 +67,7 @@ impl ArbitrageStrategy for FundingRateStrategy {
         let spot_mid = spot_book.mid_price()?;
 
         let funding_rate = Self::estimate_funding_rate(perp_mid, spot_mid);
-        let annualized_bps = Self::annualize_bps(funding_rate);
+        let annualized_bps = Self::annualize_bps(funding_rate, self.funding_interval_hours);
 
         let (perp_side, spot_side) = if annualized_bps > self.min_funding_rate_bps {
             (Side::Sell, Side::Buy)
@@ -102,7 +105,7 @@ impl ArbitrageStrategy for FundingRateStrategy {
         } else {
             funding_rate
         };
-        let expected_funding = abs_rate * notional * Decimal::from(FUNDING_INTERVAL_HOURS)
+        let expected_funding = abs_rate * notional * Decimal::from(self.funding_interval_hours)
             / Decimal::from(HOURS_PER_YEAR);
 
         let fee_perp_cost = perp_price * quantity * self.fee_perp.taker();
@@ -232,6 +235,7 @@ mod tests {
             fee_perp: FeeSchedule::new(Venue::Binance, dec!(0.00001), dec!(0.00001)),
             fee_spot: FeeSchedule::new(Venue::Binance, dec!(0.00001), dec!(0.00001)),
             max_quote_age_ms: 5000,
+            funding_interval_hours: DEFAULT_FUNDING_INTERVAL_HOURS,
         }
     }
 
