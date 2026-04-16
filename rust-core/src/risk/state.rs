@@ -5,6 +5,10 @@ use super::manager::RiskVerdict;
 
 pub struct RiskState {
     pub position_by_instrument: HashMap<String, Decimal>,
+    /// Per-instrument |signed_position * last_mark_price|. Recomputed from scratch
+    /// on each apply_fill so sells/closes shrink the entry. The aggregate
+    /// `total_notional_exposure` is the sum across this map.
+    pub position_notional: HashMap<String, Decimal>,
     pub total_notional_exposure: Decimal,
     pub realized_pnl_today: Decimal,
     pub max_position_size: Decimal,
@@ -21,6 +25,7 @@ impl RiskState {
     ) -> Self {
         Self {
             position_by_instrument: HashMap::new(),
+            position_notional: HashMap::new(),
             total_notional_exposure: Decimal::ZERO,
             realized_pnl_today: Decimal::ZERO,
             max_position_size,
@@ -65,11 +70,14 @@ impl RiskState {
         RiskVerdict::approved()
     }
 
+    /// Apply a fill: update signed position, then recompute that instrument's
+    /// notional from |new_position * mark_price| (so sells/closes actually shrink
+    /// total_notional_exposure instead of growing it forever).
     pub fn apply_fill(
         &mut self,
         instrument_key: &str,
         quantity: Decimal,
-        notional: Decimal,
+        mark_price: Decimal,
         realized_pnl: Decimal,
     ) {
         let pos = self
@@ -77,7 +85,14 @@ impl RiskState {
             .entry(instrument_key.to_string())
             .or_insert(Decimal::ZERO);
         *pos += quantity;
-        self.total_notional_exposure += notional.abs();
+        let new_notional = (*pos * mark_price).abs();
+        if new_notional.is_zero() {
+            self.position_notional.remove(instrument_key);
+        } else {
+            self.position_notional
+                .insert(instrument_key.to_string(), new_notional);
+        }
+        self.total_notional_exposure = self.position_notional.values().copied().sum();
         self.realized_pnl_today += realized_pnl;
     }
 
@@ -149,11 +164,13 @@ mod tests {
     #[test]
     fn apply_fill_updates_position() {
         let mut state = default_state();
-        state.apply_fill("BTC-USDT", dec!(3), dec!(150000), Decimal::ZERO);
+        // Buy 3 @ 50000 → position +3, notional |3*50000|=150000
+        state.apply_fill("BTC-USDT", dec!(3), dec!(50000), Decimal::ZERO);
         assert_eq!(
             *state.position_by_instrument.get("BTC-USDT").unwrap(),
             dec!(3)
         );
+        // Sell 1 @ 50000 → position +2, notional |2*50000|=100000
         state.apply_fill("BTC-USDT", dec!(-1), dec!(50000), Decimal::ZERO);
         assert_eq!(
             *state.position_by_instrument.get("BTC-USDT").unwrap(),
@@ -168,6 +185,42 @@ mod tests {
         assert_eq!(state.realized_pnl_today, dec!(100));
         state.apply_fill("BTC-USDT", dec!(-1), dec!(50000), dec!(-200));
         assert_eq!(state.realized_pnl_today, dec!(-100));
+    }
+
+    #[test]
+    fn apply_fill_recomputes_notional_so_close_shrinks_exposure() {
+        // Regression for the unbounded-accumulation bug: closing a position
+        // must reduce total_notional_exposure, not grow it.
+        let mut state = default_state();
+        // Buy 2 BTC @ 50000 → exposure 100_000
+        state.apply_fill("BTC-USDT", dec!(2), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, dec!(100000));
+
+        // Sell 1 BTC @ 50000 → position 1, exposure 50_000 (not 150_000!)
+        state.apply_fill("BTC-USDT", dec!(-1), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, dec!(50000));
+
+        // Sell 1 BTC @ 50000 → position 0, exposure removed entirely
+        state.apply_fill("BTC-USDT", dec!(-1), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, Decimal::ZERO);
+        assert!(!state.position_notional.contains_key("BTC-USDT"));
+    }
+
+    #[test]
+    fn apply_fill_aggregates_notional_across_instruments() {
+        let mut state = default_state();
+        state.apply_fill("BTC-USDT", dec!(1), dec!(50000), Decimal::ZERO);
+        state.apply_fill("ETH-USDT", dec!(10), dec!(3000), Decimal::ZERO);
+        // 50_000 + 30_000
+        assert_eq!(state.total_notional_exposure, dec!(80000));
+    }
+
+    #[test]
+    fn apply_fill_short_position_uses_absolute_notional() {
+        let mut state = default_state();
+        // Sell 2 BTC @ 50000 (open short) → position -2, notional |−2*50000|=100_000
+        state.apply_fill("BTC-USDT", dec!(-2), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, dec!(100000));
     }
 
     #[test]

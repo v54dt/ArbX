@@ -250,8 +250,7 @@ impl ArbitrageEngine {
                         crate::models::enums::Side::Buy => fill.quantity,
                         crate::models::enums::Side::Sell => -fill.quantity,
                     };
-                    let notional = fill.price * fill.quantity;
-                    self.risk_state.apply_fill(fill_key.as_str(), signed_qty, notional, Decimal::ZERO);
+                    self.risk_state.apply_fill(fill_key.as_str(), signed_qty, fill.price, Decimal::ZERO);
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received(self.strategy.name());
 
