@@ -6,7 +6,10 @@
 //! alerting can fire well before something actually breaks.
 //!
 //! Stub implementation. Real providers (TW PFX reader, Binance ban detector)
-//! plug in later via `with_provider` without engine changes.
+//! plug in later via `with_provider` without engine changes. The module-level
+//! `allow(dead_code)` will be removed once main.rs spawns the watchdog.
+
+#![allow(dead_code)]
 
 use std::sync::Arc;
 use std::time::Duration;
