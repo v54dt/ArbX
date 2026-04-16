@@ -11,6 +11,7 @@ use crate::models::instrument::Instrument;
 use crate::models::market::{BookMap, book_key};
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
+use crate::models::tick_rules::{tw_futures_tick_size, tw_stock_tick_size};
 
 use super::base::ArbitrageStrategy;
 use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
@@ -150,14 +151,22 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
     fn compute_hedge_orders(&self, opp: &Opportunity) -> Vec<OrderRequest> {
         opp.legs
             .iter()
-            .map(|leg| OrderRequest {
-                venue: leg.venue,
-                instrument: leg.instrument.clone(),
-                side: leg.side,
-                order_type: OrderType::Limit,
-                time_in_force: Some(TimeInForce::Ioc),
-                price: Some(leg.order_price),
-                quantity: leg.quantity,
+            .map(|leg| {
+                let tick = if leg.instrument == self.etf_instrument {
+                    tw_stock_tick_size(leg.order_price)
+                } else {
+                    tw_futures_tick_size()
+                };
+                let aligned_price = align_to_tick(leg.order_price, tick, leg.side);
+                OrderRequest {
+                    venue: leg.venue,
+                    instrument: leg.instrument.clone(),
+                    side: leg.side,
+                    order_type: OrderType::Limit,
+                    time_in_force: Some(TimeInForce::Ioc),
+                    price: Some(aligned_price),
+                    quantity: leg.quantity,
+                }
             })
             .collect()
     }
@@ -165,6 +174,21 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
     fn name(&self) -> &str {
         "tw_etf_futures"
     }
+}
+
+/// Align an order price to the venue's tick grid. Buy rounds UP (more
+/// aggressive — still crosses the ask), Sell rounds DOWN (more aggressive —
+/// still hits the bid). Tick=0 leaves the price as-is.
+fn align_to_tick(price: Decimal, tick: Decimal, side: Side) -> Decimal {
+    if tick.is_zero() {
+        return price;
+    }
+    let units = price / tick;
+    let snapped = match side {
+        Side::Buy => units.ceil(),
+        Side::Sell => units.floor(),
+    };
+    snapped * tick
 }
 
 #[cfg(test)]
@@ -362,5 +386,59 @@ mod tests {
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
         matches!(opp.kind, OpportunityKind::SpotFuturesBasis { .. });
+    }
+
+    #[test]
+    fn align_to_tick_buy_rounds_up() {
+        // Buy at 150.27 with tick 0.50 → 150.50 (next tick up).
+        assert_eq!(
+            align_to_tick(dec!(150.27), dec!(0.50), Side::Buy),
+            dec!(150.50)
+        );
+        // Already on tick: stays.
+        assert_eq!(
+            align_to_tick(dec!(150.50), dec!(0.50), Side::Buy),
+            dec!(150.50)
+        );
+    }
+
+    #[test]
+    fn align_to_tick_sell_rounds_down() {
+        // Sell at 150.27 with tick 0.50 → 150.00 (next tick down).
+        assert_eq!(
+            align_to_tick(dec!(150.27), dec!(0.50), Side::Sell),
+            dec!(150.00)
+        );
+        assert_eq!(
+            align_to_tick(dec!(150.50), dec!(0.50), Side::Sell),
+            dec!(150.50)
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_hedge_orders_aligns_etf_to_tw_tick() {
+        // ETF tick rule: 100..500 → 0.50; futures tick = 1.0.
+        let s = make_strategy();
+        let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
+        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let orders = s.compute_hedge_orders(&opp);
+        for order in &orders {
+            let price = order.price.unwrap();
+            let tick = if order.instrument == s.etf_instrument {
+                tw_stock_tick_size(price)
+            } else {
+                tw_futures_tick_size()
+            };
+            // Aligned price must be a multiple of tick (within Decimal exactness).
+            let units = price / tick;
+            assert_eq!(
+                units.fract(),
+                Decimal::ZERO,
+                "{:?} order price {} not aligned to tick {}",
+                order.side,
+                price,
+                tick
+            );
+        }
     }
 }
