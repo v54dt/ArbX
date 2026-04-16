@@ -874,6 +874,9 @@ fn run_dry_validate(cfg: &config::AppConfig) -> anyhow::Result<()> {
     if let Some(p) = cfg.engine.admin_port {
         println!("  admin_port: {}", p);
     }
+    if let Some(ms) = cfg.engine.heartbeat_stall_ms {
+        println!("  heartbeat_stall_ms: {}", ms);
+    }
     println!();
     println!("Validation passed. Exiting without starting any networking.");
     Ok(())
@@ -1110,6 +1113,20 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!(error = %e, "admin HTTP server exited");
         }
     });
+
+    // Dead-man's-switch watchdog: only active when the operator opted in
+    // via `engine.heartbeat_stall_ms`. If the engine main loop hasn't
+    // stamped its heartbeat within that window, the watchdog fires
+    // shutdown_tx so supervisors can restart the process.
+    if let Some(stall_ms) = cfg.engine.heartbeat_stall_ms {
+        let hb = std::sync::Arc::new(engine::watchdog::Heartbeat::new());
+        engine = engine.with_heartbeat(hb.clone());
+        let wd_tx = shutdown_tx.clone();
+        let wd_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            engine::watchdog::run_watchdog(hb, stall_ms, wd_tx, wd_rx).await;
+        });
+    }
 
     // Spawn the engine on its own task so Ctrl+C can signal shutdown_tx
     // and the engine's internal select! actually polls shutdown_rx (the
