@@ -1,8 +1,9 @@
+use std::str::FromStr as _;
+
 use anyhow::{Context as _, bail};
 use chrono::{TimeZone as _, Utc};
-use flatbuffers::{FlatBufferBuilder, Follow, ForwardsUOffset, Table, WIPOffset};
+use flatbuffers::{FlatBufferBuilder, Follow, ForwardsUOffset, Table, Vector, WIPOffset};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 
 use crate::models::enums::{
     OrderType as DomainOrderType, Side as DomainSide, TimeInForce as DomainTimeInForce,
@@ -132,15 +133,23 @@ fn tif_from_i8(v: i8) -> anyhow::Result<DomainTimeInForce> {
     }
 }
 
-fn dec_to_f64(d: Decimal) -> f64 {
-    d.to_f64().unwrap_or_else(|| {
-        tracing::warn!(decimal = %d, "Decimal->f64 overflow, falling back to 0.0");
-        0.0
-    })
+/// Decimals over IPC are encoded as their canonical string representation —
+/// avoids the f64 round-trip precision loss (e.g. `dec!(0.1)` → `0.1f64` →
+/// `Decimal::try_from(0.1)` would reintroduce floating noise).
+fn dec_to_string(d: Decimal) -> String {
+    d.to_string()
 }
 
-fn f64_to_dec(v: f64) -> anyhow::Result<Decimal> {
-    Decimal::try_from(v).context("f64 -> Decimal")
+fn parse_decimal_str(s: &str) -> anyhow::Result<Decimal> {
+    Decimal::from_str(s).context("string -> Decimal")
+}
+
+fn parse_optional_decimal(s: &str) -> anyhow::Result<Option<Decimal>> {
+    if s.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(parse_decimal_str(s)?))
+    }
 }
 
 fn instrument_type_str(it: InstrumentType) -> &'static str {
@@ -212,16 +221,20 @@ pub fn encode_quote(quote: &Quote) -> Vec<u8> {
     let base = fbb.create_string(&quote.instrument.base);
     let quote_cur = fbb.create_string(&quote.instrument.quote);
     let inst_type = fbb.create_string(instrument_type_str(quote.instrument.instrument_type));
+    let bid_s = fbb.create_string(&dec_to_string(quote.bid));
+    let ask_s = fbb.create_string(&dec_to_string(quote.ask));
+    let bid_size_s = fbb.create_string(&dec_to_string(quote.bid_size));
+    let ask_size_s = fbb.create_string(&dec_to_string(quote.ask_size));
 
     let start = fbb.start_table();
     fbb.push_slot::<i8>(vt::QUOTE_VENUE, venue_to_i8(quote.venue), 0);
     fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_BASE, base);
     fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_QUOTE_CURRENCY, quote_cur);
     fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_INSTRUMENT_TYPE, inst_type);
-    fbb.push_slot::<f64>(vt::QUOTE_BID, dec_to_f64(quote.bid), 0.0);
-    fbb.push_slot::<f64>(vt::QUOTE_ASK, dec_to_f64(quote.ask), 0.0);
-    fbb.push_slot::<f64>(vt::QUOTE_BID_SIZE, dec_to_f64(quote.bid_size), 0.0);
-    fbb.push_slot::<f64>(vt::QUOTE_ASK_SIZE, dec_to_f64(quote.ask_size), 0.0);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_BID, bid_s);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_ASK, ask_s);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_BID_SIZE, bid_size_s);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::QUOTE_ASK_SIZE, ask_size_s);
     fbb.push_slot::<i64>(
         vt::QUOTE_TIMESTAMP_MS,
         quote.timestamp.timestamp_millis(),
@@ -238,10 +251,10 @@ pub fn decode_quote(data: &[u8]) -> anyhow::Result<Quote> {
     let base = unsafe { get_str(&table, vt::QUOTE_BASE) }.unwrap_or("");
     let quote_cur = unsafe { get_str(&table, vt::QUOTE_QUOTE_CURRENCY) }.unwrap_or("");
     let inst_type = unsafe { get_str(&table, vt::QUOTE_INSTRUMENT_TYPE) }.unwrap_or("spot");
-    let bid = unsafe { get_field::<f64>(&table, vt::QUOTE_BID, 0.0) };
-    let ask = unsafe { get_field::<f64>(&table, vt::QUOTE_ASK, 0.0) };
-    let bid_size = unsafe { get_field::<f64>(&table, vt::QUOTE_BID_SIZE, 0.0) };
-    let ask_size = unsafe { get_field::<f64>(&table, vt::QUOTE_ASK_SIZE, 0.0) };
+    let bid = unsafe { get_str(&table, vt::QUOTE_BID) }.unwrap_or("0");
+    let ask = unsafe { get_str(&table, vt::QUOTE_ASK) }.unwrap_or("0");
+    let bid_size = unsafe { get_str(&table, vt::QUOTE_BID_SIZE) }.unwrap_or("0");
+    let ask_size = unsafe { get_str(&table, vt::QUOTE_ASK_SIZE) }.unwrap_or("0");
     let timestamp_ms = unsafe { get_field::<i64>(&table, vt::QUOTE_TIMESTAMP_MS, 0) };
 
     let ts = Utc
@@ -252,10 +265,10 @@ pub fn decode_quote(data: &[u8]) -> anyhow::Result<Quote> {
     Ok(Quote {
         venue: venue_from_i8(venue_i8)?,
         instrument: make_instrument(base, quote_cur, inst_type)?,
-        bid: f64_to_dec(bid)?,
-        ask: f64_to_dec(ask)?,
-        bid_size: f64_to_dec(bid_size)?,
-        ask_size: f64_to_dec(ask_size)?,
+        bid: parse_decimal_str(bid)?,
+        ask: parse_decimal_str(ask)?,
+        bid_size: parse_decimal_str(bid_size)?,
+        ask_size: parse_decimal_str(ask_size)?,
         timestamp: ts,
     })
 }
@@ -265,6 +278,10 @@ pub fn encode_order_request(req: &OrderRequest) -> Vec<u8> {
     let base = fbb.create_string(&req.instrument.base);
     let quote_cur = fbb.create_string(&req.instrument.quote);
     let inst_type = fbb.create_string(instrument_type_str(req.instrument.instrument_type));
+    // Empty string means None for optional Decimal fields (price).
+    let price_str = req.price.map(dec_to_string).unwrap_or_default();
+    let price_off = fbb.create_string(&price_str);
+    let qty_off = fbb.create_string(&dec_to_string(req.quantity));
 
     let start = fbb.start_table();
     fbb.push_slot::<i8>(vt::OR_VENUE, venue_to_i8(req.venue), 0);
@@ -278,8 +295,8 @@ pub fn encode_order_request(req: &OrderRequest) -> Vec<u8> {
         req.time_in_force.map(tif_to_i8).unwrap_or(0),
         0,
     );
-    fbb.push_slot::<f64>(vt::OR_PRICE, req.price.map(dec_to_f64).unwrap_or(0.0), 0.0);
-    fbb.push_slot::<f64>(vt::OR_QUANTITY, dec_to_f64(req.quantity), 0.0);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OR_PRICE, price_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::OR_QUANTITY, qty_off);
     let root = fbb.end_table(start);
     fbb.finish(root, None);
     fbb.finished_data().to_vec()
@@ -294,14 +311,8 @@ pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
     let side_i8 = unsafe { get_field::<i8>(&table, vt::OR_SIDE, 0) };
     let ot_i8 = unsafe { get_field::<i8>(&table, vt::OR_ORDER_TYPE, 0) };
     let tif_i8 = unsafe { get_field::<i8>(&table, vt::OR_TIME_IN_FORCE, 0) };
-    let price_f = unsafe { get_field::<f64>(&table, vt::OR_PRICE, 0.0) };
-    let quantity_f = unsafe { get_field::<f64>(&table, vt::OR_QUANTITY, 0.0) };
-
-    let price = if price_f == 0.0 {
-        None
-    } else {
-        Some(f64_to_dec(price_f)?)
-    };
+    let price_str = unsafe { get_str(&table, vt::OR_PRICE) }.unwrap_or("");
+    let qty_str = unsafe { get_str(&table, vt::OR_QUANTITY) }.unwrap_or("0");
 
     Ok(OrderRequest {
         venue: venue_from_i8(venue_i8)?,
@@ -310,8 +321,8 @@ pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
         order_type: order_type_from_i8(ot_i8)?,
         // Lossy: encode maps None → 0 (Rod), so decode always returns Some.
         time_in_force: Some(tif_from_i8(tif_i8)?),
-        price,
-        quantity: f64_to_dec(quantity_f)?,
+        price: parse_optional_decimal(price_str)?,
+        quantity: parse_decimal_str(qty_str)?,
     })
 }
 
@@ -321,6 +332,9 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
     let base = fbb.create_string(&fill.instrument.base);
     let quote_cur = fbb.create_string(&fill.instrument.quote);
     let fee_cur = fbb.create_string(&fill.fee_currency);
+    let price_off = fbb.create_string(&dec_to_string(fill.price));
+    let qty_off = fbb.create_string(&dec_to_string(fill.quantity));
+    let fee_off = fbb.create_string(&dec_to_string(fill.fee));
 
     let start = fbb.start_table();
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_ORDER_ID, order_id);
@@ -328,9 +342,9 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_BASE, base);
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_QUOTE_CURRENCY, quote_cur);
     fbb.push_slot::<i8>(vt::FILL_SIDE, side_to_i8(fill.side), 0);
-    fbb.push_slot::<f64>(vt::FILL_PRICE, dec_to_f64(fill.price), 0.0);
-    fbb.push_slot::<f64>(vt::FILL_QUANTITY, dec_to_f64(fill.quantity), 0.0);
-    fbb.push_slot::<f64>(vt::FILL_FEE, dec_to_f64(fill.fee), 0.0);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_PRICE, price_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_QUANTITY, qty_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_FEE, fee_off);
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_FEE_CURRENCY, fee_cur);
     fbb.push_slot::<i64>(vt::FILL_TIMESTAMP_MS, fill.filled_at.timestamp_millis(), 0);
     let root = fbb.end_table(start);
@@ -345,9 +359,9 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
     let base = unsafe { get_str(&table, vt::FILL_BASE) }.unwrap_or("");
     let quote_cur = unsafe { get_str(&table, vt::FILL_QUOTE_CURRENCY) }.unwrap_or("");
     let side_i8 = unsafe { get_field::<i8>(&table, vt::FILL_SIDE, 0) };
-    let price_f = unsafe { get_field::<f64>(&table, vt::FILL_PRICE, 0.0) };
-    let quantity_f = unsafe { get_field::<f64>(&table, vt::FILL_QUANTITY, 0.0) };
-    let fee_f = unsafe { get_field::<f64>(&table, vt::FILL_FEE, 0.0) };
+    let price_str = unsafe { get_str(&table, vt::FILL_PRICE) }.unwrap_or("0");
+    let qty_str = unsafe { get_str(&table, vt::FILL_QUANTITY) }.unwrap_or("0");
+    let fee_str = unsafe { get_str(&table, vt::FILL_FEE) }.unwrap_or("0");
     let fee_cur = unsafe { get_str(&table, vt::FILL_FEE_CURRENCY) }.unwrap_or("");
     let timestamp_ms = unsafe { get_field::<i64>(&table, vt::FILL_TIMESTAMP_MS, 0) };
 
@@ -361,9 +375,9 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
         venue: venue_from_i8(venue_i8)?,
         instrument: make_instrument(base, quote_cur, "spot")?,
         side: side_from_i8(side_i8)?,
-        price: f64_to_dec(price_f)?,
-        quantity: f64_to_dec(quantity_f)?,
-        fee: f64_to_dec(fee_f)?,
+        price: parse_decimal_str(price_str)?,
+        quantity: parse_decimal_str(qty_str)?,
+        fee: parse_decimal_str(fee_str)?,
         fee_currency: fee_cur.to_string(),
         filled_at: ts,
     })
@@ -375,15 +389,29 @@ pub fn encode_order_book(book: &OrderBook) -> Vec<u8> {
     let quote_cur = fbb.create_string(&book.instrument.quote);
     let inst_type = fbb.create_string(instrument_type_str(book.instrument.instrument_type));
 
-    let bid_prices: Vec<f64> = book.bids.iter().map(|l| dec_to_f64(l.price)).collect();
-    let bid_sizes: Vec<f64> = book.bids.iter().map(|l| dec_to_f64(l.size)).collect();
-    let ask_prices: Vec<f64> = book.asks.iter().map(|l| dec_to_f64(l.price)).collect();
-    let ask_sizes: Vec<f64> = book.asks.iter().map(|l| dec_to_f64(l.size)).collect();
+    let bid_price_strs: Vec<String> = book.bids.iter().map(|l| dec_to_string(l.price)).collect();
+    let bid_size_strs: Vec<String> = book.bids.iter().map(|l| dec_to_string(l.size)).collect();
+    let ask_price_strs: Vec<String> = book.asks.iter().map(|l| dec_to_string(l.price)).collect();
+    let ask_size_strs: Vec<String> = book.asks.iter().map(|l| dec_to_string(l.size)).collect();
 
-    let bid_prices_off = fbb.create_vector(&bid_prices);
-    let bid_sizes_off = fbb.create_vector(&bid_sizes);
-    let ask_prices_off = fbb.create_vector(&ask_prices);
-    let ask_sizes_off = fbb.create_vector(&ask_sizes);
+    // Inlined builds (the closure form trips the borrow checker on
+    // FlatBufferBuilder's invariant lifetime).
+    let bid_price_offsets: Vec<WIPOffset<&str>> = bid_price_strs
+        .iter()
+        .map(|s| fbb.create_string(s))
+        .collect();
+    let bid_prices_off = fbb.create_vector(&bid_price_offsets);
+    let bid_size_offsets: Vec<WIPOffset<&str>> =
+        bid_size_strs.iter().map(|s| fbb.create_string(s)).collect();
+    let bid_sizes_off = fbb.create_vector(&bid_size_offsets);
+    let ask_price_offsets: Vec<WIPOffset<&str>> = ask_price_strs
+        .iter()
+        .map(|s| fbb.create_string(s))
+        .collect();
+    let ask_prices_off = fbb.create_vector(&ask_price_offsets);
+    let ask_size_offsets: Vec<WIPOffset<&str>> =
+        ask_size_strs.iter().map(|s| fbb.create_string(s)).collect();
+    let ask_sizes_off = fbb.create_vector(&ask_size_offsets);
 
     let start = fbb.start_table();
     fbb.push_slot::<i8>(vt::OB_VENUE, venue_to_i8(book.venue), 0);
@@ -401,8 +429,6 @@ pub fn encode_order_book(book: &OrderBook) -> Vec<u8> {
 }
 
 pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
-    use flatbuffers::Vector;
-
     let table = checked_root_as_table(data, "order_book")?;
     let venue_i8 = unsafe { get_field::<i8>(&table, vt::OB_VENUE, 0) };
     let base = unsafe { get_str(&table, vt::OB_BASE) }.unwrap_or("");
@@ -410,15 +436,16 @@ pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
     let inst_type = unsafe { get_str(&table, vt::OB_INSTRUMENT_TYPE) }.unwrap_or("spot");
     let timestamp_ms = unsafe { get_field::<i64>(&table, vt::OB_TIMESTAMP_MS, 0) };
 
-    let read_vec = |vt_offset: u16| -> anyhow::Result<Vec<f64>> {
-        let opt: Option<Vector<'_, f64>> =
-            unsafe { table.get::<ForwardsUOffset<Vector<f64>>>(vt_offset, None) };
-        Ok(opt.map(|v| v.iter().collect()).unwrap_or_default())
+    let read_str_vec = |vt_offset: u16| -> Vec<String> {
+        let opt: Option<Vector<'_, ForwardsUOffset<&str>>> =
+            unsafe { table.get::<ForwardsUOffset<Vector<ForwardsUOffset<&str>>>>(vt_offset, None) };
+        opt.map(|v| v.iter().map(|s| s.to_string()).collect())
+            .unwrap_or_default()
     };
-    let bid_prices = read_vec(vt::OB_BID_PRICES)?;
-    let bid_sizes = read_vec(vt::OB_BID_SIZES)?;
-    let ask_prices = read_vec(vt::OB_ASK_PRICES)?;
-    let ask_sizes = read_vec(vt::OB_ASK_SIZES)?;
+    let bid_prices = read_str_vec(vt::OB_BID_PRICES);
+    let bid_sizes = read_str_vec(vt::OB_BID_SIZES);
+    let ask_prices = read_str_vec(vt::OB_ASK_PRICES);
+    let ask_sizes = read_str_vec(vt::OB_ASK_SIZES);
 
     if bid_prices.len() != bid_sizes.len() {
         bail!(
@@ -435,16 +462,16 @@ pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
         );
     }
 
-    let to_levels = |prices: &[f64],
-                     sizes: &[f64]|
+    let to_levels = |prices: &[String],
+                     sizes: &[String]|
      -> anyhow::Result<smallvec::SmallVec<[OrderBookLevel; 20]>> {
         prices
             .iter()
             .zip(sizes.iter())
-            .map(|(&p, &s)| {
+            .map(|(p, s)| {
                 Ok(OrderBookLevel {
-                    price: f64_to_dec(p)?,
-                    size: f64_to_dec(s)?,
+                    price: parse_decimal_str(p)?,
+                    size: parse_decimal_str(s)?,
                 })
             })
             .collect()

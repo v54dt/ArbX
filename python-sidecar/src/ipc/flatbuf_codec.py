@@ -28,21 +28,36 @@ _VENUE_INT = {
 }
 
 
+def _dec_str(value) -> str:
+    """Canonical string for a Decimal-like over IPC.
+
+    Avoids the f64 round-trip noise of the previous PrependFloat64Slot
+    encoding. Python's str(float) gives the shortest repr that round-trips,
+    which Rust's Decimal::from_str parses exactly. Caller may pass
+    int / float / Decimal / str.
+    """
+    return value if isinstance(value, str) else str(value)
+
+
 def encode_quote(quote: Quote) -> bytes:
     builder = Builder(256)
     base = builder.CreateString(quote.base)
     quote_cur = builder.CreateString(quote.quote_currency)
     inst_type = builder.CreateString(quote.instrument_type)
+    bid = builder.CreateString(_dec_str(quote.bid))
+    ask = builder.CreateString(_dec_str(quote.ask))
+    bid_size = builder.CreateString(_dec_str(quote.bid_size))
+    ask_size = builder.CreateString(_dec_str(quote.ask_size))
 
     builder.StartObject(9)
     builder.PrependInt8Slot(0, _VENUE_INT[quote.venue], 0)
     builder.PrependUOffsetTRelativeSlot(1, base, 0)
     builder.PrependUOffsetTRelativeSlot(2, quote_cur, 0)
     builder.PrependUOffsetTRelativeSlot(3, inst_type, 0)
-    builder.PrependFloat64Slot(4, float(quote.bid), 0.0)
-    builder.PrependFloat64Slot(5, float(quote.ask), 0.0)
-    builder.PrependFloat64Slot(6, float(quote.bid_size), 0.0)
-    builder.PrependFloat64Slot(7, float(quote.ask_size), 0.0)
+    builder.PrependUOffsetTRelativeSlot(4, bid, 0)
+    builder.PrependUOffsetTRelativeSlot(5, ask, 0)
+    builder.PrependUOffsetTRelativeSlot(6, bid_size, 0)
+    builder.PrependUOffsetTRelativeSlot(7, ask_size, 0)
     builder.PrependInt64Slot(8, int(quote.timestamp_ms), 0)
     end = builder.EndObject()
     builder.Finish(end)
