@@ -3,9 +3,7 @@ import logging
 import sys
 
 from src.adapters.base import BaseAdapter
-from src.adapters.fubon_adapter import FubonAdapter
 from src.adapters.mock_adapter import MockAdapter
-from src.adapters.shioaji_adapter import ShioajiAdapter
 from src.config import load_config
 from src.ipc.aeron_client import AeronClient
 from src.ipc.flatbuf_codec import encode_quote
@@ -18,6 +16,9 @@ logger = logging.getLogger(__name__)
 def build_adapter(venue_cfg: dict) -> BaseAdapter:
     venue = venue_cfg["venue"]
     if venue == "shioaji":
+        # Lazy import — avoids requiring shioaji install when other venues run.
+        from src.adapters.shioaji_adapter import ShioajiAdapter
+
         return ShioajiAdapter(
             api_key=venue_cfg["api_key"],
             secret_key=venue_cfg["secret_key"],
@@ -25,6 +26,9 @@ def build_adapter(venue_cfg: dict) -> BaseAdapter:
             ca_password=venue_cfg.get("ca_password", ""),
         )
     if venue == "fubon":
+        # Lazy import — fubon_neo is not on PyPI; loading on demand only.
+        from src.adapters.fubon_adapter import FubonAdapter
+
         return FubonAdapter(
             user_id=venue_cfg["user_id"],
             password=venue_cfg["password"],
