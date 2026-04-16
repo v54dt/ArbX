@@ -1,16 +1,17 @@
 //! Terminal dashboard for a running arbx-core engine.
 //!
-//! Polls the engine's admin HTTP `/status` endpoint (default :9091) every
-//! 500 ms and renders a four-pane layout: header, run-state counters,
-//! circuit-breaker, and a hint footer. `q` quits.
+//! Polls the engine's admin HTTP `/status` (default `:9091`) AND the
+//! Prometheus `/metrics` endpoint (default `:9090`) every poll_ms and
+//! renders a five-pane layout: header, run-state counters, circuit-breaker,
+//! WS connectivity (per-venue pub + priv), and last poll error.
 //!
 //! Usage:
-//!   arbx_tui                       (uses http://127.0.0.1:9091)
-//!   arbx_tui --admin-url http://host:9091
+//!   arbx_tui
+//!   arbx_tui --admin-url http://host:9091 --metrics-url http://host:9090/metrics
 //!
-//! Subsequent PRs add per-venue WS status, opportunity feed, position table,
-//! and `p` pause / resume keybinding.
+//! Keys: `q` / Esc quit, `p` pause/resume.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -38,6 +39,9 @@ struct Cli {
     /// Base URL of the engine's admin HTTP endpoint.
     #[arg(long, default_value = "http://127.0.0.1:9091")]
     admin_url: String,
+    /// Full URL of the engine's Prometheus metrics endpoint.
+    #[arg(long, default_value = "http://127.0.0.1:9090/metrics")]
+    metrics_url: String,
     /// Polling interval in milliseconds.
     #[arg(long, default_value_t = 500)]
     poll_ms: u64,
@@ -53,10 +57,73 @@ struct StatusBody {
 }
 
 #[derive(Debug, Clone, Default)]
+struct WsStatus {
+    /// venue → connected (1.0 = up, 0.0 = down). BTreeMap so display ordering
+    /// is stable across polls.
+    public: BTreeMap<String, bool>,
+    private: BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct AppState {
     last_status: Option<StatusBody>,
+    last_ws: WsStatus,
     last_poll_at: Option<Instant>,
     last_error: Option<String>,
+}
+
+/// Parse a Prometheus exposition body looking for a single gauge metric with a
+/// `venue="..."` label. Returns (venue → value) for matching lines. Comments
+/// (`#`) and lines that don't match the metric name are skipped.
+fn parse_venue_gauge(text: &str, metric: &str) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if !line.starts_with(metric) {
+            continue;
+        }
+        let Some(open) = line.find('{') else { continue };
+        let Some(close) = line.find('}') else {
+            continue;
+        };
+        let labels = &line[open + 1..close];
+        let value_str = line[close + 1..].trim();
+        let venue = labels.split(',').find_map(|kv| {
+            let mut parts = kv.splitn(2, '=');
+            let k = parts.next()?.trim();
+            let v = parts.next()?.trim().trim_matches('"');
+            (k == "venue").then(|| v.to_string())
+        });
+        if let (Some(v), Ok(n)) = (venue, value_str.parse::<f64>()) {
+            out.insert(v, n);
+        }
+    }
+    out
+}
+
+async fn poll_metrics(client: &reqwest::Client, url: &str) -> Result<WsStatus, String> {
+    let resp = client
+        .get(url)
+        .timeout(Duration::from_millis(750))
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("GET {url}: status {}", resp.status()));
+    }
+    let body = resp.text().await.map_err(|e| format!("read {url}: {e}"))?;
+    let public = parse_venue_gauge(&body, "arbx_ws_connected")
+        .into_iter()
+        .map(|(k, v)| (k, v >= 1.0))
+        .collect();
+    let private = parse_venue_gauge(&body, "arbx_ws_private_connected")
+        .into_iter()
+        .map(|(k, v)| (k, v >= 1.0))
+        .collect();
+    Ok(WsStatus { public, private })
 }
 
 async fn poll_status(client: &reqwest::Client, base: &str) -> Result<StatusBody, String> {
@@ -101,6 +168,7 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
             Constraint::Length(3),
             Constraint::Length(6),
             Constraint::Length(6),
+            Constraint::Length(8),
             Constraint::Min(1),
             Constraint::Length(2),
         ])
@@ -165,6 +233,32 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
         chunks[2],
     );
 
+    let ws_text = if state.last_ws.public.is_empty() && state.last_ws.private.is_empty() {
+        "(no WS gauges seen yet — check --metrics-url)".to_string()
+    } else {
+        let mut venues: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        venues.extend(state.last_ws.public.keys().map(String::as_str));
+        venues.extend(state.last_ws.private.keys().map(String::as_str));
+        venues
+            .into_iter()
+            .map(|v| {
+                let pub_ = state.last_ws.public.get(v).copied().unwrap_or(false);
+                let priv_ = state.last_ws.private.get(v).copied().unwrap_or(false);
+                let mark = |b: bool| if b { "✓" } else { "✗" };
+                format!("{:<10}  pub {}    priv {}", v, mark(pub_), mark(priv_))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    frame.render_widget(
+        Paragraph::new(ws_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("WS connectivity"),
+        ),
+        chunks[3],
+    );
+
     let err_text = state
         .last_error
         .as_deref()
@@ -178,12 +272,12 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
                     .borders(Borders::ALL)
                     .title("Last poll error"),
             ),
-        chunks[3],
+        chunks[4],
     );
 
     frame.render_widget(
         Paragraph::new("[q] quit   [p] pause/resume").style(Style::default().fg(Color::DarkGray)),
-        chunks[4],
+        chunks[5],
     );
 }
 
@@ -205,6 +299,8 @@ async fn main() -> anyhow::Result<()> {
     let result: anyhow::Result<()> = loop {
         let now = Instant::now();
         if last_poll.is_none_or(|t| now.duration_since(t) >= poll_interval) {
+            // /status is critical (header / counters); /metrics is best-effort.
+            // Poll both each tick; metrics failure doesn't blank the rest.
             match poll_status(&client, &cli.admin_url).await {
                 Ok(body) => {
                     state.last_status = Some(body);
@@ -212,6 +308,18 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(e) => {
                     state.last_error = Some(e);
+                }
+            }
+            match poll_metrics(&client, &cli.metrics_url).await {
+                Ok(ws) => state.last_ws = ws,
+                Err(e) => {
+                    // Append to whatever /status set; don't overwrite the more
+                    // critical error.
+                    let combined = match state.last_error.take() {
+                        Some(prev) => format!("{prev}\n{e}"),
+                        None => e,
+                    };
+                    state.last_error = Some(combined);
                 }
             }
             state.last_poll_at = Some(now);
