@@ -88,6 +88,11 @@ struct Cli {
     /// Replace WS feeds with an Aeron Subscriber on the given stream id (requires media driver).
     #[arg(long, value_name = "STREAM_ID")]
     aeron_subscribe: Option<i32>,
+
+    /// Load + validate config, log resolved venues / strategy / pairs, exit 0.
+    /// No network, no threads. Pre-deploy sanity check.
+    #[arg(long)]
+    dry_run_validate: bool,
 }
 
 fn parse_venue(name: &str) -> anyhow::Result<Venue> {
@@ -792,6 +797,88 @@ async fn run_backtest_mode(
     Ok(())
 }
 
+fn run_dry_validate(cfg: &config::AppConfig) -> anyhow::Result<()> {
+    println!("─── Config dry-run validation ───");
+    println!("Loaded {} venue(s):", cfg.venues.len());
+    for v in &cfg.venues {
+        let nin = v.instruments.as_ref().map(|x| x.len()).unwrap_or(0);
+        println!(
+            "  • {:?} market={} paper_trading={} testnet={} instruments={} fee_overrides={}",
+            v.name,
+            v.market,
+            v.paper_trading,
+            v.testnet,
+            nin,
+            v.fee_maker_override.is_some() || v.fee_taker_override.is_some(),
+        );
+        if let Some(ref insts) = v.instruments {
+            for i in insts {
+                println!(
+                    "      ↳ {} {}-{} settle={:?}",
+                    i.instrument_type, i.base, i.quote, i.settle_currency
+                );
+            }
+        }
+    }
+    println!();
+    println!("Strategy: {}", cfg.strategy.name);
+    println!(
+        "  instrument_a: {} {}-{}",
+        cfg.strategy.instrument_a.instrument_type,
+        cfg.strategy.instrument_a.base,
+        cfg.strategy.instrument_a.quote,
+    );
+    println!(
+        "  instrument_b: {} {}-{}",
+        cfg.strategy.instrument_b.instrument_type,
+        cfg.strategy.instrument_b.base,
+        cfg.strategy.instrument_b.quote,
+    );
+    println!(
+        "  min_net_profit_bps={}  max_quantity={}  max_quote_age_ms={}",
+        cfg.strategy.min_net_profit_bps, cfg.strategy.max_quantity, cfg.strategy.max_quote_age_ms,
+    );
+    if !cfg.strategy.triangle_cycles.is_empty() {
+        println!(
+            "  triangle_cycles: {} cycle(s)",
+            cfg.strategy.triangle_cycles.len()
+        );
+    }
+    println!();
+    println!("Risk:");
+    println!(
+        "  max_position_size={}  max_daily_loss={}  max_notional_exposure={}",
+        cfg.risk.max_position_size, cfg.risk.max_daily_loss, cfg.risk.max_notional_exposure,
+    );
+    println!(
+        "  circuit_breaker: drawdown={}  orders/min={}  consec_failures={}",
+        cfg.risk.circuit_breaker.max_drawdown,
+        cfg.risk.circuit_breaker.max_orders_per_minute,
+        cfg.risk.circuit_breaker.max_consecutive_failures,
+    );
+    if let Some(ref pv) = cfg.risk.max_position_per_venue {
+        println!("  per-venue caps: {} entries", pv.len());
+        for (k, v) in pv {
+            println!("    {} → {}", k, v);
+        }
+    }
+    println!();
+    println!("Engine:");
+    println!(
+        "  reconcile_interval_secs={}  order_ttl_secs={}",
+        cfg.engine.reconcile_interval_secs, cfg.engine.order_ttl_secs
+    );
+    if let Some(ref f) = cfg.engine.trade_log_file {
+        println!("  trade_log_file: {}", f);
+    }
+    if let Some(p) = cfg.engine.admin_port {
+        println!("  admin_port: {}", p);
+    }
+    println!();
+    println!("Validation passed. Exiting without starting any networking.");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -841,6 +928,10 @@ async fn main() -> anyhow::Result<()> {
                 .with(file_layer)
                 .init();
         }
+    }
+
+    if cli.dry_run_validate {
+        return run_dry_validate(&cfg);
     }
 
     metrics::setup_metrics_server(9090);
