@@ -75,6 +75,25 @@ async fn poll_status(client: &reqwest::Client, base: &str) -> Result<StatusBody,
         .map_err(|e| format!("decode {url}: {e}"))
 }
 
+async fn post_pause_resume(
+    client: &reqwest::Client,
+    base: &str,
+    target_paused: bool,
+) -> Result<(), String> {
+    let path = if target_paused { "/pause" } else { "/resume" };
+    let url = format!("{}{}", base.trim_end_matches('/'), path);
+    let resp = client
+        .post(&url)
+        .timeout(Duration::from_millis(750))
+        .send()
+        .await
+        .map_err(|e| format!("POST {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("POST {url}: status {}", resp.status()));
+    }
+    Ok(())
+}
+
 fn render(frame: &mut ratatui::Frame, state: &AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -163,7 +182,7 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
     );
 
     frame.render_widget(
-        Paragraph::new("[q] quit").style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("[q] quit   [p] pause/resume").style(Style::default().fg(Color::DarkGray)),
         chunks[4],
     );
 }
@@ -206,9 +225,23 @@ async fn main() -> anyhow::Result<()> {
         if event::poll(Duration::from_millis(50))?
             && let Event::Key(k) = event::read()?
             && k.kind == KeyEventKind::Press
-            && matches!(k.code, KeyCode::Char('q') | KeyCode::Esc)
         {
-            break Ok(());
+            match k.code {
+                KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
+                KeyCode::Char('p') => {
+                    let target = !state.last_status.as_ref().is_some_and(|s| s.paused);
+                    match post_pause_resume(&client, &cli.admin_url, target).await {
+                        Ok(()) => {
+                            // Force an immediate re-poll so the header flips
+                            // on the very next frame instead of waiting up to
+                            // poll_interval for /status to refresh.
+                            last_poll = None;
+                        }
+                        Err(e) => state.last_error = Some(e),
+                    }
+                }
+                _ => {}
+            }
         }
     };
 
