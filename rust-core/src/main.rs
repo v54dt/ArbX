@@ -1011,6 +1011,15 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let admin_port = cfg.engine.admin_port.unwrap_or(9091);
+    let admin_handle = engine::admin::EngineHandle::new(shutdown_tx.clone());
+    engine = engine.with_admin(admin_handle.clone());
+    tokio::spawn(async move {
+        if let Err(e) = engine::admin::serve(admin_handle, admin_port).await {
+            tracing::warn!(error = %e, "admin HTTP server exited");
+        }
+    });
+
     tokio::select! {
         result = engine.run() => {
             if let Err(e) = result {

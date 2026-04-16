@@ -23,6 +23,10 @@ pub struct EngineConfig {
     /// recovery. Engine.trade_logs() in-memory is unchanged.
     #[serde(default)]
     pub trade_log_file: Option<String>,
+    /// Port for the admin HTTP server (/healthz, /status, /pause, /resume,
+    /// /kill). Default 9091. Metrics stays on 9090.
+    #[serde(default)]
+    pub admin_port: Option<u16>,
 }
 
 fn default_reconcile_interval() -> u64 {
@@ -39,6 +43,7 @@ impl Default for EngineConfig {
             reconcile_interval_secs: default_reconcile_interval(),
             order_ttl_secs: default_order_ttl(),
             trade_log_file: None,
+            admin_port: None,
         }
     }
 }
