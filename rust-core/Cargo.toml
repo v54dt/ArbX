@@ -34,6 +34,7 @@ rusteron-client = "0.1"
 rustc-hash = "2"
 arrayvec = "0.7"
 core_affinity = "0.8"
+axum = "0.8"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

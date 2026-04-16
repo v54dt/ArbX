@@ -14,6 +14,7 @@ use crate::adapters::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
+use crate::engine::admin::EngineHandle;
 use crate::ipc::IpcPublisher;
 use crate::models::market::{BookMap, OrderBook, OrderBookLevel, Quote, book_key};
 use crate::models::order::Fill;
@@ -66,6 +67,9 @@ pub struct ArbitrageEngine {
     /// Optional append-only audit-trail writer. If Some, every TradeLog is
     /// flushed to disk on creation; logs survive engine crash.
     trade_log_writer: Option<TradeLogWriter>,
+    /// Optional admin handle — when present, the engine reads paused() and
+    /// writes runtime stats so the admin HTTP endpoint can serve /status.
+    admin: Option<EngineHandle>,
 }
 
 impl ArbitrageEngine {
@@ -105,6 +109,7 @@ impl ArbitrageEngine {
             order_ttl_secs,
             shutdown_rx,
             trade_log_writer: None,
+            admin: None,
         }
     }
 
@@ -112,6 +117,12 @@ impl ArbitrageEngine {
     /// flushed to disk for audit / crash recovery.
     pub fn with_trade_log_writer(mut self, writer: TradeLogWriter) -> Self {
         self.trade_log_writer = Some(writer);
+        self
+    }
+
+    /// Attach an admin handle — engine reads paused(), writes status fields.
+    pub fn with_admin(mut self, admin: EngineHandle) -> Self {
+        self.admin = Some(admin);
         self
     }
 
@@ -338,6 +349,15 @@ impl ArbitrageEngine {
     }
 
     async fn handle_quote(&mut self, quote: Quote) -> Result<()> {
+        // Admin pause: skip strategy evaluation entirely (still record quote
+        // counter so we can see traffic is flowing).
+        if let Some(admin) = self.admin.as_ref()
+            && admin.paused.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            crate::metrics::record_quote_received();
+            return Ok(());
+        }
+
         let key = book_key(quote.venue, &quote.instrument);
         let quote_age_ms = (chrono::Utc::now() - quote.timestamp).num_milliseconds();
         tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
@@ -585,6 +605,22 @@ impl ArbitrageEngine {
             }
 
             self.trade_logs.push(trade_log);
+
+            // Update admin status snapshot for /status endpoint.
+            if let Some(admin) = self.admin.as_ref() {
+                admin
+                    .trade_log_count
+                    .store(self.trade_logs.len(), std::sync::atomic::Ordering::Relaxed);
+                admin.position_count.store(
+                    self.risk_state.position_by_instrument.len(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                if self.circuit_breaker.is_tripped() {
+                    let mut cb = admin.cb_state.lock().await;
+                    cb.tripped = true;
+                    cb.reason = self.circuit_breaker.trip_reason().map(|s| s.to_string());
+                }
+            }
         }
 
         Ok(())
