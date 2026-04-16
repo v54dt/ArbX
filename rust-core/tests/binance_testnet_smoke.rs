@@ -63,7 +63,7 @@ async fn binance_testnet_submit_then_cancel_roundtrip() {
         order_type: OrderType::Limit,
         price: Some(dec!(10)),
         quantity: dec!(0.001),
-        time_in_force: Some(TimeInForce::GoodTillCancel),
+        time_in_force: Some(TimeInForce::Rod),
         created_at: chrono::Utc::now(),
     };
 
