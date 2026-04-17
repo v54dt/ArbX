@@ -20,6 +20,7 @@ impl OrderRequest {
     pub fn into_order(self) -> Order {
         Order {
             id: String::new(),
+            client_order_id: uuid::Uuid::new_v4().to_string(),
             venue: self.venue,
             instrument: self.instrument,
             side: self.side,
@@ -35,6 +36,11 @@ impl OrderRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub id: String,
+    /// Engine-generated UUID v4. Sent to venue as newClientOrderId / orderLinkId /
+    /// clOrdId so crash-recovery can correlate orders without relying on the
+    /// venue-assigned `id` (which the engine may never have received if the ack
+    /// was lost mid-submit).
+    pub client_order_id: String,
     pub venue: Venue,
     pub instrument: Instrument,
     pub side: Side,
