@@ -35,15 +35,15 @@ impl StrategyRiskBudget {
 
     /// Returns `true` if the strategy is within its budget.
     pub fn is_within_budget(&self) -> bool {
-        if let Some(max_loss) = self.config.max_daily_loss {
-            if self.daily_pnl < -max_loss {
-                return false;
-            }
+        if let Some(max_loss) = self.config.max_daily_loss
+            && self.daily_pnl < -max_loss
+        {
+            return false;
         }
-        if let Some(max_notional) = self.config.max_notional {
-            if self.notional_submitted > max_notional {
-                return false;
-            }
+        if let Some(max_notional) = self.config.max_notional
+            && self.notional_submitted > max_notional
+        {
+            return false;
         }
         true
     }
@@ -58,15 +58,15 @@ impl StrategyRiskBudget {
     }
 
     pub fn rejection_reason(&self) -> Option<&'static str> {
-        if let Some(max_loss) = self.config.max_daily_loss {
-            if self.daily_pnl < -max_loss {
-                return Some("per-strategy max_daily_loss exceeded");
-            }
+        if let Some(max_loss) = self.config.max_daily_loss
+            && self.daily_pnl < -max_loss
+        {
+            return Some("per-strategy max_daily_loss exceeded");
         }
-        if let Some(max_notional) = self.config.max_notional {
-            if self.notional_submitted > max_notional {
-                return Some("per-strategy max_notional exceeded");
-            }
+        if let Some(max_notional) = self.config.max_notional
+            && self.notional_submitted > max_notional
+        {
+            return Some("per-strategy max_notional exceeded");
         }
         None
     }
