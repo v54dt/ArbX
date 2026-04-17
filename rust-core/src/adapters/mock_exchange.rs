@@ -96,6 +96,7 @@ impl MarketDataFeed for MockExchange {
         Ok(MarketDataReceivers {
             quotes: quotes_rx,
             order_books: books_rx,
+            fills: None,
         })
     }
 

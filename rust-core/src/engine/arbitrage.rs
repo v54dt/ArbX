@@ -253,11 +253,26 @@ impl ArbitrageEngine {
         let (merged_tx, mut merged_rx) = mpsc::unbounded_channel::<Quote>();
         let (merged_book_tx, mut merged_book_rx) = mpsc::unbounded_channel::<OrderBook>();
 
+        // Pre-declare fill_tx here so feed-level fills can merge into it.
+        let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
+
         for feed in self.feeds.iter_mut() {
             let MarketDataReceivers {
                 mut quotes,
                 mut order_books,
+                fills: feed_fills,
             } = feed.connect().await?;
+            // Merge feed-level fills (e.g. Aeron IPC carrying TW broker fills).
+            if let Some(mut ff) = feed_fills {
+                let ftx = fill_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(f) = ff.recv().await {
+                        if ftx.send(f).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
             let tx = merged_tx.clone();
             let btx = merged_book_tx.clone();
             let publishers = self.quote_publishers.clone();
@@ -302,7 +317,6 @@ impl ArbitrageEngine {
         // `with_executor_for` are connected next; their fills land in the
         // same channel.
         let exec_receivers = self.executor.connect().await?;
-        let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
         {
             let tx = fill_tx.clone();
             let mut fills = exec_receivers.fills;

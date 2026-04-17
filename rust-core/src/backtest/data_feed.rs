@@ -97,6 +97,7 @@ impl MarketDataFeed for HistoricalDataFeed {
         Ok(MarketDataReceivers {
             quotes: quote_rx,
             order_books: book_rx,
+            fills: None,
         })
     }
 

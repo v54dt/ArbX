@@ -306,6 +306,7 @@ impl MarketDataFeed for BinanceMarketData {
         Ok(MarketDataReceivers {
             quotes: quote_rx,
             order_books: book_rx,
+            fills: None,
         })
     }
 
