@@ -9,7 +9,11 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{info, warn};
 
+use std::collections::HashMap;
+
+use crate::adapters::bybit::rest_client::BybitRestClient;
 use crate::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
+use crate::adapters::rest_client::{ExchangeRestClient, HttpMethod, RestRequest};
 use crate::models::enums::{OrderStatus, Side, Venue};
 use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::{Fill, OrderUpdate};
@@ -222,6 +226,33 @@ async fn run_bybit_stream(
     first_connect: bool,
 ) -> anyhow::Result<()> {
     use futures_util::SinkExt;
+
+    // Startup reconciliation: cancel-all across every Bybit category (D-1A port).
+    let rest = BybitRestClient::new("https://api.bybit.com", api_key, api_secret)?;
+    for category in ["spot", "linear", "inverse"] {
+        let mut params = HashMap::new();
+        params.insert("category".to_string(), category.to_string());
+        let req = RestRequest {
+            method: HttpMethod::Post,
+            path: "/v5/order/cancel-all".to_string(),
+            params,
+        };
+        match rest.send(req).await {
+            Ok(resp) if (200..300).contains(&resp.status) => {
+                info!(category, "Bybit startup: cancel-all succeeded");
+            }
+            Ok(resp) => {
+                warn!(
+                    category,
+                    status = resp.status,
+                    "Bybit startup: cancel-all non-2xx (may be empty)"
+                );
+            }
+            Err(e) => {
+                warn!(category, error = %e, "Bybit startup: cancel-all failed");
+            }
+        }
+    }
 
     let (ws_stream, _) = connect_async(WS_URL).await?;
     info!(url = WS_URL, "connected to Bybit private WebSocket");
