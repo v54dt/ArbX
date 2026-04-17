@@ -70,10 +70,10 @@ fn check_bearer(
     let Ok(value) = auth.to_str() else {
         return Err((StatusCode::BAD_REQUEST, "non-ASCII Authorization header"));
     };
-    if let Some(token) = value.strip_prefix("Bearer ") {
-        if token == expected {
-            return Ok(());
-        }
+    if let Some(token) = value.strip_prefix("Bearer ")
+        && token == expected
+    {
+        return Ok(());
     }
     Err((StatusCode::FORBIDDEN, "invalid bearer token"))
 }
