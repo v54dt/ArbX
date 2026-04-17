@@ -1,5 +1,6 @@
 pub mod base;
 pub mod cross_exchange;
+pub mod cross_venue_funding;
 pub mod ewma_spread;
 pub mod funding_rate;
 pub mod multi_pair_cross_exchange;
@@ -27,6 +28,9 @@ pub enum OpportunityKind {
     StatArb {
         z_score: f64,
         hedge_ratio: Decimal,
+    },
+    FundingArb {
+        annualized_diff_bps: Decimal,
     },
 }
 
