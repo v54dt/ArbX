@@ -26,9 +26,9 @@ pub trait CertExpiryProvider: Send + Sync {
     fn next_expiry(&self) -> Option<DateTime<Utc>>;
 }
 
-/// Default no-op provider — emits nothing. Used as a placeholder so
-/// `run_cert_watchdog` can run with an empty provider set without special
-/// casing, and so tests have a trivially-constructable provider.
+/// Default no-op provider — emits nothing. Used in tests as a trivially-
+/// constructable provider and as a placeholder for future real providers.
+#[allow(dead_code)]
 pub struct NoopProvider {
     label: String,
 }
