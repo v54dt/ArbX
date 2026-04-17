@@ -10,7 +10,11 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::connect_async;
 use tracing::{info, warn};
 
+use std::collections::HashMap;
+
+use crate::adapters::okx::rest_client::OkxRestClient;
 use crate::adapters::private_stream::{PrivateStream, PrivateStreamReceivers};
+use crate::adapters::rest_client::{ExchangeRestClient, HttpMethod, RestRequest};
 use crate::models::enums::{OrderStatus, Side, Venue};
 use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
 use crate::models::order::{Fill, OrderUpdate};
@@ -239,6 +243,56 @@ async fn run_okx_stream(
     first_connect: bool,
 ) -> anyhow::Result<()> {
     use futures_util::SinkExt;
+
+    // Startup reconciliation: query pending orders and cancel each (D-1A port).
+    let rest = OkxRestClient::new("https://www.okx.com", api_key, api_secret, passphrase)?;
+    let pending_req = RestRequest {
+        method: HttpMethod::Get,
+        path: "/api/v5/trade/orders-pending".to_string(),
+        params: HashMap::new(),
+    };
+    match rest.send(pending_req).await {
+        Ok(resp) if resp.status == 200 => {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.body)
+                && let Some(orders) = json["data"].as_array()
+            {
+                info!(count = orders.len(), "OKX startup: pending orders found");
+                for order in orders {
+                    let inst_id = order["instId"].as_str().unwrap_or("");
+                    let ord_id = order["ordId"].as_str().unwrap_or("");
+                    if inst_id.is_empty() || ord_id.is_empty() {
+                        continue;
+                    }
+                    let mut params = HashMap::new();
+                    params.insert("instId".to_string(), inst_id.to_string());
+                    params.insert("ordId".to_string(), ord_id.to_string());
+                    let cancel_req = RestRequest {
+                        method: HttpMethod::Post,
+                        path: "/api/v5/trade/cancel-order".to_string(),
+                        params,
+                    };
+                    match rest.send(cancel_req).await {
+                        Ok(r) if (200..300).contains(&r.status) => {
+                            info!(ord_id, inst_id, "OKX startup: cancelled order");
+                        }
+                        Ok(r) => {
+                            warn!(ord_id, inst_id, status = r.status, "OKX cancel rejected");
+                        }
+                        Err(e) => {
+                            warn!(ord_id, inst_id, error = %e, "OKX cancel failed");
+                        }
+                    }
+                }
+            }
+        }
+        Ok(resp) => {
+            warn!(
+                status = resp.status,
+                "OKX startup: orders-pending query non-200"
+            );
+        }
+        Err(e) => warn!(error = %e, "OKX startup: orders-pending query failed"),
+    }
 
     let (ws_stream, _) = connect_async(WS_URL).await?;
     info!(url = WS_URL, "connected to OKX private WebSocket");
