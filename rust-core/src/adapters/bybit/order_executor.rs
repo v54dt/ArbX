@@ -138,6 +138,9 @@ impl OrderExecutor for BybitOrderExecutor {
         {
             params.insert("price".to_string(), price.to_string());
         }
+        if !order.client_order_id.is_empty() {
+            params.insert("orderLinkId".to_string(), order.client_order_id.clone());
+        }
 
         let request = RestRequest {
             method: HttpMethod::Post,

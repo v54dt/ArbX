@@ -166,6 +166,12 @@ impl OrderExecutor for BinanceOrderExecutor {
         );
         params.insert("quantity".to_string(), order.quantity.to_string());
         params.insert("newOrderRespType".to_string(), "RESULT".to_string());
+        if !order.client_order_id.is_empty() {
+            params.insert(
+                "newClientOrderId".to_string(),
+                order.client_order_id.clone(),
+            );
+        }
 
         if order.order_type == OrderType::Limit {
             params.insert(
