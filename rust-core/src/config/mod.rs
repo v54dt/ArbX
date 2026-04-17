@@ -36,8 +36,8 @@ pub struct EngineConfig {
     /// Dead-man's-switch stall threshold in milliseconds. If the engine's
     /// main loop doesn't stamp its heartbeat within this window, a
     /// watchdog fires `shutdown_tx` so supervisors can restart a wedged
-    /// process. `None` = watchdog disabled. Typical value: 5000 (5s).
-    #[serde(default)]
+    /// process. Default 5000 (5s). Set to 0 to disable.
+    #[serde(default = "default_heartbeat_stall_ms")]
     pub heartbeat_stall_ms: Option<u64>,
 }
 
@@ -49,6 +49,10 @@ fn default_order_ttl() -> u64 {
     30
 }
 
+fn default_heartbeat_stall_ms() -> Option<u64> {
+    Some(5000)
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         Self {
@@ -56,7 +60,7 @@ impl Default for EngineConfig {
             order_ttl_secs: default_order_ttl(),
             trade_log_file: None,
             admin_port: None,
-            heartbeat_stall_ms: None,
+            heartbeat_stall_ms: default_heartbeat_stall_ms(),
         }
     }
 }
