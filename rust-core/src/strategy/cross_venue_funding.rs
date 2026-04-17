@@ -42,6 +42,10 @@ pub struct CrossVenueFundingStrategy {
     pub tick_size_b: Decimal,
     pub lot_size_a: Decimal,
     pub lot_size_b: Decimal,
+    /// Number of funding intervals the position is expected to be held.
+    /// Funding arb is a carry trade — entry fees amortise over many intervals.
+    /// Default 21 (~7 days at 8h intervals).
+    pub holding_intervals: u32,
 }
 
 impl CrossVenueFundingStrategy {
@@ -122,8 +126,10 @@ impl ArbitrageStrategy for CrossVenueFundingStrategy {
 
         let notional = ((price_a + price_b) / Decimal::from(2)) * quantity;
         let abs_diff = if diff < Decimal::ZERO { -diff } else { diff };
-        let expected_funding = abs_diff * notional * Decimal::from(self.funding_interval_hours)
-            / Decimal::from(HOURS_PER_YEAR);
+        let intervals = Decimal::from(self.holding_intervals.max(1));
+        let expected_funding =
+            abs_diff * notional * intervals * Decimal::from(self.funding_interval_hours)
+                / Decimal::from(HOURS_PER_YEAR);
 
         let fee_a_cost = price_a * quantity * self.fee_a.taker();
         let fee_b_cost = price_b * quantity * self.fee_b.taker();
@@ -256,6 +262,7 @@ mod tests {
             tick_size_b: dec!(0.01),
             lot_size_a: dec!(0.001),
             lot_size_b: dec!(0.001),
+            holding_intervals: 21,
         }
     }
 
