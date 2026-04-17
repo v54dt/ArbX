@@ -88,10 +88,6 @@ pub fn record_ws_private_message(venue: &str) {
     counter!("arbx_ws_private_messages_received_total", "venue" => venue.to_string()).increment(1);
 }
 
-// Used by engine::cert_watchdog (stub for C3) — main.rs hasn't spawned the
-// watchdog yet, so the bin target sees this as dead. Remove the allow once
-// the spawn lands.
-#[allow(dead_code)]
 pub fn set_cert_seconds_until_expiry(name: &str, secs: f64) {
     gauge!("arbx_cert_seconds_until_expiry", "name" => name.to_string()).set(secs);
 }
