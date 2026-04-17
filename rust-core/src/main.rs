@@ -1160,7 +1160,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Dead-man's-switch: if the engine loop stops stamping heartbeat within
     // `engine.heartbeat_stall_ms`, fire shutdown_tx so supervisors can restart.
-    if let Some(stall_ms) = cfg.engine.heartbeat_stall_ms {
+    if let Some(stall_ms) = cfg.engine.heartbeat_stall_ms.filter(|&ms| ms > 0) {
         let hb = std::sync::Arc::new(engine::watchdog::Heartbeat::new());
         engine = engine.with_heartbeat(hb.clone());
         let wd_tx = shutdown_tx.clone();
