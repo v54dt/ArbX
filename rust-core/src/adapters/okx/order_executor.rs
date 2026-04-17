@@ -114,6 +114,9 @@ impl OrderExecutor for OkxOrderExecutor {
         {
             params.insert("px".to_string(), price.to_string());
         }
+        if !order.client_order_id.is_empty() {
+            params.insert("clOrdId".to_string(), order.client_order_id.clone());
+        }
 
         let request = RestRequest {
             method: HttpMethod::Post,
