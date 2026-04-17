@@ -272,14 +272,15 @@ mod tests {
         let mut books = BookMap::default();
         let key_a = book_key(Venue::Binance, &perp_instrument());
         let key_b = book_key(Venue::Bybit, &perp_instrument());
-        books.insert(key_a, make_book(Venue::Binance, dec!(50200), dec!(50300)));
+        // ~4% premium on venue A — wide enough that 21-interval carry covers fees.
+        books.insert(key_a, make_book(Venue::Binance, dec!(52000), dec!(52100)));
         books.insert(key_b, make_book(Venue::Bybit, dec!(50000), dec!(50100)));
 
         let opp = strat.evaluate(&books, &HashMap::new()).await;
         assert!(opp.is_some(), "should detect when A is premium");
         let opp = opp.unwrap();
-        assert_eq!(opp.legs[0].side, Side::Sell); // short expensive A
-        assert_eq!(opp.legs[1].side, Side::Buy); // long cheap B
+        assert_eq!(opp.legs[0].side, Side::Sell);
+        assert_eq!(opp.legs[1].side, Side::Buy);
     }
 
     #[tokio::test]
@@ -289,13 +290,13 @@ mod tests {
         let key_a = book_key(Venue::Binance, &perp_instrument());
         let key_b = book_key(Venue::Bybit, &perp_instrument());
         books.insert(key_a, make_book(Venue::Binance, dec!(50000), dec!(50100)));
-        books.insert(key_b, make_book(Venue::Bybit, dec!(50200), dec!(50300)));
+        books.insert(key_b, make_book(Venue::Bybit, dec!(52000), dec!(52100)));
 
         let opp = strat.evaluate(&books, &HashMap::new()).await;
         assert!(opp.is_some(), "should detect when B is premium");
         let opp = opp.unwrap();
-        assert_eq!(opp.legs[0].side, Side::Buy); // long cheap A
-        assert_eq!(opp.legs[1].side, Side::Sell); // short expensive B
+        assert_eq!(opp.legs[0].side, Side::Buy);
+        assert_eq!(opp.legs[1].side, Side::Sell);
     }
 
     #[tokio::test]
