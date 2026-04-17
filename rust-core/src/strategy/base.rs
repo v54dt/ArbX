@@ -18,5 +18,13 @@ pub trait ArbitrageStrategy: Send + Sync {
 
     fn compute_hedge_orders(&self, opportunity: &Opportunity) -> Vec<OrderRequest>;
 
+    /// Re-check the opportunity against the CURRENT book snapshot right before
+    /// submit. Returns `None` to skip (book moved, no longer profitable) or
+    /// `Some(updated)` with refreshed economics. Default impl is a passthrough
+    /// — strategies override when they're spread-sensitive.
+    fn re_verify(&self, opp: &Opportunity, _books: &BookMap) -> Option<Opportunity> {
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str;
 }
