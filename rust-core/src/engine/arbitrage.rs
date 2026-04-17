@@ -573,16 +573,16 @@ impl ArbitrageEngine {
     ) -> Result<()> {
         // Per-strategy budget gate — checked BEFORE the global risk chain so
         // one strategy burning through its own budget doesn't halt others.
-        if let Some(budget) = self.strategy_budgets.get(strategy_name) {
-            if !budget.is_within_budget() {
-                let reason = budget.rejection_reason().unwrap_or("budget exceeded");
-                warn!(
-                    strategy = strategy_name,
-                    reason, "opportunity skipped: per-strategy budget"
-                );
-                crate::metrics::record_order_rejected(strategy_name);
-                return Ok(());
-            }
+        if let Some(budget) = self.strategy_budgets.get(strategy_name)
+            && !budget.is_within_budget()
+        {
+            let reason = budget.rejection_reason().unwrap_or("budget exceeded");
+            warn!(
+                strategy = strategy_name,
+                reason, "opportunity skipped: per-strategy budget"
+            );
+            crate::metrics::record_order_rejected(strategy_name);
+            return Ok(());
         }
 
         tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
