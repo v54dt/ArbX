@@ -88,6 +88,14 @@ pub fn record_ws_private_message(venue: &str) {
     counter!("arbx_ws_private_messages_received_total", "venue" => venue.to_string()).increment(1);
 }
 
+pub fn record_tca_fill_delay_ms(venue: &str, ms: f64) {
+    histogram!(
+        "arbx_tca_fill_delay_ms",
+        "venue" => venue.to_string()
+    )
+    .record(ms);
+}
+
 pub fn record_opportunity_reverified(strategy: &str, accepted: bool) {
     let result = if accepted { "accept" } else { "reject" };
     counter!(

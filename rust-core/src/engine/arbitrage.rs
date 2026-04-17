@@ -35,6 +35,7 @@ struct IntendedFill {
     side: crate::models::enums::Side,
     intended_price: Decimal,
     venue: Venue,
+    submitted_at: chrono::DateTime<Utc>,
 }
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
@@ -408,6 +409,13 @@ impl ArbitrageEngine {
                             self.strategy.name(),
                             signed_bps.to_string().parse::<f64>().unwrap_or(0.0),
                         );
+                        // D-13 TCA: fill delay = time between submit and fill.
+                        let delay_ms =
+                            (fill.filled_at - intended.submitted_at).num_milliseconds();
+                        crate::metrics::record_tca_fill_delay_ms(
+                            &venue_label,
+                            delay_ms.max(0) as f64,
+                        );
                     }
                     let pos = self.risk_state.position_by_instrument.get(fill_key.as_str()).copied().unwrap_or(Decimal::ZERO);
                     crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
@@ -748,6 +756,7 @@ impl ArbitrageEngine {
                                     side: order.side,
                                     intended_price,
                                     venue: order.venue,
+                                    submitted_at: Utc::now(),
                                 },
                             );
                         }
