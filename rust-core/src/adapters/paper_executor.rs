@@ -173,6 +173,7 @@ mod tests {
     fn test_order() -> Order {
         Order {
             id: String::new(),
+            client_order_id: "test-coid".to_string(),
             venue: Venue::Binance,
             instrument: test_instrument(),
             side: Side::Buy,

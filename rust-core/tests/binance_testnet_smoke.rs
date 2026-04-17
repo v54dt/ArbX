@@ -57,6 +57,7 @@ async fn binance_testnet_submit_then_cancel_roundtrip() {
 
     let order = Order {
         id: "smoketest-submit-1".into(),
+        client_order_id: uuid::Uuid::new_v4().to_string(),
         venue: Venue::Binance,
         instrument: spot_btc_usdt(),
         side: Side::Buy,
