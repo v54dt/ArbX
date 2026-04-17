@@ -41,7 +41,8 @@ const FILL_DEDUP_CAPACITY: usize = 1024;
 
 fn fill_fingerprint(fill: &Fill) -> String {
     format!(
-        "{}:{}:{}:{}",
+        "{:?}:{}:{}:{}:{}",
+        fill.venue,
         fill.order_id,
         fill.filled_at.timestamp_millis(),
         fill.price,
