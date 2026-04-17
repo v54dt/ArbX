@@ -7,8 +7,9 @@ use super::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::ipc::IpcSubscriber;
 use crate::ipc::aeron::AeronSubscriber;
 use crate::ipc::flatbuf_codec::{
-    MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, decode_order_book, decode_quote,
+    MSG_TAG_FILL, MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, decode_fill, decode_order_book, decode_quote,
 };
+use crate::models::order::Fill;
 
 /// MarketDataFeed backed by an Aeron Subscriber. Payloads carry a 1-byte type
 /// tag (see flatbuf_codec::MSG_TAG_*) because FlatBuffers can't reject the
@@ -35,6 +36,7 @@ impl MarketDataFeed for AeronMarketDataFeed {
 
         let (quote_tx, quote_rx) = mpsc::unbounded_channel();
         let (book_tx, book_rx) = mpsc::unbounded_channel();
+        let (fill_tx, fill_rx) = mpsc::unbounded_channel::<Fill>();
 
         let task = tokio::spawn(async move {
             loop {
@@ -61,6 +63,14 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                 }
                                 Err(e) => tracing::debug!(error = %e, "decode_order_book failed"),
                             },
+                            MSG_TAG_FILL => match decode_fill(payload) {
+                                Ok(fill) => {
+                                    if fill_tx.send(fill).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => tracing::debug!(error = %e, "decode_fill failed"),
+                            },
                             other => tracing::debug!(tag = other, "unknown msg tag; skipping"),
                         }
                     }
@@ -79,6 +89,7 @@ impl MarketDataFeed for AeronMarketDataFeed {
         Ok(MarketDataReceivers {
             quotes: quote_rx,
             order_books: book_rx,
+            fills: Some(fill_rx),
         })
     }
 
