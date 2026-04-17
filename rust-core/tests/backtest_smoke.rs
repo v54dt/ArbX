@@ -135,16 +135,22 @@ async fn backtest_fixture_produces_trade_logs() {
         engine
     });
 
-    // Let the engine consume all fixture quotes + a few extra ms for the
-    // strategy / executor to execute.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Poll until at least one trade log appears or 2 s deadline passes.
+    // Avoids a fixed sleep(500ms) that flakes under heavy CI load.
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(2000);
+    loop {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+    }
     let _ = shutdown_tx.send(true);
     let engine = handle.await.unwrap();
 
     let logs = engine.trade_logs();
     assert!(
         !logs.is_empty(),
-        "backtest smoke failed: no trade_logs produced from fixture"
+        "backtest smoke failed: no trade_logs produced from fixture (waited 2s)"
     );
     // Sanity: every logged trade should have ≥2 legs (cross-exchange arbitrage).
     for log in logs {
