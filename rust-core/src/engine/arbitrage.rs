@@ -186,6 +186,10 @@ impl ArbitrageEngine {
         self
     }
 
+    pub fn has_executor_for(&self, venue: Venue) -> bool {
+        self.executors_by_venue.contains_key(&venue)
+    }
+
     fn executor_for(&self, venue: Venue) -> &dyn OrderExecutor {
         if let Some(e) = self.executors_by_venue.get(&venue) {
             return e.as_ref();

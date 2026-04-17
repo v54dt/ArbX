@@ -1127,6 +1127,32 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // D-8: strict routing validation — every strategy-referenced venue must
+    // have a registered executor (per-venue map or legacy). Prevents silent
+    // fallback to the wrong venue's executor, which corrupts position accounting.
+    if !cli.dry_run {
+        let legacy_venue = venue_b;
+        for v in [venue_a, venue_b] {
+            if v == legacy_venue {
+                continue;
+            }
+            let has_paper = cfg
+                .venues
+                .iter()
+                .any(|vc| parse_venue(&vc.name).ok() == Some(v) && vc.paper_trading);
+            if has_paper {
+                continue;
+            }
+            if !engine.has_executor_for(v) {
+                anyhow::bail!(
+                    "venue {:?} referenced by strategy but has no registered executor \
+                     — check cfg.venues or set paper_trading: true",
+                    v
+                );
+            }
+        }
+    }
+
     // C5 PR2: build each cfg.extra_strategies entry and register on the engine.
     // All extras share the primary strategy's venue + instrument + fee context;
     // cross-strategy heterogeneity (different venues / instruments per strategy)
