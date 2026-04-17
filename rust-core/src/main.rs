@@ -1224,6 +1224,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Cert/credential expiry watchdog. Spawns with an empty provider list for now;
+    // real providers (PFX expiry reader, Binance ban detector) plug in via future
+    // PRs. The gauge `arbx_cert_seconds_until_expiry` is emitted per provider.
+    {
+        let providers: Vec<std::sync::Arc<dyn engine::cert_watchdog::CertExpiryProvider>> =
+            Vec::new();
+        let wd_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            engine::cert_watchdog::run_cert_watchdog(providers, 300, wd_rx).await;
+        });
+    }
+
     // Spawn engine on its own task so Ctrl+C drives shutdown_tx and the engine's
     // internal select! observes shutdown_rx; wrapping the engine in an outer
     // select! cancelled run() before pending_cancels could flush.

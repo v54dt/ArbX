@@ -6,10 +6,7 @@
 //! alerting can fire well before something actually breaks.
 //!
 //! Stub implementation. Real providers (TW PFX reader, Binance ban detector)
-//! plug in later via `with_provider` without engine changes. The module-level
-//! `allow(dead_code)` will be removed once main.rs spawns the watchdog.
-
-#![allow(dead_code)]
+//! plug in later via `with_provider` without engine changes.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,14 +26,15 @@ pub trait CertExpiryProvider: Send + Sync {
     fn next_expiry(&self) -> Option<DateTime<Utc>>;
 }
 
-/// Default no-op provider — emits nothing. Used as a placeholder so
-/// `run_cert_watchdog` can run with an empty provider set without special
-/// casing, and so tests have a trivially-constructable provider.
+/// Default no-op provider — emits nothing. Used in tests as a trivially-
+/// constructable provider and as a placeholder for future real providers.
+#[allow(dead_code)]
 pub struct NoopProvider {
     label: String,
 }
 
 impl NoopProvider {
+    #[allow(dead_code)]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
