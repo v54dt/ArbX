@@ -26,6 +26,7 @@ use crate::models::trade_log::{TradeLeg, TradeLog, TradeLogWriter, TradeOutcome}
 use crate::risk::circuit_breaker::CircuitBreaker;
 use crate::risk::manager::RiskManager;
 use crate::risk::state::RiskState;
+use crate::risk::strategy_budget::StrategyRiskBudget;
 use crate::strategy::Opportunity;
 use crate::strategy::base::ArbitrageStrategy;
 use rust_decimal::Decimal;
@@ -91,6 +92,9 @@ pub struct ArbitrageEngine {
     admin: Option<EngineHandle>,
     /// Optional dead-man's-switch heartbeat, stamped on every main-loop iteration.
     heartbeat: Option<Arc<Heartbeat>>,
+    /// Per-strategy risk budgets (keyed by strategy name). Checked inside
+    /// `process_opportunity` BEFORE the global `risk_state` / `risk_manager`.
+    strategy_budgets: HashMap<String, StrategyRiskBudget>,
 }
 
 impl ArbitrageEngine {
@@ -135,6 +139,7 @@ impl ArbitrageEngine {
             trade_log_writer: None,
             admin: None,
             heartbeat: None,
+            strategy_budgets: HashMap::new(),
         }
     }
 
@@ -183,6 +188,12 @@ impl ArbitrageEngine {
     /// the fill / target venue matches.
     pub fn with_position_manager_for(mut self, venue: Venue, pm: Box<dyn PositionManager>) -> Self {
         self.position_managers_by_venue.insert(venue, pm);
+        self
+    }
+
+    pub fn with_strategy_budget(mut self, strategy_name: &str, budget: StrategyRiskBudget) -> Self {
+        self.strategy_budgets
+            .insert(strategy_name.to_string(), budget);
         self
     }
 
@@ -560,6 +571,20 @@ impl ArbitrageEngine {
         opp: Opportunity,
         orders: Vec<OrderRequest>,
     ) -> Result<()> {
+        // Per-strategy budget gate — checked BEFORE the global risk chain so
+        // one strategy burning through its own budget doesn't halt others.
+        if let Some(budget) = self.strategy_budgets.get(strategy_name)
+            && !budget.is_within_budget()
+        {
+            let reason = budget.rejection_reason().unwrap_or("budget exceeded");
+            warn!(
+                strategy = strategy_name,
+                reason, "opportunity skipped: per-strategy budget"
+            );
+            crate::metrics::record_order_rejected(strategy_name);
+            return Ok(());
+        }
+
         tracing::info!(eval_latency_us = eval_us, "strategy evaluation");
         crate::metrics::record_opportunity_detected(strategy_name);
         let direction = opp
@@ -786,6 +811,12 @@ impl ArbitrageEngine {
                 && let Err(e) = writer.append(&trade_log)
             {
                 warn!(error = %e, "trade log writer append failed");
+            }
+
+            // Record spend against per-strategy budget (if configured).
+            if let Some(budget) = self.strategy_budgets.get_mut(strategy_name) {
+                budget.record_order(trade_log.notional);
+                budget.record_pnl(trade_log.expected_net_profit);
             }
 
             self.trade_logs.push(trade_log);

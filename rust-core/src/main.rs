@@ -1173,6 +1173,26 @@ async fn main() -> anyhow::Result<()> {
             "registering extra strategy"
         );
         engine = engine.with_extra_strategy(extra);
+        if let Some(ref budget_cfg) = extra_cfg.risk_budget {
+            let budget = risk::strategy_budget::StrategyRiskBudget::new(budget_cfg.clone());
+            tracing::info!(
+                strategy = extra_cfg.name.as_str(),
+                ?budget_cfg,
+                "registering per-strategy risk budget"
+            );
+            engine = engine.with_strategy_budget(&extra_cfg.name, budget);
+        }
+    }
+
+    // Primary strategy budget (if configured).
+    if let Some(ref budget_cfg) = cfg.strategy.risk_budget {
+        let budget = risk::strategy_budget::StrategyRiskBudget::new(budget_cfg.clone());
+        tracing::info!(
+            strategy = cfg.strategy.name.as_str(),
+            ?budget_cfg,
+            "registering per-strategy risk budget (primary)"
+        );
+        engine = engine.with_strategy_budget(&cfg.strategy.name, budget);
     }
 
     let admin_port = cfg.engine.admin_port.unwrap_or(9091);

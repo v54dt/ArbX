@@ -153,6 +153,11 @@ pub struct StrategyConfig {
     /// TriangularArbStrategy: list of A→B→C→A cycles
     #[serde(default)]
     pub triangle_cycles: Vec<TriangleCycleConfig>,
+    /// Per-strategy risk budget. When set, the engine checks this budget
+    /// BEFORE the global risk chain; exceeding it skips the opportunity
+    /// without tripping the global circuit breaker.
+    #[serde(default)]
+    pub risk_budget: Option<crate::risk::strategy_budget::StrategyRiskBudgetConfig>,
 }
 
 #[derive(Debug, Deserialize)]
