@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use serde::Serialize;
@@ -31,6 +31,9 @@ pub struct EngineHandle {
     pub position_count: Arc<AtomicUsize>,
     pub cb_state: Arc<Mutex<CircuitBreakerState>>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
+    /// Bearer token required on write endpoints (pause/resume/kill).
+    /// When `None`, write endpoints are open (dev/local mode).
+    pub admin_token: Option<String>,
 }
 
 impl EngineHandle {
@@ -44,8 +47,35 @@ impl EngineHandle {
                 reason: None,
             })),
             shutdown_tx,
+            admin_token: None,
         }
     }
+
+    pub fn with_token(mut self, token: Option<String>) -> Self {
+        self.admin_token = token;
+        self
+    }
+}
+
+fn check_bearer(
+    handle: &EngineHandle,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, &'static str)> {
+    let Some(ref expected) = handle.admin_token else {
+        return Ok(());
+    };
+    let Some(auth) = headers.get("authorization") else {
+        return Err((StatusCode::UNAUTHORIZED, "missing Authorization header"));
+    };
+    let Ok(value) = auth.to_str() else {
+        return Err((StatusCode::BAD_REQUEST, "non-ASCII Authorization header"));
+    };
+    if let Some(token) = value.strip_prefix("Bearer ") {
+        if token == expected {
+            return Ok(());
+        }
+    }
+    Err((StatusCode::FORBIDDEN, "invalid bearer token"))
 }
 
 #[derive(Clone, Default, Debug)]
@@ -78,19 +108,28 @@ async fn status(State(handle): State<EngineHandle>) -> impl IntoResponse {
     })
 }
 
-async fn pause(State(handle): State<EngineHandle>) -> impl IntoResponse {
+async fn pause(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(e) = check_bearer(&handle, &headers) {
+        return e;
+    }
     handle.paused.store(true, Ordering::Relaxed);
     info!("admin: engine paused");
     (StatusCode::OK, "paused")
 }
 
-async fn resume(State(handle): State<EngineHandle>) -> impl IntoResponse {
+async fn resume(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(e) = check_bearer(&handle, &headers) {
+        return e;
+    }
     handle.paused.store(false, Ordering::Relaxed);
     info!("admin: engine resumed");
     (StatusCode::OK, "resumed")
 }
 
-async fn kill(State(handle): State<EngineHandle>) -> impl IntoResponse {
+async fn kill(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(e) = check_bearer(&handle, &headers) {
+        return e;
+    }
     info!("admin: kill received, sending shutdown");
     if handle.shutdown_tx.send(true).is_err() {
         warn!("admin: shutdown channel already closed");
@@ -110,12 +149,14 @@ pub fn router(handle: EngineHandle) -> Router {
         .with_state(handle)
 }
 
-/// Serve the admin endpoint on `port`, bound to all interfaces. Returns when
-/// the listener errors out — typically not before shutdown.
-pub async fn serve(handle: EngineHandle, port: u16) -> anyhow::Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+/// Serve the admin endpoint. Bind address defaults to `127.0.0.1` (safe for
+/// prod); pass `bind = "0.0.0.0"` to open externally (e.g. behind a firewall
+/// or when auth token is set).
+pub async fn serve(handle: EngineHandle, port: u16, bind: &str) -> anyhow::Result<()> {
+    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(%addr, "admin HTTP listening");
+    let has_auth = handle.admin_token.is_some();
+    info!(%addr, has_auth, "admin HTTP listening");
     axum::serve(listener, router(handle)).await?;
     Ok(())
 }
@@ -132,10 +173,11 @@ mod tests {
     #[tokio::test]
     async fn pause_then_resume_toggles_atomic() {
         let h = handle();
+        let hdr = HeaderMap::new();
         assert!(!h.paused.load(Ordering::Relaxed));
-        let _ = pause(State(h.clone())).await.into_response();
+        let _ = pause(State(h.clone()), hdr.clone()).await.into_response();
         assert!(h.paused.load(Ordering::Relaxed));
-        let _ = resume(State(h.clone())).await.into_response();
+        let _ = resume(State(h.clone()), hdr).await.into_response();
         assert!(!h.paused.load(Ordering::Relaxed));
     }
 
@@ -143,10 +185,27 @@ mod tests {
     async fn kill_sends_shutdown_true() {
         let (tx, mut rx) = tokio::sync::watch::channel(false);
         let h = EngineHandle::new(tx);
-        let _ = kill(State(h)).await.into_response();
-        // Receiver should observe the change.
+        let _ = kill(State(h), HeaderMap::new()).await.into_response();
         rx.changed().await.unwrap();
         assert!(*rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn bearer_token_rejects_wrong_token() {
+        let h = handle().with_token(Some("secret".into()));
+        let hdr = HeaderMap::new();
+        let resp = pause(State(h), hdr).await.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_token_accepts_correct_token() {
+        let h = handle().with_token(Some("secret".into()));
+        let mut hdr = HeaderMap::new();
+        hdr.insert("authorization", "Bearer secret".parse().unwrap());
+        let resp = pause(State(h.clone()), hdr).await.into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(h.paused.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

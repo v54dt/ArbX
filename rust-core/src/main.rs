@@ -1150,10 +1150,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let admin_port = cfg.engine.admin_port.unwrap_or(9091);
-    let admin_handle = engine::admin::EngineHandle::new(shutdown_tx.clone());
+    let admin_bind = cfg
+        .engine
+        .admin_bind
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .to_string();
+    let admin_token = std::env::var("ARBX_ADMIN_TOKEN").ok();
+    let admin_handle =
+        engine::admin::EngineHandle::new(shutdown_tx.clone()).with_token(admin_token);
     engine = engine.with_admin(admin_handle.clone());
     tokio::spawn(async move {
-        if let Err(e) = engine::admin::serve(admin_handle, admin_port).await {
+        if let Err(e) = engine::admin::serve(admin_handle, admin_port, &admin_bind).await {
             tracing::warn!(error = %e, "admin HTTP server exited");
         }
     });

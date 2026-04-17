@@ -33,6 +33,10 @@ pub struct EngineConfig {
     /// /kill). Default 9091. Metrics stays on 9090.
     #[serde(default)]
     pub admin_port: Option<u16>,
+    /// Bind address for admin HTTP. Default "127.0.0.1" (localhost only).
+    /// Set to "0.0.0.0" to open externally (ensure ARBX_ADMIN_TOKEN is set).
+    #[serde(default)]
+    pub admin_bind: Option<String>,
     /// Dead-man's-switch stall threshold in milliseconds. If the engine's
     /// main loop doesn't stamp its heartbeat within this window, a
     /// watchdog fires `shutdown_tx` so supervisors can restart a wedged
@@ -56,6 +60,7 @@ impl Default for EngineConfig {
             order_ttl_secs: default_order_ttl(),
             trade_log_file: None,
             admin_port: None,
+            admin_bind: None,
             heartbeat_stall_ms: None,
         }
     }
