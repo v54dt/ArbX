@@ -340,6 +340,26 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
             .collect()
     }
 
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        // Re-check that the spread is still positive after book movement.
+        let book_a = books.get(&book_key(self.venue_a, &self.instrument_a))?;
+        let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
+        let mid_a = book_a.mid_price()?;
+        let mid_b = book_b.mid_price()?;
+        let spread_bps = if mid_a > Decimal::ZERO {
+            (mid_b - mid_a) / mid_a * Decimal::from(10_000)
+        } else {
+            Decimal::ZERO
+        };
+        // If spread has flipped or shrunk below half the original net_profit_bps,
+        // the opportunity is stale.
+        let threshold = opp.economics.net_profit_bps / Decimal::from(2);
+        if spread_bps < threshold && -spread_bps < threshold {
+            return None;
+        }
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str {
         "cross_exchange"
     }

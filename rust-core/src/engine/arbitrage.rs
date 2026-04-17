@@ -537,24 +537,37 @@ impl ArbitrageEngine {
         let primary_name = self.strategy.name().to_string();
         crate::metrics::record_eval_latency_us(&primary_name, eval_us as f64);
         if let Some(opp) = eval_result {
-            let orders = self.strategy.compute_hedge_orders(&opp);
-            self.process_opportunity(&primary_name, eval_us, opp, orders)
-                .await?;
+            match self.strategy.re_verify(&opp, &self.books) {
+                Some(verified) => {
+                    crate::metrics::record_opportunity_reverified(&primary_name, true);
+                    let orders = self.strategy.compute_hedge_orders(&verified);
+                    self.process_opportunity(&primary_name, eval_us, verified, orders)
+                        .await?;
+                }
+                None => {
+                    crate::metrics::record_opportunity_reverified(&primary_name, false);
+                }
+            }
         }
 
         // Extra strategies — same pipeline, shared risk + circuit breaker.
         for i in 0..self.extra_strategies.len() {
-            let (name, eval_us, opp_and_orders) = {
+            let (name, eval_us, verified_and_orders) = {
                 let s = &self.extra_strategies[i];
                 let t0 = std::time::Instant::now();
                 let opp = s.evaluate(&self.books, &self.portfolios).await;
                 let us = t0.elapsed().as_micros();
                 let n = s.name().to_string();
-                let orders = opp.as_ref().map(|o| s.compute_hedge_orders(o));
-                (n, us, opp.zip(orders))
+                let result = opp.and_then(|o| {
+                    let v = s.re_verify(&o, &self.books)?;
+                    let orders = s.compute_hedge_orders(&v);
+                    Some((v, orders))
+                });
+                (n, us, result)
             };
             crate::metrics::record_eval_latency_us(&name, eval_us as f64);
-            if let Some((opp, orders)) = opp_and_orders {
+            if let Some((opp, orders)) = verified_and_orders {
+                crate::metrics::record_opportunity_reverified(&name, true);
                 self.process_opportunity(&name, eval_us, opp, orders)
                     .await?;
             }

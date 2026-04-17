@@ -88,6 +88,16 @@ pub fn record_ws_private_message(venue: &str) {
     counter!("arbx_ws_private_messages_received_total", "venue" => venue.to_string()).increment(1);
 }
 
+pub fn record_opportunity_reverified(strategy: &str, accepted: bool) {
+    let result = if accepted { "accept" } else { "reject" };
+    counter!(
+        "arbx_opportunity_reverified_total",
+        "strategy" => strategy.to_string(),
+        "result" => result.to_string()
+    )
+    .increment(1);
+}
+
 pub fn set_cert_seconds_until_expiry(name: &str, secs: f64) {
     gauge!("arbx_cert_seconds_until_expiry", "name" => name.to_string()).set(secs);
 }
