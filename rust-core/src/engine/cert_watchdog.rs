@@ -34,6 +34,7 @@ pub struct NoopProvider {
 }
 
 impl NoopProvider {
+    #[allow(dead_code)]
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
