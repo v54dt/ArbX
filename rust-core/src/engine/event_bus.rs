@@ -21,6 +21,7 @@ use crate::models::enums::Venue;
 const BUS_CAPACITY: usize = 4096;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum EngineEvent {
     QuoteReceived {
         venue: Venue,
