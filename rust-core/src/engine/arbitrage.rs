@@ -15,6 +15,7 @@ use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
+use crate::engine::event_bus::{EngineEvent, EngineEventBus};
 use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
 use crate::models::enums::Venue;
@@ -96,6 +97,7 @@ pub struct ArbitrageEngine {
     /// Per-strategy risk budgets (keyed by strategy name). Checked inside
     /// `process_opportunity` BEFORE the global `risk_state` / `risk_manager`.
     strategy_budgets: HashMap<String, StrategyRiskBudget>,
+    event_bus: Option<EngineEventBus>,
 }
 
 impl ArbitrageEngine {
@@ -141,6 +143,7 @@ impl ArbitrageEngine {
             admin: None,
             heartbeat: None,
             strategy_budgets: HashMap::new(),
+            event_bus: None,
         }
     }
 
@@ -192,10 +195,22 @@ impl ArbitrageEngine {
         self
     }
 
+    #[allow(dead_code)]
+    pub fn with_event_bus(mut self, bus: EngineEventBus) -> Self {
+        self.event_bus = Some(bus);
+        self
+    }
+
     pub fn with_strategy_budget(mut self, strategy_name: &str, budget: StrategyRiskBudget) -> Self {
         self.strategy_budgets
             .insert(strategy_name.to_string(), budget);
         self
+    }
+
+    fn emit(&self, event: EngineEvent) {
+        if let Some(bus) = &self.event_bus {
+            bus.publish(event);
+        }
     }
 
     pub fn has_executor_for(&self, venue: Venue) -> bool {
@@ -391,6 +406,12 @@ impl ArbitrageEngine {
                     self.risk_state.apply_fill(fill_key.as_str(), signed_qty, fill.price, Decimal::ZERO);
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received(self.strategy.name());
+                    self.emit(EngineEvent::OrderFilled {
+                        venue: fill.venue,
+                        order_id: fill.order_id.clone(),
+                        price: fill.price,
+                        quantity: fill.quantity,
+                    });
 
                     if let Some(intended) = self.intended_fills.remove(&fill.order_id)
                         && !intended.intended_price.is_zero()
@@ -457,6 +478,7 @@ impl ArbitrageEngine {
                         }
                     }
                     info!(succeeded, failed, "position reconciliation cycle complete");
+                    self.emit(EngineEvent::Reconciled { succeeded, failed });
                 }
                 _ = cancel_check_interval.tick() => {
                     let now = Utc::now();
@@ -501,6 +523,7 @@ impl ArbitrageEngine {
             }
         }
 
+        self.emit(EngineEvent::Shutdown);
         info!(
             trade_logs = self.trade_logs.len(),
             "engine shutting down, {} trades recorded",
@@ -627,6 +650,11 @@ impl ArbitrageEngine {
             notional = %opp.economics.notional,
             "opportunity detected"
         );
+        self.emit(EngineEvent::OpportunityDetected {
+            strategy: strategy_name.to_string(),
+            id: opp.id.clone(),
+            net_profit_bps: opp.economics.net_profit_bps,
+        });
 
         {
             let submit_start = std::time::Instant::now();
@@ -736,6 +764,11 @@ impl ArbitrageEngine {
                             qty = %order.quantity,
                             "order submitted"
                         );
+                        self.emit(EngineEvent::OrderSubmitted {
+                            strategy: strategy_name.to_string(),
+                            venue: order.venue,
+                            order_id: order_id.clone(),
+                        });
                         crate::metrics::record_order_submitted(strategy_name);
                         self.circuit_breaker.record_success();
                         self.circuit_breaker.record_order();
