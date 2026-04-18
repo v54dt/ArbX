@@ -1,7 +1,11 @@
+use chrono::{DateTime, FixedOffset, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 
 use super::manager::RiskVerdict;
+
+/// UTC+8 offset for Taiwan midnight reset.
+const TAIPEI_OFFSET_SECS: i32 = 8 * 3600;
 
 pub struct RiskState {
     pub position_by_instrument: HashMap<String, Decimal>,
@@ -15,6 +19,8 @@ pub struct RiskState {
     pub max_notional_exposure: Decimal,
     pub max_daily_loss: Decimal,
     pub halted: bool,
+    /// Last calendar date (in UTC+8) when `realized_pnl_today` was reset.
+    last_reset_date: Option<chrono::NaiveDate>,
 }
 
 impl RiskState {
@@ -32,6 +38,24 @@ impl RiskState {
             max_notional_exposure,
             max_daily_loss,
             halted: false,
+            last_reset_date: None,
+        }
+    }
+
+    /// Reset `realized_pnl_today` to zero if the UTC+8 calendar date has
+    /// changed since the last reset. Called from the engine's main loop.
+    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) {
+        let taipei = FixedOffset::east_opt(TAIPEI_OFFSET_SECS).unwrap();
+        let today = now.with_timezone(&taipei).date_naive();
+        if self.last_reset_date != Some(today) {
+            if self.last_reset_date.is_some() {
+                tracing::info!(
+                    prev_pnl = %self.realized_pnl_today,
+                    "daily PnL reset (midnight UTC+8)"
+                );
+            }
+            self.realized_pnl_today = Decimal::ZERO;
+            self.last_reset_date = Some(today);
         }
     }
 
