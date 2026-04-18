@@ -82,7 +82,7 @@ impl MarketDataFeed for OkxMarketData {
         let (book_tx, book_rx) = mpsc::unbounded_channel();
 
         self.quote_tx = Some(quote_tx.clone());
-        self.book_tx = Some(book_tx);
+        self.book_tx = Some(book_tx.clone());
 
         if self.instruments.is_empty() {
             anyhow::bail!("no instruments registered, call register_instrument() before connect()");
@@ -90,7 +90,7 @@ impl MarketDataFeed for OkxMarketData {
 
         let url = "wss://ws.okx.com:8443/ws/v5/public";
 
-        let sub_args: Vec<serde_json::Value> = self
+        let mut sub_args: Vec<serde_json::Value> = self
             .instruments
             .keys()
             .map(|id| {
@@ -100,6 +100,18 @@ impl MarketDataFeed for OkxMarketData {
                 })
             })
             .collect();
+        // L2 order-book: books5 gives 5-level depth snapshots.
+        let book_args: Vec<serde_json::Value> = self
+            .instruments
+            .keys()
+            .map(|id| {
+                serde_json::json!({
+                    "channel": "books5",
+                    "instId": id
+                })
+            })
+            .collect();
+        sub_args.extend(book_args);
 
         let sub_msg = serde_json::json!({
             "op": "subscribe",
@@ -112,6 +124,7 @@ impl MarketDataFeed for OkxMarketData {
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
+        let btx = book_tx;
         let task = tokio::spawn(async move {
             use futures_util::SinkExt;
 
@@ -173,6 +186,36 @@ impl MarketDataFeed for OkxMarketData {
                                                                 return;
                                                             }
                                                         }
+                                                    }
+                                                }
+                                                // OKX books5: L2 5-level depth snapshot
+                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                                                    && json.get("arg").and_then(|a| a.get("channel")).and_then(|c| c.as_str()) == Some("books5")
+                                                    && let Some(data_arr) = json.get("data").and_then(|d| d.as_array())
+                                                    && let Some(snap) = data_arr.first()
+                                                {
+                                                    let inst_id = json.get("arg").and_then(|a| a.get("instId")).and_then(|v| v.as_str()).unwrap_or("");
+                                                    if let Some(instrument) = instruments.get(inst_id) {
+                                                        let now = chrono::Utc::now();
+                                                        let parse_levels = |key: &str| -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 20]> {
+                                                            snap.get(key).and_then(|v| v.as_array()).map(|arr| {
+                                                                arr.iter().filter_map(|row| {
+                                                                    let r = row.as_array()?;
+                                                                    let price = r.first()?.as_str()?.parse::<Decimal>().ok()?;
+                                                                    let size = r.get(1)?.as_str()?.parse::<Decimal>().ok()?;
+                                                                    Some(crate::models::market::OrderBookLevel { price, size })
+                                                                }).collect()
+                                                            }).unwrap_or_default()
+                                                        };
+                                                        let ob = OrderBook {
+                                                            venue: Venue::Okx,
+                                                            instrument: instrument.clone(),
+                                                            bids: parse_levels("bids"),
+                                                            asks: parse_levels("asks"),
+                                                            timestamp: now,
+                                                            local_timestamp: now,
+                                                        };
+                                                        let _ = btx.send(ob);
                                                     }
                                                 }
                                             }
