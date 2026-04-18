@@ -59,6 +59,35 @@ struct TickerMessage {
     data: TickerData,
 }
 
+#[derive(Debug, Deserialize)]
+struct OrderBookData {
+    #[serde(rename = "s")]
+    symbol: String,
+    #[serde(rename = "b", default)]
+    bids: Vec<Vec<String>>,
+    #[serde(rename = "a", default)]
+    asks: Vec<Vec<String>>,
+}
+
+impl OrderBookData {
+    fn parse_levels(
+        raw: &[Vec<String>],
+    ) -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 10]> {
+        raw.iter()
+            .filter_map(|pair| {
+                let price = pair.first()?.parse::<Decimal>().ok()?;
+                let size = pair.get(1)?.parse::<Decimal>().ok()?;
+                Some(crate::models::market::OrderBookLevel { price, size })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OrderBookMessage {
+    data: OrderBookData,
+}
+
 pub struct BybitMarketData {
     market: BybitMarket,
     instruments: HashMap<String, Instrument>,
@@ -100,11 +129,18 @@ impl MarketDataFeed for BybitMarketData {
 
         let url = self.market.ws_base_url().to_string();
 
-        let sub_args: Vec<String> = self
+        let ticker_args: Vec<String> = self
             .instruments
             .keys()
             .map(|s| format!("tickers.{s}"))
             .collect();
+        let book_args: Vec<String> = self
+            .instruments
+            .keys()
+            .map(|s| format!("orderbook.50.{s}"))
+            .collect();
+        let mut sub_args = ticker_args;
+        sub_args.extend(book_args);
         let sub_msg = serde_json::json!({
             "op": "subscribe",
             "args": sub_args,
@@ -116,6 +152,7 @@ impl MarketDataFeed for BybitMarketData {
 
         let instruments = Arc::new(self.instruments.clone());
         let tx = quote_tx;
+        let btx = book_tx;
         let task = tokio::spawn(async move {
             use futures_util::{SinkExt, StreamExt};
 
@@ -171,6 +208,20 @@ impl MarketDataFeed for BybitMarketData {
                                                     if tx.send(quote).is_err() {
                                                         return;
                                                     }
+                                                }
+                                                if let Ok(book_msg) = serde_json::from_str::<OrderBookMessage>(&text)
+                                                    && let Some(instrument) = instruments.get(&book_msg.data.symbol)
+                                                {
+                                                    let now = chrono::Utc::now();
+                                                    let ob = OrderBook {
+                                                        venue: Venue::Bybit,
+                                                        instrument: instrument.clone(),
+                                                        bids: OrderBookData::parse_levels(&book_msg.data.bids),
+                                                        asks: OrderBookData::parse_levels(&book_msg.data.asks),
+                                                        timestamp: now,
+                                                        local_timestamp: now,
+                                                    };
+                                                    let _ = btx.send(ob);
                                                 }
                                             }
                                         }
