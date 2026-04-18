@@ -80,6 +80,10 @@ struct Cli {
     #[arg(long, value_name = "N")]
     backtest_window_size: Option<usize>,
 
+    /// When --backtest is set, also append every TradeLog to this JSONL file.
+    #[arg(long, value_name = "JSONL")]
+    backtest_trade_log: Option<String>,
+
     /// Publish each Quote / OrderBook to the default Aeron IPC stream (requires media driver).
     #[arg(long)]
     aeron_publish: bool,
@@ -658,6 +662,7 @@ fn build_strategy_from_config(
 async fn run_backtest_mode(
     csv_path: &str,
     csv_out: Option<&str>,
+    trade_log_out: Option<&str>,
     window_size: Option<usize>,
     cfg: &config::AppConfig,
 ) -> anyhow::Result<()> {
@@ -728,6 +733,17 @@ async fn run_backtest_mode(
                 backtest::report::write_trade_csv(path, &result.trade_logs)?;
                 println!("trade rows written: {}", path);
             }
+            if let Some(path) = trade_log_out {
+                let mut w = models::trade_log::TradeLogWriter::create(path)?;
+                for log in &result.trade_logs {
+                    w.append(log)?;
+                }
+                println!(
+                    "trade_log JSONL written: {} ({} entries)",
+                    path,
+                    result.trade_logs.len()
+                );
+            }
         }
         Some(0) => anyhow::bail!("--backtest-window-size must be > 0"),
         Some(n) => {
@@ -789,6 +805,17 @@ async fn run_backtest_mode(
             if let Some(path) = csv_out {
                 backtest::report::write_trade_csv(path, &all_trade_logs)?;
                 println!("trade rows written: {}", path);
+            }
+            if let Some(path) = trade_log_out {
+                let mut w = models::trade_log::TradeLogWriter::create(path)?;
+                for log in &all_trade_logs {
+                    w.append(log)?;
+                }
+                println!(
+                    "trade_log JSONL written: {} ({} entries)",
+                    path,
+                    all_trade_logs.len()
+                );
             }
         }
     }
@@ -941,6 +968,7 @@ async fn main() -> anyhow::Result<()> {
         return run_backtest_mode(
             csv_path,
             cli.backtest_csv_out.as_deref(),
+            cli.backtest_trade_log.as_deref(),
             cli.backtest_window_size,
             &cfg,
         )
