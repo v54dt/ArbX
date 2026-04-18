@@ -689,10 +689,7 @@ async fn re_verify_rejection_prevents_submit() {
     impl ArbitrageStrategy for AlwaysRejectStrategy {
         async fn evaluate(
             &self,
-            books: &std::collections::HashMap<
-                arbx_core::models::market::BookKey,
-                arbx_core::models::market::OrderBook,
-            >,
+            books: &arbx_core::models::market::BookMap,
             portfolios: &std::collections::HashMap<
                 String,
                 arbx_core::models::position::PortfolioSnapshot,
