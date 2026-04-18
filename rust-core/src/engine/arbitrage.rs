@@ -273,10 +273,19 @@ impl ArbitrageEngine {
             // Merge feed-level fills (e.g. Aeron IPC carrying TW broker fills).
             if let Some(mut ff) = feed_fills {
                 let ftx = fill_tx.clone();
+                let mut ff_shutdown = self.shutdown_rx.clone();
                 tokio::spawn(async move {
-                    while let Some(f) = ff.recv().await {
-                        if ftx.send(f).is_err() {
-                            break;
+                    loop {
+                        tokio::select! {
+                            _ = ff_shutdown.changed() => {
+                                if *ff_shutdown.borrow() { break; }
+                            }
+                            msg = ff.recv() => {
+                                match msg {
+                                    Some(f) => { if ftx.send(f).is_err() { break; } }
+                                    None => break,
+                                }
+                            }
                         }
                     }
                 });
@@ -284,9 +293,13 @@ impl ArbitrageEngine {
             let tx = merged_tx.clone();
             let btx = merged_book_tx.clone();
             let publishers = self.quote_publishers.clone();
+            let mut feed_shutdown = self.shutdown_rx.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
+                        _ = feed_shutdown.changed() => {
+                            if *feed_shutdown.borrow() { break; }
+                        }
                         Some(q) = quotes.recv() => {
                             for pub_ in publishers.iter() {
                                 let payload = crate::ipc::flatbuf_codec::encode_quote(&q);
