@@ -154,7 +154,7 @@ async fn kill(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl In
 
 async fn recent_events(State(handle): State<EngineHandle>) -> impl IntoResponse {
     let buf = handle.recent_events.lock().await;
-    let events: Vec<&str> = buf.iter().map(String::as_str).collect();
+    let events: Vec<String> = buf.iter().cloned().collect();
     Json(events)
 }
 
