@@ -232,6 +232,8 @@ mod tests {
             max_notional_exposure: dec!(10000000),
             circuit_breaker: CircuitBreakerConfig::default(),
             max_position_per_venue: None,
+            backtest_fill_delay_ms: None,
+            backtest_slippage_bps: None,
         }
     }
 
