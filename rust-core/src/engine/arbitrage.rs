@@ -828,6 +828,7 @@ impl ArbitrageEngine {
                         self.circuit_breaker.record_success();
                         self.circuit_breaker.record_order();
                         submitted_count += 1;
+                        let intended_price = order.price.unwrap_or(Decimal::ZERO);
                         // Re-key intended_fill from client_order_id → venue order_id.
                         if let Some(fill) = self.intended_fills.remove(&order.client_order_id) {
                             self.intended_fills.insert(order_id.clone(), fill);
