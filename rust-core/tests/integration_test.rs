@@ -694,8 +694,9 @@ async fn re_verify_rejection_prevents_submit() {
                 String,
                 arbx_core::models::position::PortfolioSnapshot,
             >,
+            now: chrono::DateTime<chrono::Utc>,
         ) -> Option<arbx_core::strategy::Opportunity> {
-            self.0.evaluate(books, portfolios).await
+            self.0.evaluate(books, portfolios, now).await
         }
 
         fn compute_hedge_orders(

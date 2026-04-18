@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::models::market::BookMap;
 use crate::models::order::OrderRequest;
@@ -10,10 +11,14 @@ use super::Opportunity;
 
 #[async_trait]
 pub trait ArbitrageStrategy: Send + Sync {
+    /// `now` is the engine's clock timestamp — use this instead of
+    /// `Utc::now()` for staleness checks and opportunity timestamps
+    /// so backtest / replay produce deterministic results.
     async fn evaluate(
         &self,
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity>;
 
     fn compute_hedge_orders(&self, opportunity: &Opportunity) -> Vec<OrderRequest>;

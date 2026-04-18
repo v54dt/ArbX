@@ -97,7 +97,7 @@ fn bench_strategy_evaluate(c: &mut Criterion) {
                 book.timestamp = now;
                 book.local_timestamp = now;
             }
-            rt.block_on(strategy.evaluate(black_box(&books), black_box(&portfolios)))
+            rt.block_on(strategy.evaluate(black_box(&books), black_box(&portfolios), Utc::now()))
         })
     });
 }
@@ -371,7 +371,7 @@ fn bench_e2e_quote_to_orders(c: &mut Criterion) {
                 });
 
             // 2. Strategy evaluate
-            let opp = rt.block_on(strategy.evaluate(&books, &portfolios));
+            let opp = rt.block_on(strategy.evaluate(&books, &portfolios, Utc::now()));
 
             // 3. Risk check + compute orders
             if let Some(ref opp) = opp {

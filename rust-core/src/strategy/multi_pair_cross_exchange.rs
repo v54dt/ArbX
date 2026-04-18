@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use crate::models::enums::{OrderType, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
@@ -40,6 +42,7 @@ impl ArbitrageStrategy for MultiPairCrossExchangeStrategy {
         &self,
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         let mut best: Option<Opportunity> = None;
 
@@ -65,6 +68,7 @@ impl ArbitrageStrategy for MultiPairCrossExchangeStrategy {
                 },
                 self.max_quote_age_ms,
                 self.max_book_depth,
+                now,
             );
 
             let b_to_a = evaluate_cross_direction(
@@ -86,6 +90,7 @@ impl ArbitrageStrategy for MultiPairCrossExchangeStrategy {
                 },
                 self.max_quote_age_ms,
                 self.max_book_depth,
+                now,
             );
 
             let pair_best = match (a_to_b, b_to_a) {
@@ -266,7 +271,7 @@ mod tests {
             dec!(0.001),
         )]);
         assert!(
-            s.evaluate(&BookMap::default(), &empty_portfolios())
+            s.evaluate(&BookMap::default(), &empty_portfolios(), Utc::now())
                 .await
                 .is_none()
         );
@@ -318,7 +323,10 @@ mod tests {
             orderbook(Venue::Bybit, &sol, dec!(12), dec!(1), dec!(13), dec!(1)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].instrument.base, "SOL");
     }
 
@@ -368,7 +376,10 @@ mod tests {
             orderbook(Venue::Bybit, &sol, dec!(14), dec!(1), dec!(15), dec!(1)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].instrument.base, "SOL");
         assert!(opp.economics.net_profit_bps > dec!(0));
     }
@@ -409,8 +420,14 @@ mod tests {
             orderbook(Venue::Bybit, &inst, dec!(105), dec!(1), dec!(106), dec!(1)),
         ]);
 
-        let opp_multi = multi.evaluate(&books, &empty_portfolios()).await.unwrap();
-        let opp_single = single.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp_multi = multi
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
+        let opp_single = single
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
 
         assert_eq!(
             opp_multi.economics.net_profit_bps,
@@ -437,7 +454,11 @@ mod tests {
         let fresh = orderbook(Venue::Bybit, &inst, dec!(105), dec!(1), dec!(106), dec!(1));
         let books = make_books(vec![stale, fresh]);
 
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     // 6. B->A profitable but A->B not
@@ -466,7 +487,10 @@ mod tests {
             orderbook(Venue::Bybit, &inst, dec!(99), dec!(1), dec!(100), dec!(1)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
         assert_eq!(opp.legs[0].side, Side::Buy);
         assert_eq!(opp.legs[1].venue, Venue::Binance);
@@ -500,7 +524,11 @@ mod tests {
             ),
         ]);
 
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     // 8. max_quantity per pair respected
@@ -563,7 +591,7 @@ mod tests {
             orderbook(Venue::Bybit, &btc, dec!(105), dec!(10), dec!(106), dec!(10)),
         ]);
         let opp_btc = s_btc
-            .evaluate(&books_btc, &empty_portfolios())
+            .evaluate(&books_btc, &empty_portfolios(), Utc::now())
             .await
             .unwrap();
         assert_eq!(opp_btc.legs[0].quantity, dec!(1)); // capped at max_quantity=1
@@ -581,13 +609,16 @@ mod tests {
             orderbook(Venue::Bybit, &eth, dec!(55), dec!(10), dec!(56), dec!(10)),
         ]);
         let opp_eth = s_eth
-            .evaluate(&books_eth, &empty_portfolios())
+            .evaluate(&books_eth, &empty_portfolios(), Utc::now())
             .await
             .unwrap();
         assert_eq!(opp_eth.legs[0].quantity, dec!(5)); // capped at max_quantity=5
 
         // full multi-pair: best is SOL-like by bps, but here ETH wins because spread is larger
-        let _ = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let _ = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
     }
 
     // 9. inventory reduces quantity
@@ -629,7 +660,7 @@ mod tests {
             },
         );
 
-        let opp = s.evaluate(&books, &portfolios).await.unwrap();
+        let opp = s.evaluate(&books, &portfolios, Utc::now()).await.unwrap();
         // raw_qty=1, reduced=1-0.3=0.7
         assert_eq!(opp.legs[0].quantity, dec!(0.7));
     }
@@ -637,8 +668,9 @@ mod tests {
     // 10. multi-level VWAP gives different result than TOB
     #[tokio::test]
     async fn vwap_multi_level_used() {
-        let inst = instrument("BTC", InstrumentType::Spot);
         let now = Utc::now();
+        let inst = instrument("BTC", InstrumentType::Spot);
+
         let buy_book = OrderBook {
             venue: Venue::Binance,
             instrument: inst.clone(),
@@ -703,7 +735,10 @@ mod tests {
         }]);
 
         let books = make_books(vec![buy_book, sell_book]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         // VWAP ask = (100+101+102)/3 = 101; TOB ask = 100 => different
         assert_eq!(opp.legs[0].quantity, dec!(3));
         assert_eq!(opp.legs[0].quote_price, dec!(101));
@@ -752,7 +787,10 @@ mod tests {
             orderbook(Venue::Bybit, &eth, dec!(102), dec!(1), dec!(103), dec!(1)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].instrument.base, "ETH");
     }
 
@@ -788,6 +826,10 @@ mod tests {
             stale_orderbook(Venue::Bybit, &eth, dec!(55), dec!(56)),
         ]);
 
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 }

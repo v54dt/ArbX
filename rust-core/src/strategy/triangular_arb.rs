@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
@@ -117,12 +117,16 @@ fn apply_leg(
 }
 
 impl TriangularArbStrategy {
-    fn evaluate_cycle(&self, books: &BookMap, cycle: &TriangleCycle) -> Option<Opportunity> {
+    fn evaluate_cycle(
+        &self,
+        books: &BookMap,
+        cycle: &TriangleCycle,
+        now: DateTime<Utc>,
+    ) -> Option<Opportunity> {
         let book_a = books.get(&book_key(cycle.venue, &cycle.leg_a.instrument))?;
         let book_b = books.get(&book_key(cycle.venue, &cycle.leg_b.instrument))?;
         let book_c = books.get(&book_key(cycle.venue, &cycle.leg_c.instrument))?;
 
-        let now = Utc::now();
         let max_age = Duration::milliseconds(self.max_quote_age_ms);
         if now - book_a.local_timestamp > max_age
             || now - book_b.local_timestamp > max_age
@@ -164,7 +168,7 @@ impl TriangularArbStrategy {
         let qty_b = quantize(result.qty_b, cycle.lot_size);
         let qty_c = quantize(result.qty_c, cycle.lot_size);
 
-        let detected_at = Utc::now();
+        let detected_at = now;
         let legs = smallvec![
             Leg {
                 venue: cycle.venue,
@@ -226,10 +230,11 @@ impl ArbitrageStrategy for TriangularArbStrategy {
         &self,
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         self.cycles
             .iter()
-            .filter_map(|cycle| self.evaluate_cycle(books, cycle))
+            .filter_map(|cycle| self.evaluate_cycle(books, cycle, now))
             .max_by(|a, b| {
                 a.economics
                     .net_profit_bps
@@ -357,7 +362,11 @@ mod tests {
             orderbook(Venue::Binance, &btc_usdt, dec!(50000), dec!(50001)),
             orderbook(Venue::Binance, &btc_eth, dec!(15), dec!(15.01)),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -378,7 +387,11 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(15), dec!(15)),
             orderbook(Venue::Binance, &eth_usdt, eth_price, eth_price),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -397,7 +410,7 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(16), dec!(16.1)),
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await;
+        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
         assert!(opp.is_some());
         let opp = opp.unwrap();
         assert_eq!(opp.legs.len(), 3);
@@ -442,7 +455,7 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(15.9), dec!(16)),
             orderbook(Venue::Binance, &btc_usdt, dec!(51200), dec!(51201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await;
+        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
         assert!(opp.is_some());
         let opp = opp.unwrap();
         assert!(opp.economics.net_profit > Decimal::ZERO);
@@ -465,7 +478,11 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(16), dec!(16.1)),
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -482,7 +499,11 @@ mod tests {
             stale_book,
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -506,7 +527,11 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(15), dec!(15.01)),
             orderbook(Venue::Binance, &eth_usdt, eth_price, eth_price + dec!(1)),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -528,8 +553,14 @@ mod tests {
         let s_small = strategy_with_cycle(cycle_small);
         let s_large = strategy_with_cycle(cycle_large);
 
-        let opp_small = s_small.evaluate(&books, &empty_portfolios()).await.unwrap();
-        let opp_large = s_large.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp_small = s_small
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
+        let opp_large = s_large
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
 
         // larger notional -> larger leg quantities
         assert!(opp_large.legs[0].quantity > opp_small.legs[0].quantity);
@@ -579,7 +610,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await;
+        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
         assert!(opp.is_some());
         assert_eq!(opp.unwrap().legs[0].venue, Venue::Binance);
     }
@@ -647,7 +678,10 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3199), dec!(2000)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         // reverse cycle should win (higher bps)
         assert_eq!(opp.legs[0].side, Side::Buy); // ETH/USDT buy
         assert_eq!(opp.legs[0].instrument, eth_usdt);
@@ -667,7 +701,10 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(16), dec!(16.1)),
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         // All quantities should be multiples of 0.01
         for leg in &opp.legs {
             let remainder = leg.quantity % dec!(0.01);
@@ -695,7 +732,10 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(16), dec!(16.1)),
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.economics.notional, dec!(10000));
         assert_eq!(opp.economics.fees_total, Decimal::ZERO);
         // net = gross when fees = 0

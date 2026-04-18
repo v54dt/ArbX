@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
@@ -144,6 +144,7 @@ pub(crate) fn evaluate_cross_direction(
     params: DirectionParams<'_>,
     max_quote_age_ms: i64,
     max_book_depth: usize,
+    now: DateTime<Utc>,
 ) -> Option<Opportunity> {
     let DirectionParams {
         buy_venue,
@@ -162,7 +163,6 @@ pub(crate) fn evaluate_cross_direction(
     let buy_book = books.get(&book_key(buy_venue, buy_instrument))?;
     let sell_book = books.get(&book_key(sell_venue, sell_instrument))?;
 
-    let now = Utc::now();
     let max_age = Duration::milliseconds(max_quote_age_ms);
     if now - buy_book.local_timestamp > max_age || now - sell_book.local_timestamp > max_age {
         return None;
@@ -208,7 +208,6 @@ pub(crate) fn evaluate_cross_direction(
         return None;
     }
 
-    let now = Utc::now();
     let legs = smallvec![
         Leg {
             venue: buy_venue,
@@ -256,6 +255,7 @@ impl CrossExchangeStrategy {
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
         params: DirectionParams<'_>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         evaluate_cross_direction(
             books,
@@ -263,6 +263,7 @@ impl CrossExchangeStrategy {
             params,
             self.max_quote_age_ms,
             self.max_book_depth,
+            now,
         )
     }
 }
@@ -273,6 +274,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
         &self,
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         let a_to_b = self.evaluate_direction(
             books,
@@ -291,6 +293,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 min_net_profit_bps: self.min_net_profit_bps,
                 strategy_id: self.name(),
             },
+            now,
         );
         let b_to_a = self.evaluate_direction(
             books,
@@ -309,6 +312,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
                 min_net_profit_bps: self.min_net_profit_bps,
                 strategy_id: self.name(),
             },
+            now,
         );
 
         match (a_to_b, b_to_a) {
@@ -495,7 +499,11 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -519,7 +527,11 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -543,7 +555,10 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs.len(), 2);
         assert_eq!(opp.legs[0].venue, Venue::Binance);
         assert_eq!(opp.legs[0].side, Side::Buy);
@@ -572,7 +587,10 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
         assert_eq!(opp.legs[0].side, Side::Buy);
         assert_eq!(opp.legs[1].venue, Venue::Binance);
@@ -600,7 +618,10 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
         assert_eq!(opp.legs[0].quote_price, dec!(101));
         assert_eq!(opp.legs[1].venue, Venue::Binance);
@@ -629,7 +650,11 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -654,7 +679,10 @@ mod tests {
                 dec!(10),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(1));
     }
 
@@ -680,7 +708,10 @@ mod tests {
                 dec!(2),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(2));
     }
 
@@ -708,7 +739,10 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         let expected_fees = dec!(100) * dec!(1) * dec!(0.001) + dec!(105) * dec!(1) * dec!(0.002);
         assert_eq!(opp.economics.fees_total, expected_fees);
     }
@@ -734,7 +768,11 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -758,7 +796,11 @@ mod tests {
             dec!(1),
         );
         let books = make_books(vec![buy, sell]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -782,7 +824,11 @@ mod tests {
         );
         sell.local_timestamp = Utc::now() - Duration::seconds(10);
         let books = make_books(vec![buy, sell]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -807,7 +853,11 @@ mod tests {
         );
         sell.local_timestamp = Utc::now();
         let books = make_books(vec![buy, sell]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_some());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_some()
+        );
     }
 
     // --- New tests ---
@@ -840,7 +890,10 @@ mod tests {
             vec![(dec!(110), dec!(5))],
         );
         let books = make_books(vec![buy, sell]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(3));
         assert_eq!(opp.legs[0].quote_price, dec!(101));
     }
@@ -865,7 +918,10 @@ mod tests {
             vec![(dec!(115), dec!(5))],
         );
         let books = make_books(vec![buy, sell]);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(1.5));
         // VWAP = (1*100 + 0.5*102) / 1.5 = 151/1.5
         let expected_vwap = dec!(151) / dec!(1.5);
@@ -907,7 +963,11 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -957,7 +1017,7 @@ mod tests {
             },
         );
 
-        let opp = s.evaluate(&books, &portfolios).await.unwrap();
+        let opp = s.evaluate(&books, &portfolios, Utc::now()).await.unwrap();
         // max_quantity=1, half_max=0.5, existing=0.8 > 0.5, excess=0.3
         // raw_qty=1, reduced=1-0.3=0.7
         assert!(opp.legs[0].quantity < dec!(1));

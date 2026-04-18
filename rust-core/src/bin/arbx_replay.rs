@@ -326,7 +326,10 @@ async fn replay_quotes<S: ArbitrageStrategy>(
             .and_modify(|b| b.update_from_quote(&q))
             .or_insert_with(|| quote_to_book(&q));
 
-        if let Some(opp) = strategy.evaluate(&books, &portfolios).await {
+        if let Some(opp) = strategy
+            .evaluate(&books, &portfolios, chrono::Utc::now())
+            .await
+        {
             opportunities.push(opp);
         }
     }
