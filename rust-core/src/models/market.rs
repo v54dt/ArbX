@@ -80,16 +80,25 @@ impl OrderBook {
 
     /// Update book in-place from a top-of-book quote, reusing existing allocation.
     pub fn update_from_quote(&mut self, q: &Quote) {
-        self.bids.clear();
-        self.bids.push(OrderBookLevel {
+        let bid_level = OrderBookLevel {
             price: q.bid,
             size: q.bid_size,
-        });
-        self.asks.clear();
-        self.asks.push(OrderBookLevel {
+        };
+        let ask_level = OrderBookLevel {
             price: q.ask,
             size: q.ask_size,
-        });
+        };
+        // Update TOB (level 0) only — preserve deeper L2 levels if present.
+        if self.bids.is_empty() {
+            self.bids.push(bid_level);
+        } else {
+            self.bids[0] = bid_level;
+        }
+        if self.asks.is_empty() {
+            self.asks.push(ask_level);
+        } else {
+            self.asks[0] = ask_level;
+        }
         self.timestamp = q.timestamp;
         self.local_timestamp = Utc::now();
     }
