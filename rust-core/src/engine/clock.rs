@@ -21,10 +21,12 @@ impl Clock for LiveClock {
 
 /// Caller-controlled clock for tests and deterministic replay.
 /// Thread-safe via atomic i64 (millisecond precision).
+#[allow(dead_code)]
 pub struct TestClock {
     millis: AtomicI64,
 }
 
+#[allow(dead_code)]
 impl TestClock {
     pub fn new(initial: DateTime<Utc>) -> Self {
         Self {
