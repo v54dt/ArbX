@@ -136,12 +136,20 @@ fn compute_result(trade_logs: Vec<TradeLog>, duration_ms: u64) -> BacktestResult
         }
     }
 
-    let sharpe_ratio = if returns.len() > 1 {
+    let sharpe_ratio = if returns.len() > 1 && duration_ms > 0 {
         let mean = returns.iter().sum::<f64>() / returns.len() as f64;
         let variance =
             returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (returns.len() - 1) as f64;
         let std_dev = variance.sqrt();
-        if std_dev > 0.0 { mean / std_dev } else { 0.0 }
+        if std_dev > 0.0 {
+            let per_trade = mean / std_dev;
+            // Annualize: extrapolate trade frequency from the backtest horizon.
+            let ms_per_year = 365.25 * 24.0 * 3600.0 * 1000.0;
+            let trades_per_year = returns.len() as f64 * ms_per_year / duration_ms as f64;
+            per_trade * trades_per_year.sqrt()
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
