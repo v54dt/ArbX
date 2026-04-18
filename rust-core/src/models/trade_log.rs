@@ -45,11 +45,18 @@ pub struct TradeLog {
 /// flushed per append so a crash mid-session still leaves the prior logs on disk.
 pub struct TradeLogWriter {
     writer: std::io::BufWriter<std::fs::File>,
+    base_path: String,
+    current_date: String,
 }
 
 impl TradeLogWriter {
     pub fn create(path: &str) -> anyhow::Result<Self> {
-        if let Some(parent) = std::path::Path::new(path).parent()
+        let date = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        let actual_path = Self::dated_path(path, &date);
+        if let Some(parent) = std::path::Path::new(&actual_path).parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
@@ -57,14 +64,50 @@ impl TradeLogWriter {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)?;
+            .open(&actual_path)?;
         Ok(Self {
             writer: std::io::BufWriter::new(file),
+            base_path: path.to_string(),
+            current_date: date,
         })
+    }
+
+    fn dated_path(base: &str, date: &str) -> String {
+        if let Some(dot) = base.rfind('.') {
+            format!("{}-{}{}", &base[..dot], date, &base[dot..])
+        } else {
+            format!("{}-{}", base, date)
+        }
+    }
+
+    fn maybe_rotate(&mut self) -> anyhow::Result<()> {
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        if today != self.current_date {
+            use std::io::Write as _;
+            self.writer.flush()?;
+            let new_path = Self::dated_path(&self.base_path, &today);
+            if let Some(parent) = std::path::Path::new(&new_path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&new_path)?;
+            self.writer = std::io::BufWriter::new(file);
+            self.current_date = today;
+            tracing::info!(path = new_path.as_str(), "trade_log rotated to new day");
+        }
+        Ok(())
     }
 
     pub fn append(&mut self, log: &TradeLog) -> anyhow::Result<()> {
         use std::io::Write as _;
+        self.maybe_rotate()?;
         let line = serde_json::to_string(log)?;
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
@@ -138,16 +181,24 @@ mod tests {
         }
     }
 
+    fn today_date() -> String {
+        chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
     #[test]
     fn writer_appends_one_jsonl_line_per_log() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trades.jsonl");
-        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        let base = dir.path().join("trades.jsonl");
+        let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         drop(w);
 
-        let body = std::fs::read_to_string(&path).unwrap();
+        let actual = dir.path().join(format!("trades-{}.jsonl", today_date()));
+        let body = std::fs::read_to_string(&actual).unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2);
         let parsed: TradeLog = serde_json::from_str(lines[0]).unwrap();
@@ -157,28 +208,31 @@ mod tests {
     #[test]
     fn writer_creates_parent_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested/subdir/trades.jsonl");
-        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        let base = dir.path().join("nested/subdir/trades.jsonl");
+        let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         drop(w);
 
-        assert!(path.exists());
+        let actual = dir
+            .path()
+            .join(format!("nested/subdir/trades-{}.jsonl", today_date()));
+        assert!(actual.exists());
     }
 
     #[test]
     fn writer_append_preserves_prior_contents() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trades.jsonl");
+        let base = dir.path().join("trades.jsonl");
         {
-            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
             w.append(&sample_trade_log()).unwrap();
         }
         {
-            // Re-open: should append, not truncate.
-            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
             w.append(&sample_trade_log()).unwrap();
         }
-        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        let actual = dir.path().join(format!("trades-{}.jsonl", today_date()));
+        let lines = std::fs::read_to_string(&actual).unwrap().lines().count();
         assert_eq!(lines, 2);
     }
 }
