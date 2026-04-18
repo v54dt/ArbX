@@ -18,6 +18,13 @@ pub struct OrderRequest {
 
 impl OrderRequest {
     pub fn into_order(self) -> Order {
+        // Market orders should not carry a price — silently clear it to
+        // prevent adapters from receiving a contradictory field.
+        let price = if self.order_type == OrderType::Market {
+            None
+        } else {
+            self.price
+        };
         Order {
             id: String::new(),
             client_order_id: uuid::Uuid::new_v4().to_string(),
@@ -26,7 +33,7 @@ impl OrderRequest {
             side: self.side,
             order_type: self.order_type,
             time_in_force: self.time_in_force,
-            price: self.price,
+            price,
             quantity: self.quantity,
             created_at: Utc::now(),
         }

@@ -30,6 +30,19 @@ struct TickerData {
     ask_px: Decimal,
     #[serde(rename = "askSz", deserialize_with = "de_decimal_str")]
     ask_sz: Decimal,
+    /// Exchange timestamp in ms (OKX provides this; Binance/Bybit don't).
+    #[serde(default)]
+    ts: Option<String>,
+}
+
+impl TickerData {
+    fn venue_timestamp(&self) -> chrono::DateTime<chrono::Utc> {
+        self.ts
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .unwrap_or_else(chrono::Utc::now)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,7 +193,7 @@ impl MarketDataFeed for OkxMarketData {
                                                                 ask: ticker.ask_px,
                                                                 bid_size: ticker.bid_sz,
                                                                 ask_size: ticker.ask_sz,
-                                                                timestamp: chrono::Utc::now(),
+                                                                timestamp: ticker.venue_timestamp(),
                                                             };
                                                             if tx.send(quote).is_err() {
                                                                 return;
