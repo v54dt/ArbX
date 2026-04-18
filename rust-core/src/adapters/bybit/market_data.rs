@@ -121,7 +121,7 @@ impl MarketDataFeed for BybitMarketData {
         let (book_tx, book_rx) = mpsc::unbounded_channel();
 
         self.quote_tx = Some(quote_tx.clone());
-        self.book_tx = Some(book_tx);
+        self.book_tx = Some(book_tx.clone());
 
         if self.instruments.is_empty() {
             anyhow::bail!("no symbols registered, call register_instrument() before connect()");
