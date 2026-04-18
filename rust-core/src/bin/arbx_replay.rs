@@ -59,6 +59,13 @@ struct Cli {
     /// don't drop stale fixture data.
     #[arg(long, default_value_t = true)]
     re_stamp: bool,
+
+    /// Path to a config YAML (same format as arbx-core). When set, the
+    /// strategy is built from the config instead of the hardcoded default.
+    /// Enables replay with any strategy type (cross_exchange, ewma_spread,
+    /// triangular_arb, etc.).
+    #[arg(long, short)]
+    config: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -270,6 +277,78 @@ fn spot_btc_usdt() -> Instrument {
     }
 }
 
+fn build_strategy_from_config(config_path: &str) -> anyhow::Result<Box<dyn ArbitrageStrategy>> {
+    let cfg = arbx_core::config::load(config_path)?;
+    let venue_a = match cfg.venues[0].name.to_lowercase().as_str() {
+        "binance" => Venue::Binance,
+        "bybit" => Venue::Bybit,
+        "okx" => Venue::Okx,
+        other => anyhow::bail!("unsupported venue: {other}"),
+    };
+    let venue_b = match cfg.venues.get(1).map(|v| v.name.to_lowercase()) {
+        Some(ref n) if n == "binance" => Venue::Binance,
+        Some(ref n) if n == "bybit" => Venue::Bybit,
+        Some(ref n) if n == "okx" => Venue::Okx,
+        _ => venue_a,
+    };
+    let instrument_a = Instrument {
+        asset_class: AssetClass::Crypto,
+        instrument_type: InstrumentType::Spot,
+        base: cfg.strategy.instrument_a.base.clone(),
+        quote: cfg.strategy.instrument_a.quote.clone(),
+        settle_currency: cfg.strategy.instrument_a.settle_currency.clone(),
+        expiry: None,
+        last_trade_time: None,
+        settlement_time: None,
+    };
+    let instrument_b = Instrument {
+        asset_class: AssetClass::Crypto,
+        instrument_type: InstrumentType::Spot,
+        base: cfg.strategy.instrument_b.base.clone(),
+        quote: cfg.strategy.instrument_b.quote.clone(),
+        settle_currency: cfg.strategy.instrument_b.settle_currency.clone(),
+        expiry: None,
+        last_trade_time: None,
+        settlement_time: None,
+    };
+    let fee_default = dec!(0.001);
+    let fee_a = FeeSchedule::new(
+        venue_a,
+        cfg.venues[0].fee_maker_override.unwrap_or(fee_default),
+        cfg.venues[0].fee_taker_override.unwrap_or(fee_default),
+    );
+    let fee_b = FeeSchedule::new(
+        venue_b,
+        cfg.venues
+            .get(1)
+            .and_then(|v| v.fee_maker_override)
+            .unwrap_or(fee_default),
+        cfg.venues
+            .get(1)
+            .and_then(|v| v.fee_taker_override)
+            .unwrap_or(fee_default),
+    );
+    let tick = cfg.strategy.tick_size_a.unwrap_or(dec!(0.01));
+    let lot = cfg.strategy.lot_size_a.unwrap_or(dec!(0.001));
+
+    Ok(Box::new(CrossExchangeStrategy {
+        venue_a,
+        venue_b,
+        instrument_a,
+        instrument_b,
+        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+        max_quantity: cfg.strategy.max_quantity,
+        fee_a,
+        fee_b,
+        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+        tick_size_a: tick,
+        tick_size_b: cfg.strategy.tick_size_b.unwrap_or(tick),
+        lot_size_a: lot,
+        lot_size_b: cfg.strategy.lot_size_b.unwrap_or(lot),
+        max_book_depth: cfg.strategy.max_book_depth,
+    }))
+}
+
 fn default_replay_strategy() -> CrossExchangeStrategy {
     CrossExchangeStrategy {
         venue_a: Venue::Binance,
@@ -306,8 +385,8 @@ fn quote_to_book(q: &Quote) -> OrderBook {
     }
 }
 
-async fn replay_quotes<S: ArbitrageStrategy>(
-    strategy: &S,
+async fn replay_quotes(
+    strategy: &dyn ArbitrageStrategy,
     quotes: Vec<Quote>,
     re_stamp: bool,
 ) -> Vec<Opportunity> {
@@ -420,8 +499,12 @@ async fn main() -> anyhow::Result<()> {
     if let Some(quotes_path) = cli.quotes.as_deref() {
         let quotes = load_quotes(quotes_path)?;
         let quotes_loaded = quotes.len();
-        let strategy = default_replay_strategy();
-        let opps = replay_quotes(&strategy, quotes, cli.re_stamp).await;
+        let strategy: Box<dyn ArbitrageStrategy> = if let Some(cfg_path) = cli.config.as_deref() {
+            build_strategy_from_config(cfg_path)?
+        } else {
+            Box::new(default_replay_strategy())
+        };
+        let opps = replay_quotes(strategy.as_ref(), quotes, cli.re_stamp).await;
 
         let diff = if let Some(tl_path) = cli.trade_log.as_deref() {
             let logs = load_trade_log(tl_path)?;
