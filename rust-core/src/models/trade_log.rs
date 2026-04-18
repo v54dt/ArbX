@@ -182,15 +182,26 @@ mod tests {
     }
 
     #[test]
+    fn today_date() -> String {
+        chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    #[test]
     fn writer_appends_one_jsonl_line_per_log() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trades.jsonl");
-        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        let base = dir.path().join("trades.jsonl");
+        let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         drop(w);
 
-        let body = std::fs::read_to_string(&path).unwrap();
+        let actual = dir
+            .path()
+            .join(format!("trades-{}.jsonl", today_date()));
+        let body = std::fs::read_to_string(&actual).unwrap();
         let lines: Vec<&str> = body.lines().collect();
         assert_eq!(lines.len(), 2);
         let parsed: TradeLog = serde_json::from_str(lines[0]).unwrap();
@@ -200,28 +211,33 @@ mod tests {
     #[test]
     fn writer_creates_parent_dir() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested/subdir/trades.jsonl");
-        let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+        let base = dir.path().join("nested/subdir/trades.jsonl");
+        let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
         w.append(&sample_trade_log()).unwrap();
         drop(w);
 
-        assert!(path.exists());
+        let actual = dir
+            .path()
+            .join(format!("nested/subdir/trades-{}.jsonl", today_date()));
+        assert!(actual.exists());
     }
 
     #[test]
     fn writer_append_preserves_prior_contents() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("trades.jsonl");
+        let base = dir.path().join("trades.jsonl");
         {
-            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
             w.append(&sample_trade_log()).unwrap();
         }
         {
-            // Re-open: should append, not truncate.
-            let mut w = TradeLogWriter::create(path.to_str().unwrap()).unwrap();
+            let mut w = TradeLogWriter::create(base.to_str().unwrap()).unwrap();
             w.append(&sample_trade_log()).unwrap();
         }
-        let lines = std::fs::read_to_string(&path).unwrap().lines().count();
+        let actual = dir
+            .path()
+            .join(format!("trades-{}.jsonl", today_date()));
+        let lines = std::fs::read_to_string(&actual).unwrap().lines().count();
         assert_eq!(lines, 2);
     }
 }
