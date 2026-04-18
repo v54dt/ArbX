@@ -5,7 +5,7 @@ use chrono::{Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
-use crate::models::enums::{OrderType, Side, Venue};
+use crate::models::enums::{OrderType, Side, TimeInForce, Venue};
 use crate::models::fee::FeeSchedule;
 use crate::models::instrument::Instrument;
 use crate::models::market::{BookMap, book_key};
@@ -245,8 +245,8 @@ impl ArbitrageStrategy for TriangularArbStrategy {
                 venue: leg.venue,
                 instrument: leg.instrument.clone(),
                 side: leg.side,
-                order_type: OrderType::Market,
-                time_in_force: None,
+                order_type: OrderType::Limit,
+                time_in_force: Some(TimeInForce::Ioc),
                 price: Some(leg.order_price),
                 quantity: leg.quantity,
             })
