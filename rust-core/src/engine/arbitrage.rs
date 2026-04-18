@@ -676,7 +676,8 @@ impl ArbitrageEngine {
             .collect::<Vec<_>>()
             .join(" | ");
 
-        info!(
+        info!(strategy = strategy_name, "opportunity detected");
+        tracing::trace!(
             id = opp.id.as_str(),
             direction = direction.as_str(),
             gross = %opp.economics.gross_profit,
@@ -684,7 +685,7 @@ impl ArbitrageEngine {
             net = %opp.economics.net_profit,
             net_bps = %opp.economics.net_profit_bps,
             notional = %opp.economics.notional,
-            "opportunity detected"
+            "opportunity detail"
         );
         self.emit(EngineEvent::OpportunityDetected {
             strategy: strategy_name.to_string(),
@@ -785,6 +786,24 @@ impl ArbitrageEngine {
                 approved_orders.push(req.into_order());
             }
 
+            // Pre-insert intended_fills keyed by client_order_id BEFORE submit
+            // so fills arriving during join_all can be correlated. On ack, re-key
+            // by venue-assigned order_id.
+            for order in &approved_orders {
+                let intended_price = order.price.unwrap_or(Decimal::ZERO);
+                if !intended_price.is_zero() {
+                    self.intended_fills.insert(
+                        order.client_order_id.clone(),
+                        IntendedFill {
+                            side: order.side,
+                            intended_price,
+                            venue: order.venue,
+                            submitted_at: self.clock.utc_now(),
+                        },
+                    );
+                }
+            }
+
             let futures: Vec<_> = approved_orders
                 .iter()
                 .map(|order| self.executor_for(order.venue).submit_order(order))
@@ -810,16 +829,9 @@ impl ArbitrageEngine {
                         self.circuit_breaker.record_order();
                         submitted_count += 1;
                         let intended_price = order.price.unwrap_or(Decimal::ZERO);
-                        if !intended_price.is_zero() {
-                            self.intended_fills.insert(
-                                order_id.clone(),
-                                IntendedFill {
-                                    side: order.side,
-                                    intended_price,
-                                    venue: order.venue,
-                                    submitted_at: self.clock.utc_now(),
-                                },
-                            );
+                        // Re-key intended_fill from client_order_id → venue order_id.
+                        if let Some(fill) = self.intended_fills.remove(&order.client_order_id) {
+                            self.intended_fills.insert(order_id.clone(), fill);
                         }
                         if self.order_ttl_secs > 0 {
                             let deadline = self.clock.utc_now()
@@ -883,12 +895,13 @@ impl ArbitrageEngine {
                 created_at: self.clock.utc_now(),
             };
 
-            info!(
+            info!(outcome = ?trade_log.outcome, "trade log recorded");
+            tracing::trace!(
                 trade_id = trade_log.id.as_str(),
-                outcome = ?trade_log.outcome,
                 legs = trade_log.legs.len(),
                 expected_net = %trade_log.expected_net_profit,
-                "trade log recorded"
+                notional = %trade_log.notional,
+                "trade detail"
             );
 
             if let Some(writer) = self.trade_log_writer.as_mut()
