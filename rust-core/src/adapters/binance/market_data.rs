@@ -223,10 +223,27 @@ impl MarketDataFeed for BinanceMarketData {
                         first_connect = false;
                         crate::metrics::set_ws_connected("binance", true);
                         let (mut write, mut read) = ws_stream.split();
+                        let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
+                        ping_interval.tick().await;
+                        let mut last_activity = std::time::Instant::now();
+                        let stale_threshold = Duration::from_secs(65);
 
                         'msg: loop {
                             tokio::select! {
+                                _ = ping_interval.tick() => {
+                                    if last_activity.elapsed() > stale_threshold {
+                                        warn!("Binance WS stale — no message in {:?}, reconnecting", stale_threshold);
+                                        crate::metrics::set_ws_connected("binance", false);
+                                        break 'msg;
+                                    }
+                                    let ping = tokio_tungstenite::tungstenite::Message::Ping(vec![]);
+                                    if let Err(e) = write.send(ping).await {
+                                        warn!(error = %e, "Binance WS ping failed, will reconnect");
+                                        break 'msg;
+                                    }
+                                }
                                 Some(msg) = read.next() => {
+                                    last_activity = std::time::Instant::now();
                                     match msg {
                                         Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
                                             info!("Binance sent close frame (24h limit), reconnecting");
