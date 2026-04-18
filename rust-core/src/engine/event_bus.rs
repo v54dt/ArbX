@@ -76,7 +76,6 @@ impl EngineEventBus {
         let _ = self.tx.send(event);
     }
 
-    #[allow(dead_code)]
     pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
         self.tx.subscribe()
     }
