@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use rust_decimal::Decimal;
 use std::str::FromStr;
 use tokio::sync::mpsc;
@@ -33,17 +33,49 @@ impl HistoricalDataFeed {
             }
             let fields: Vec<&str> = line.split(',').collect();
             if fields.len() < 8 {
-                anyhow::bail!("line {}: expected 8 fields, got {}", i + 1, fields.len());
+                tracing::warn!(
+                    line = i + 1,
+                    fields = fields.len(),
+                    "skipping malformed CSV row"
+                );
+                continue;
             }
-            let timestamp_ms: i64 = fields[0].trim().parse()?;
-            let timestamp: DateTime<Utc> = Utc.timestamp_millis_opt(timestamp_ms).unwrap();
-            let venue = parse_venue(fields[1].trim())?;
+            let timestamp_ms: i64 = match fields[0].trim().parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(line = i + 1, error = %e, "skipping row: bad timestamp");
+                    continue;
+                }
+            };
+            let Some(timestamp) = Utc.timestamp_millis_opt(timestamp_ms).single() else {
+                tracing::warn!(line = i + 1, "skipping row: invalid timestamp_ms");
+                continue;
+            };
+            let venue = match parse_venue(fields[1].trim()) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(line = i + 1, error = %e, "skipping row: bad venue");
+                    continue;
+                }
+            };
             let base = fields[2].trim().to_string();
             let quote_ccy = fields[3].trim().to_string();
-            let bid = Decimal::from_str(fields[4].trim())?;
-            let ask = Decimal::from_str(fields[5].trim())?;
-            let bid_size = Decimal::from_str(fields[6].trim())?;
-            let ask_size = Decimal::from_str(fields[7].trim())?;
+            let Ok(bid) = Decimal::from_str(fields[4].trim()) else {
+                tracing::warn!(line = i + 1, "skipping row: bad bid");
+                continue;
+            };
+            let Ok(ask) = Decimal::from_str(fields[5].trim()) else {
+                tracing::warn!(line = i + 1, "skipping row: bad ask");
+                continue;
+            };
+            let Ok(bid_size) = Decimal::from_str(fields[6].trim()) else {
+                tracing::warn!(line = i + 1, "skipping row: bad bid_size");
+                continue;
+            };
+            let Ok(ask_size) = Decimal::from_str(fields[7].trim()) else {
+                tracing::warn!(line = i + 1, "skipping row: bad ask_size");
+                continue;
+            };
 
             quotes.push(Quote {
                 venue,
