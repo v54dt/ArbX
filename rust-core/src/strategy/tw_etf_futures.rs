@@ -171,6 +171,23 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
             .collect()
     }
 
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        let book_etf = books.get(&book_key(self.venue, &self.etf_instrument))?;
+        let book_fut = books.get(&book_key(self.venue, &self.futures_instrument))?;
+        let mid_etf = book_etf.mid_price()?;
+        let mid_fut = book_fut.mid_price()?;
+        let basis_bps = if mid_etf > Decimal::ZERO {
+            (mid_fut - mid_etf) / mid_etf * Decimal::from(10_000)
+        } else {
+            Decimal::ZERO
+        };
+        let threshold = opp.economics.net_profit_bps / Decimal::from(2);
+        if basis_bps.abs() < threshold {
+            return None;
+        }
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str {
         "tw_etf_futures"
     }

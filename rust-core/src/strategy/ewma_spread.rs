@@ -324,6 +324,23 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
             .collect()
     }
 
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        let book_a = books.get(&book_key(self.venue_a, &self.instrument_a))?;
+        let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
+        let mid_a = book_a.mid_price()?;
+        let mid_b = book_b.mid_price()?;
+        let current_spread_bps = if mid_a > Decimal::ZERO {
+            (mid_b - mid_a) / mid_a * Decimal::from(10_000)
+        } else {
+            Decimal::ZERO
+        };
+        let threshold = opp.economics.net_profit_bps / Decimal::from(2);
+        if current_spread_bps.abs() < threshold {
+            return None;
+        }
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str {
         "ewma_spread"
     }

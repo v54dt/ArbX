@@ -204,6 +204,22 @@ impl ArbitrageStrategy for CrossVenueFundingStrategy {
             .collect()
     }
 
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        let book_a = books.get(&book_key(self.venue_a, &self.instrument_a))?;
+        let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
+        let mid_a = book_a.mid_price()?;
+        let mid_b = book_b.mid_price()?;
+        let current_diff_bps = if mid_b > Decimal::ZERO {
+            ((mid_a - mid_b) / mid_b).abs() * Decimal::from(10_000)
+        } else {
+            Decimal::ZERO
+        };
+        if current_diff_bps < self.min_funding_diff_bps {
+            return None;
+        }
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str {
         "cross_venue_funding"
     }
