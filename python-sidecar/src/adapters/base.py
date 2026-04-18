@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
-from src.models.messages import Fill, OrderRequest, OrderResponse, Quote
+from src.models.messages import OrderRequest, OrderResponse, Quote
 
 
 class BaseAdapter(ABC):

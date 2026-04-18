@@ -1,11 +1,10 @@
 import asyncio
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from src.adapters.base import BaseAdapter
 from src.models.messages import (
-    Fill,
     OrderRequest,
     OrderResponse,
     Quote,
@@ -33,7 +32,7 @@ class FubonAdapter(BaseAdapter):
         self._loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self) -> None:
-        from fubon_neo.sdk import FubonSDK, Order
+        from fubon_neo.sdk import FubonSDK
 
         self._loop = asyncio.get_running_loop()
         self._sdk = FubonSDK()

@@ -64,6 +64,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all
 
+  python:
+    name: python sidecar (ruff + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - name: Install Python + deps
+        run: |
+          cd python-sidecar
+          uv python install 3.13
+          uv venv --python 3.13 .venv
+          uv pip install --python .venv/bin/python -e .[dev]
+      - name: Lint
+        run: cd python-sidecar && .venv/bin/ruff check src
+      - name: Test
+        run: cd python-sidecar && .venv/bin/python -m pytest -x
+
   bench:
     name: cargo bench (PR vs main)
     runs-on: ubuntu-latest

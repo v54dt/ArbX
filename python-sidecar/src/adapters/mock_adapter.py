@@ -12,10 +12,10 @@ import asyncio
 import logging
 import random
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from src.adapters.base import BaseAdapter
-from src.models.messages import Fill, OrderRequest, OrderResponse, Quote, Venue
+from src.models.messages import OrderRequest, OrderResponse, Quote, Venue
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,10 @@ class MockAdapter(BaseAdapter):
 
     async def connect(self) -> None:
         self._running = True
-        logger.info("MockAdapter connected venue=%s interval=%dms", self.venue.value, self.interval_ms)
+        logger.info(
+            "MockAdapter connected venue=%s interval=%dms",
+            self.venue.value, self.interval_ms,
+        )
 
     async def disconnect(self) -> None:
         self._running = False
