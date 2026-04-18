@@ -72,7 +72,7 @@ struct OrderBookData {
 impl OrderBookData {
     fn parse_levels(
         raw: &[Vec<String>],
-    ) -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 10]> {
+    ) -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 20]> {
         raw.iter()
             .filter_map(|pair| {
                 let price = pair.first()?.parse::<Decimal>().ok()?;

@@ -194,7 +194,7 @@ impl MarketDataFeed for OkxMarketData {
                                                     let inst_id = json.get("arg").and_then(|a| a.get("instId")).and_then(|v| v.as_str()).unwrap_or("");
                                                     if let Some(instrument) = instruments.get(inst_id) {
                                                         let now = chrono::Utc::now();
-                                                        let parse_levels = |key: &str| -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 10]> {
+                                                        let parse_levels = |key: &str| -> smallvec::SmallVec<[crate::models::market::OrderBookLevel; 20]> {
                                                             snap.get(key).and_then(|v| v.as_array()).map(|arr| {
                                                                 arr.iter().filter_map(|row| {
                                                                     let r = row.as_array()?;
