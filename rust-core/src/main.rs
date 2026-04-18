@@ -1233,9 +1233,31 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or("127.0.0.1")
         .to_string();
     let admin_token = std::env::var("ARBX_ADMIN_TOKEN").ok();
+    let event_bus = engine::event_bus::EngineEventBus::new();
+    engine = engine.with_event_bus(event_bus.clone());
+
     let admin_handle =
         engine::admin::EngineHandle::new(shutdown_tx.clone()).with_token(admin_token);
     engine = engine.with_admin(admin_handle.clone());
+
+    // Collector task: subscribes to event bus and pushes descriptions into
+    // admin's recent_events buffer so /recent-events endpoint has data.
+    {
+        let handle = admin_handle.clone();
+        let mut rx = event_bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => handle.push_event(format!("{:?}", event)).await,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::debug!(skipped = n, "event bus collector lagged");
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     tokio::spawn(async move {
         if let Err(e) = engine::admin::serve(admin_handle, admin_port, &admin_bind).await {
             tracing::warn!(error = %e, "admin HTTP server exited");

@@ -196,7 +196,6 @@ impl ArbitrageEngine {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_event_bus(mut self, bus: EngineEventBus) -> Self {
         self.event_bus = Some(bus);
         self

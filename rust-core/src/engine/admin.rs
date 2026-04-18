@@ -8,6 +8,7 @@
 //!   POST /resume    → set paused=false
 //!   POST /kill      → trigger shutdown_tx send(true)
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -32,7 +33,12 @@ pub struct EngineHandle {
     pub cb_state: Arc<Mutex<CircuitBreakerState>>,
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub admin_token: Option<String>,
+    /// Bounded buffer of recent engine events (populated by a collector task
+    /// subscribing to the event bus). Exposed via GET /recent-events.
+    pub recent_events: Arc<Mutex<VecDeque<String>>>,
 }
+
+const MAX_RECENT_EVENTS: usize = 100;
 
 impl EngineHandle {
     pub fn new(shutdown_tx: tokio::sync::watch::Sender<bool>) -> Self {
@@ -46,12 +52,22 @@ impl EngineHandle {
             })),
             shutdown_tx,
             admin_token: None,
+            recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_RECENT_EVENTS))),
         }
     }
 
     pub fn with_token(mut self, token: Option<String>) -> Self {
         self.admin_token = token;
         self
+    }
+
+    /// Push an event description into the recent_events buffer (capped at 100).
+    pub async fn push_event(&self, desc: String) {
+        let mut buf = self.recent_events.lock().await;
+        if buf.len() >= MAX_RECENT_EVENTS {
+            buf.pop_front();
+        }
+        buf.push_back(desc);
     }
 }
 
@@ -136,11 +152,18 @@ async fn kill(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl In
     (StatusCode::OK, "shutting down")
 }
 
+async fn recent_events(State(handle): State<EngineHandle>) -> impl IntoResponse {
+    let buf = handle.recent_events.lock().await;
+    let events: Vec<&str> = buf.iter().map(String::as_str).collect();
+    Json(events)
+}
+
 /// Build the Router. Exposed for tests; main.rs uses `serve` instead.
 pub fn router(handle: EngineHandle) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/status", get(status))
+        .route("/recent-events", get(recent_events))
         .route("/pause", post(pause))
         .route("/resume", post(resume))
         .route("/kill", post(kill))
