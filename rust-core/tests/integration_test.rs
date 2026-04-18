@@ -953,3 +953,125 @@ async fn cross_venue_fill_routes_to_legacy_pm_when_no_per_venue_pm() {
         "expected at least one PM to receive fills (binance={binance_pos}, legacy={legacy_pos})"
     );
 }
+
+/// B17-7: Fill-before-ACK — a fill arriving via private stream with an
+/// order_id the engine hasn't inserted into intended_fills yet. The engine
+/// should NOT panic: it processes risk_state + position updates, just skips
+/// slippage tracking (intended_fills.remove returns None).
+#[tokio::test]
+async fn fill_with_unknown_order_id_does_not_panic() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    // fill_rate=0 so executor doesn't produce its own fills
+    let executor = MockExchange::new(vec![], 0, 0.0);
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+    let positions = position_manager.positions_handle();
+
+    // Inject a fill via private stream for an order_id that was never submitted
+    let rogue_fill = Fill {
+        order_id: "rogue-never-submitted".into(),
+        venue: Venue::Binance,
+        instrument: spot_instrument(),
+        side: Side::Buy,
+        price: dec!(50000),
+        quantity: dec!(0.01),
+        fee: Decimal::ZERO,
+        fee_currency: "USDT".into(),
+        filled_at: Utc::now(),
+    };
+    let private_stream: Box<dyn PrivateStream> =
+        Box::new(PrecannedPrivateStream::single(rogue_fill));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        vec![private_stream],
+        Vec::new(),
+        3600,
+        0,
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let _ = shutdown_tx.send(true);
+    let _engine = handle.await.unwrap();
+
+    // Engine didn't panic. The fill was processed (position updated).
+    let pos_count = positions.lock().await.len();
+    assert!(
+        pos_count > 0,
+        "rogue fill should still update position manager"
+    );
+}
+
+/// B17-8: Pending-cancels are NOT flushed on shutdown — documents current
+/// behavior. Engine breaks out of the main loop immediately on shutdown;
+/// any orders with TTL that haven't been cancelled yet are left dangling.
+/// Startup reconciliation (D-1A cancel-all) handles them on next start.
+#[tokio::test]
+async fn pending_cancels_not_flushed_on_shutdown() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    // fill_rate=0 → orders rest without filling, enter pending_cancels
+    let executor = MockExchange::new(vec![], 0, 0.0);
+    let cancels = executor.cancels_handle();
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        30, // order_ttl_secs=30 — won't fire in 500ms
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+    // Let quotes produce opportunities + orders, then shutdown BEFORE TTL fires.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    let logs = engine.trade_logs();
+    assert!(!logs.is_empty(), "should have submitted orders");
+
+    // Cancels should NOT have been called — shutdown breaks the loop before
+    // TTL expiry. This is by design: D-1A cancel-all handles orphans on restart.
+    let cancel_count = cancels.lock().await.len();
+    assert_eq!(
+        cancel_count, 0,
+        "pending_cancels should NOT be flushed on shutdown (current design); got {cancel_count}"
+    );
+}
