@@ -785,3 +785,102 @@ async fn event_bus_late_subscriber_misses_prior_events() {
         "late subscriber should only see events published after subscribe"
     );
 }
+
+/// B17-4: TTL expiry triggers cancel_order via the executor. Engine is
+/// configured with order_ttl_secs=1; after opportunity → submit, the
+/// cancel_check_interval (500ms) should fire and cancel the resting order
+/// within 2 seconds.
+#[tokio::test]
+async fn ttl_expiry_triggers_cancel() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    // fill_rate=0 → submits succeed but no fills arrive, so orders stay
+    // in intended_fills + pending_cancels until TTL expires.
+    let executor = MockExchange::new(vec![], 0, 0.0);
+    let cancels = executor.cancels_handle();
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(10_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(50_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(position_manager),
+        Vec::new(),
+        Vec::new(),
+        3600,
+        1, // order_ttl_secs = 1s
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+
+    // Wait long enough for quotes to produce an opportunity (100ms), TTL to
+    // expire (1s), and the cancel_check_interval (500ms) to fire.
+    tokio::time::sleep(Duration::from_millis(3000)).await;
+    let _ = shutdown_tx.send(true);
+    let _engine = handle.await.unwrap();
+
+    let cancel_count = cancels.lock().await.len();
+    assert!(
+        cancel_count > 0,
+        "expected at least one cancel after TTL expiry; got {cancel_count}"
+    );
+}
+
+/// B17-5: PartialFailure outcome when executor fails some orders.
+/// MockExchange with_submit_failure causes ALL submits to fail, so the
+/// outcome should be PartialFailure (some risk-approved legs fail on submit).
+#[tokio::test]
+async fn partial_failure_when_executor_rejects() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(10);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    let executor = MockExchange::new(vec![], 0, 1.0).with_submit_failure();
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let mut engine = build_engine(
+        feed_a,
+        feed_b,
+        executor,
+        position_manager,
+        build_strategy(),
+        vec![],
+        dec!(100),
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    let logs = engine.trade_logs();
+    assert!(!logs.is_empty(), "expected at least one trade log");
+    // All submits fail → PartialFailure (not AllSubmitted, not RiskRejected).
+    for log in logs {
+        assert_eq!(
+            log.outcome,
+            TradeOutcome::PartialFailure,
+            "expected PartialFailure when executor rejects all submits"
+        );
+    }
+}
