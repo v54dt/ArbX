@@ -704,6 +704,8 @@ async fn run_backtest_mode(
             max_consecutive_failures: cfg.risk.circuit_breaker.max_consecutive_failures,
         },
         max_position_per_venue: cfg.risk.max_position_per_venue.clone(),
+        backtest_fill_delay_ms: cfg.risk.backtest_fill_delay_ms,
+        backtest_slippage_bps: cfg.risk.backtest_slippage_bps,
     };
 
     match window_size {
