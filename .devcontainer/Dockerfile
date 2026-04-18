@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Taipei
 
 # System dependencies for Aeron, FlatBuffers, and build tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
