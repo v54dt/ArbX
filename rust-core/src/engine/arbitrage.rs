@@ -41,6 +41,7 @@ struct IntendedFill {
 }
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
+const TRADE_LOG_CAP: usize = 10_000;
 
 fn fill_fingerprint(fill: &Fill) -> String {
     format!(
@@ -80,7 +81,7 @@ pub struct ArbitrageEngine {
     quote_publishers: Vec<Arc<dyn IpcPublisher>>,
     books: BookMap,
     portfolios: HashMap<String, PortfolioSnapshot>,
-    trade_logs: Vec<TradeLog>,
+    trade_logs: std::collections::VecDeque<TradeLog>,
     intended_fills: HashMap<String, IntendedFill>,
     pending_cancels: Vec<(chrono::DateTime<Utc>, String)>,
     seen_fills: std::collections::VecDeque<String>,
@@ -134,7 +135,7 @@ impl ArbitrageEngine {
             quote_publishers,
             books: BookMap::default(),
             portfolios: HashMap::new(),
-            trade_logs: vec![],
+            trade_logs: std::collections::VecDeque::with_capacity(TRADE_LOG_CAP),
             intended_fills: HashMap::new(),
             pending_cancels: Vec::new(),
             seen_fills: std::collections::VecDeque::with_capacity(FILL_DEDUP_CAPACITY),
@@ -247,7 +248,7 @@ impl ArbitrageEngine {
         self.position_manager.as_ref()
     }
 
-    pub fn trade_logs(&self) -> &[TradeLog] {
+    pub fn trade_logs(&self) -> &std::collections::VecDeque<TradeLog> {
         &self.trade_logs
     }
 
@@ -556,6 +557,7 @@ impl ArbitrageEngine {
                             }
                             Err(e) => {
                                 warn!(error = %e, order_id = order_id.as_str(), "TTL cancel failed");
+                                self.intended_fills.remove(&order_id);
                             }
                         }
                     }
@@ -933,7 +935,10 @@ impl ArbitrageEngine {
                 budget.record_pnl(trade_log.expected_net_profit);
             }
 
-            self.trade_logs.push(trade_log);
+            if self.trade_logs.len() >= TRADE_LOG_CAP {
+                self.trade_logs.pop_front();
+            }
+            self.trade_logs.push_back(trade_log);
 
             // Update admin status snapshot for /status endpoint.
             if let Some(admin) = self.admin.as_ref() {
