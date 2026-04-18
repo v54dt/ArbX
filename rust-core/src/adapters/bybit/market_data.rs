@@ -147,10 +147,13 @@ impl MarketDataFeed for BybitMarketData {
 
                         let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
                         ping_interval.tick().await;
+                        let mut last_activity = std::time::Instant::now();
+                        let stale_threshold = Duration::from_secs(45);
 
                         'msg: loop {
                             tokio::select! {
                                 Some(msg) = read.next() => {
+                                    last_activity = std::time::Instant::now();
                                     match msg {
                                         Ok(msg) => {
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
@@ -190,6 +193,11 @@ impl MarketDataFeed for BybitMarketData {
                                 }
 
                                 _ = ping_interval.tick() => {
+                                    if last_activity.elapsed() > stale_threshold {
+                                        warn!("Bybit WS stale — no message in {:?}, reconnecting", stale_threshold);
+                                        crate::metrics::set_ws_connected("bybit", false);
+                                        break 'msg;
+                                    }
                                     let ping = tokio_tungstenite::tungstenite::Message::Text(
                                         r#"{"op":"ping"}"#.into(),
                                     );

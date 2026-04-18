@@ -143,10 +143,13 @@ impl MarketDataFeed for OkxMarketData {
 
                         let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
                         ping_interval.tick().await;
+                        let mut last_activity = std::time::Instant::now();
+                        let stale_threshold = Duration::from_secs(55);
 
                         'msg: loop {
                             tokio::select! {
                                 Some(msg) = read.next() => {
+                                    last_activity = std::time::Instant::now();
                                     match msg {
                                         Ok(msg) => {
                                             if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
@@ -190,6 +193,11 @@ impl MarketDataFeed for OkxMarketData {
                                 }
 
                                 _ = ping_interval.tick() => {
+                                    if last_activity.elapsed() > stale_threshold {
+                                        warn!("OKX WS stale — no message in {:?}, reconnecting", stale_threshold);
+                                        crate::metrics::set_ws_connected("okx", false);
+                                        break 'msg;
+                                    }
                                     let ping = tokio_tungstenite::tungstenite::Message::Text("ping".into());
                                     if let Err(e) = write.send(ping).await {
                                         warn!(error = %e, "OKX WS ping failed, will reconnect");
