@@ -395,6 +395,20 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
             config.strategy.max_quote_age_ms
         );
     }
+    if config.strategy.max_quote_age_ms > 300_000 {
+        anyhow::bail!(
+            "strategy.max_quote_age_ms must be <= 300000 (5 min); got {} — \
+             this effectively disables staleness protection",
+            config.strategy.max_quote_age_ms
+        );
+    }
+    if config.strategy.max_quote_age_ms > 30_000 {
+        tracing::warn!(
+            max_quote_age_ms = config.strategy.max_quote_age_ms,
+            "max_quote_age_ms > 30s is unusually high — quotes older than \
+             30s are rarely useful for arbitrage"
+        );
+    }
 
     if strat == "triangular_arb" {
         if config.strategy.triangle_cycles.is_empty() {

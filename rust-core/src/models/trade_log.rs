@@ -45,11 +45,18 @@ pub struct TradeLog {
 /// flushed per append so a crash mid-session still leaves the prior logs on disk.
 pub struct TradeLogWriter {
     writer: std::io::BufWriter<std::fs::File>,
+    base_path: String,
+    current_date: String,
 }
 
 impl TradeLogWriter {
     pub fn create(path: &str) -> anyhow::Result<Self> {
-        if let Some(parent) = std::path::Path::new(path).parent()
+        let date = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        let actual_path = Self::dated_path(path, &date);
+        if let Some(parent) = std::path::Path::new(&actual_path).parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent)?;
@@ -57,14 +64,50 @@ impl TradeLogWriter {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(path)?;
+            .open(&actual_path)?;
         Ok(Self {
             writer: std::io::BufWriter::new(file),
+            base_path: path.to_string(),
+            current_date: date,
         })
+    }
+
+    fn dated_path(base: &str, date: &str) -> String {
+        if let Some(dot) = base.rfind('.') {
+            format!("{}-{}{}", &base[..dot], date, &base[dot..])
+        } else {
+            format!("{}-{}", base, date)
+        }
+    }
+
+    fn maybe_rotate(&mut self) -> anyhow::Result<()> {
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        if today != self.current_date {
+            use std::io::Write as _;
+            self.writer.flush()?;
+            let new_path = Self::dated_path(&self.base_path, &today);
+            if let Some(parent) = std::path::Path::new(&new_path).parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&new_path)?;
+            self.writer = std::io::BufWriter::new(file);
+            self.current_date = today;
+            tracing::info!(path = new_path.as_str(), "trade_log rotated to new day");
+        }
+        Ok(())
     }
 
     pub fn append(&mut self, log: &TradeLog) -> anyhow::Result<()> {
         use std::io::Write as _;
+        self.maybe_rotate()?;
         let line = serde_json::to_string(log)?;
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
