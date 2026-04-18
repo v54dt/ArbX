@@ -298,6 +298,107 @@ fn bench_intended_fills_lookup(c: &mut Criterion) {
     });
 }
 
+/// E2E critical path: quote→book_update→strategy_evaluate→risk_check→compute_orders.
+/// Measures the combined latency of the entire hot path the engine traverses
+/// per quote, excluding network I/O (which dominates in production).
+fn bench_e2e_quote_to_orders(c: &mut Criterion) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let instrument_spot = make_instrument(InstrumentType::Spot);
+    let strategy = CrossExchangeStrategy {
+        venue_a: Venue::Binance,
+        venue_b: Venue::Bybit,
+        instrument_a: instrument_spot.clone(),
+        instrument_b: instrument_spot.clone(),
+        min_net_profit_bps: dec!(1),
+        max_quantity: dec!(1),
+        fee_a: FeeSchedule::new(Venue::Binance, dec!(0.0001), dec!(0.0001)),
+        fee_b: FeeSchedule::new(Venue::Bybit, dec!(0.0001), dec!(0.0001)),
+        max_quote_age_ms: 5000,
+        tick_size_a: dec!(0.01),
+        tick_size_b: dec!(0.01),
+        lot_size_a: dec!(0.001),
+        lot_size_b: dec!(0.001),
+        max_book_depth: 5,
+    };
+
+    let risk_limits: Vec<Box<dyn arbx_core::risk::limits::RiskLimit>> = vec![
+        Box::new(MaxPositionSize {
+            max_quantity: dec!(100),
+        }),
+        Box::new(MaxDailyLoss {
+            max_loss: dec!(100000),
+        }),
+        Box::new(MaxNotionalExposure {
+            max_notional: dec!(10000000),
+        }),
+    ];
+    let risk_manager = RiskManager::new(risk_limits);
+
+    let mut books = BookMap::default();
+    books.insert(
+        book_key(Venue::Binance, &instrument_spot),
+        make_orderbook(Venue::Binance, &instrument_spot, dec!(49900), dec!(50000)),
+    );
+    books.insert(
+        book_key(Venue::Bybit, &instrument_spot),
+        make_orderbook(Venue::Bybit, &instrument_spot, dec!(50200), dec!(50300)),
+    );
+
+    let portfolios: HashMap<String, PortfolioSnapshot> = HashMap::new();
+
+    c.bench_function("e2e_quote_to_orders", |b| {
+        b.iter(|| {
+            // 1. Update book from a fresh quote
+            let quote = Quote {
+                venue: Venue::Binance,
+                instrument: instrument_spot.clone(),
+                bid: dec!(49900),
+                ask: dec!(50000),
+                bid_size: dec!(10),
+                ask_size: dec!(10),
+                timestamp: Utc::now(),
+            };
+            let key = book_key(quote.venue, &quote.instrument);
+            books
+                .entry(key)
+                .and_modify(|b| b.update_from_quote(&quote))
+                .or_insert_with(|| {
+                    make_orderbook(quote.venue, &quote.instrument, quote.bid, quote.ask)
+                });
+
+            // 2. Strategy evaluate
+            let opp = rt.block_on(strategy.evaluate(&books, &portfolios));
+
+            // 3. Risk check + compute orders
+            if let Some(ref opp) = opp {
+                let orders = strategy.compute_hedge_orders(opp);
+                for req in &orders {
+                    let order = req.clone().into_order();
+                    let portfolio = PortfolioSnapshot::default();
+                    let _verdict = risk_manager.check_pre_trade(
+                        &OrderRequest {
+                            venue: order.venue,
+                            instrument: order.instrument.clone(),
+                            side: order.side,
+                            order_type: order.order_type,
+                            time_in_force: order.time_in_force,
+                            price: order.price,
+                            quantity: order.quantity,
+                        },
+                        &portfolio,
+                    );
+                }
+            }
+
+            black_box(opp)
+        })
+    });
+}
+
 criterion_group!(
     benches,
     bench_strategy_evaluate,
@@ -311,5 +412,6 @@ criterion_group!(
     bench_dedup_check,
     bench_dedup_check_duplicate,
     bench_intended_fills_lookup,
+    bench_e2e_quote_to_orders,
 );
 criterion_main!(benches);
