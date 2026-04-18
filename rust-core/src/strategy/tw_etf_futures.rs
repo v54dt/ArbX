@@ -172,8 +172,8 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
     }
 
     fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
-        let book_etf = books.get(&book_key(self.venue_etf, &self.instrument_etf))?;
-        let book_fut = books.get(&book_key(self.venue_futures, &self.instrument_futures))?;
+        let book_etf = books.get(&book_key(self.venue, &self.etf_instrument))?;
+        let book_fut = books.get(&book_key(self.venue, &self.futures_instrument))?;
         let mid_etf = book_etf.mid_price()?;
         let mid_fut = book_fut.mid_price()?;
         let basis_bps = if mid_etf > Decimal::ZERO {
