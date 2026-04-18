@@ -84,6 +84,7 @@ pub async fn run_backtest(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+    let test_clock = crate::engine::clock::TestClock::new(chrono::Utc::now());
     let mut engine = ArbitrageEngine::new(
         feeds,
         strategy,
@@ -97,7 +98,8 @@ pub async fn run_backtest(
         86400,
         0,
         shutdown_rx,
-    );
+    )
+    .with_clock(Box::new(test_clock));
 
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
