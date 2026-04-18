@@ -585,7 +585,10 @@ impl ArbitrageEngine {
 
         // Primary strategy
         let eval_start = std::time::Instant::now();
-        let eval_result = self.strategy.evaluate(&self.books, &self.portfolios).await;
+        let eval_result = self
+            .strategy
+            .evaluate(&self.books, &self.portfolios, self.clock.utc_now())
+            .await;
         let eval_us = eval_start.elapsed().as_micros();
         let primary_name = self.strategy.name().to_string();
         crate::metrics::record_eval_latency_us(&primary_name, eval_us as f64);
@@ -608,7 +611,9 @@ impl ArbitrageEngine {
             let (name, eval_us, verified_and_orders) = {
                 let s = &self.extra_strategies[i];
                 let t0 = std::time::Instant::now();
-                let opp = s.evaluate(&self.books, &self.portfolios).await;
+                let opp = s
+                    .evaluate(&self.books, &self.portfolios, self.clock.utc_now())
+                    .await;
                 let us = t0.elapsed().as_micros();
                 let n = s.name().to_string();
                 let result = opp.and_then(|o| {

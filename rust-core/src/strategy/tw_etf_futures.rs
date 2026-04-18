@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
@@ -36,11 +36,11 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
         &self,
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         let etf_book = books.get(&book_key(self.venue, &self.etf_instrument))?;
         let fut_book = books.get(&book_key(self.venue, &self.futures_instrument))?;
 
-        let now = Utc::now();
         let max_age = Duration::milliseconds(self.max_quote_age_ms);
         if now - etf_book.local_timestamp > max_age || now - fut_book.local_timestamp > max_age {
             return None;
@@ -308,7 +308,11 @@ mod tests {
         let etf_mid = dec!(150);
         let fair = etf_mid * (Decimal::ONE + dec!(200) / dec!(10000) * dec!(30) / dec!(365));
         let books = make_books(dec!(149), dec!(151), fair, fair);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -317,7 +321,10 @@ mod tests {
         // ETF mid = 150, fair ≈ 150.2466
         // Futures bid well above fair value
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].side, Side::Buy); // buy ETF
         assert_eq!(opp.legs[1].side, Side::Sell); // sell futures
         assert_eq!(opp.legs[0].instrument, etf_instrument());
@@ -332,7 +339,10 @@ mod tests {
         // ETF mid = 150, fair ≈ 150.2466
         // Futures ask well below fair value
         let books = make_books(dec!(149), dec!(151), dec!(140), dec!(141));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell); // sell ETF
         assert_eq!(opp.legs[1].side, Side::Buy); // buy futures
         assert!(opp.economics.gross_profit > Decimal::ZERO);
@@ -345,14 +355,21 @@ mod tests {
         s.min_net_profit_bps = dec!(500);
         // Small deviation that won't meet 500 bps threshold
         let books = make_books(dec!(149), dec!(151), dec!(151), dec!(152));
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
     async fn hedge_ratio_scales_etf_quantity() {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         let fut_qty = opp.legs[1].quantity;
         let etf_qty = opp.legs[0].quantity;
         assert_eq!(etf_qty, fut_qty * dec!(200));
@@ -362,7 +379,10 @@ mod tests {
     async fn compute_hedge_orders_returns_ioc_limits() {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         let orders = s.compute_hedge_orders(&opp);
         assert_eq!(orders.len(), 2);
         for order in &orders {
@@ -378,13 +398,18 @@ mod tests {
         let etf = etf_instrument();
         let fut = futures_instrument();
         let now = Utc::now();
+
         let mut etf_book = orderbook(&etf, dec!(149), dec!(151));
         etf_book.local_timestamp = now - Duration::seconds(10);
         let fut_book = orderbook(&fut, dec!(155), dec!(156));
         let mut m = BookMap::default();
         m.insert(book_key(Venue::Fubon, &etf), etf_book);
         m.insert(book_key(Venue::Fubon, &fut), fut_book);
-        assert!(s.evaluate(&m, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&m, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -392,7 +417,10 @@ mod tests {
         let mut s = make_strategy();
         s.max_quantity = dec!(2);
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert!(opp.legs[1].quantity <= dec!(2));
     }
 
@@ -400,7 +428,10 @@ mod tests {
     async fn opportunity_kind_is_spot_futures_basis() {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         matches!(opp.kind, OpportunityKind::SpotFuturesBasis { .. });
     }
 
@@ -436,7 +467,10 @@ mod tests {
         // ETF tick rule: 100..500 → 0.50; futures tick = 1.0.
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         let orders = s.compute_hedge_orders(&opp);
         for order in &orders {
             let price = order.price.unwrap();

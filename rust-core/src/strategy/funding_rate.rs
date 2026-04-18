@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use smallvec::smallvec;
 
@@ -53,11 +53,11 @@ impl ArbitrageStrategy for FundingRateStrategy {
         &self,
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
+        now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         let perp_book = books.get(&book_key(self.venue, &self.instrument_perp))?;
         let spot_book = books.get(&book_key(self.venue, &self.instrument_spot))?;
 
-        let now = Utc::now();
         let max_age = Duration::milliseconds(self.max_quote_age_ms);
         if now - perp_book.local_timestamp > max_age || now - spot_book.local_timestamp > max_age {
             return None;
@@ -268,7 +268,11 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(50010), dec!(50011), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -277,7 +281,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(52500), dec!(52501), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell);
         assert_eq!(opp.legs[1].side, Side::Buy);
         assert!(opp.economics.net_profit > Decimal::ZERO);
@@ -289,7 +296,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(47500), dec!(47501), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].side, Side::Buy);
         assert_eq!(opp.legs[1].side, Side::Sell);
         assert!(opp.economics.net_profit > Decimal::ZERO);
@@ -301,7 +311,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(52500), dec!(52501), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(0.5));
         assert_eq!(opp.legs[1].quantity, dec!(0.5));
     }
@@ -313,7 +326,11 @@ mod tests {
         perp.local_timestamp = Utc::now() - Duration::seconds(30);
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        assert!(s.evaluate(&books, &empty_portfolios()).await.is_none());
+        assert!(
+            s.evaluate(&books, &empty_portfolios(), Utc::now())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -322,7 +339,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(52500), dec!(52501), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         let orders = s.compute_hedge_orders(&opp);
         assert_eq!(orders.len(), 2);
         assert_eq!(orders[0].order_type, OrderType::Limit);
@@ -337,7 +357,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(52500), dec!(52501), dec!(0.3));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(0.5));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(0.3));
     }
 
@@ -347,7 +370,10 @@ mod tests {
         let perp = book(&perp_instrument(), dec!(52500), dec!(52501), dec!(10));
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
-        let opp = s.evaluate(&books, &empty_portfolios()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .await
+            .unwrap();
         assert!(matches!(opp.kind, OpportunityKind::SpotFuturesBasis { .. }));
     }
 
