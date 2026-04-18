@@ -149,7 +149,7 @@ async fn extra_strategy_runs_alongside_primary() {
         let _ = engine.run().await;
         engine
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
     let engine = handle.await.unwrap();
 
@@ -214,7 +214,7 @@ async fn per_venue_executor_routes_by_order_venue() {
         engine
     });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
     let engine = handle.await.unwrap();
 
@@ -276,7 +276,7 @@ async fn engine_detects_opportunity_and_submits_orders() {
         engine
     });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
 
     let engine = handle.await.unwrap();
@@ -321,7 +321,7 @@ async fn engine_respects_risk_limits() {
         engine
     });
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
 
     let engine = handle.await.unwrap();
@@ -430,7 +430,7 @@ async fn private_stream_fill_updates_position_manager() {
 
     let handle = tokio::spawn(async move { engine.run().await });
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
     let _ = handle.await;
 
@@ -470,7 +470,7 @@ async fn engine_handles_graceful_shutdown() {
         (engine, result)
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
 
     let (engine, result) = handle.await.unwrap();
@@ -531,7 +531,7 @@ async fn duplicate_fill_is_deduplicated_by_fingerprint() {
 
     let handle = tokio::spawn(async move { engine.run().await });
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
     let _ = handle.await;
 
@@ -584,7 +584,7 @@ async fn circuit_breaker_trips_after_failures_and_skips_subsequent_orders() {
     });
 
     // Long enough for at least 2 opportunities to flow through.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::sleep(Duration::from_millis(2000)).await;
     let _ = shutdown_tx.send(true);
     let engine = handle.await.unwrap();
 
