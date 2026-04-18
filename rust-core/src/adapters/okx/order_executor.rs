@@ -67,9 +67,10 @@ impl OkxOrderExecutor {
         match s {
             "filled" => OrderStatus::Filled,
             "partially_filled" => OrderStatus::PartiallyFilled,
-            // "live" = accepted and resting — matches private_stream mapping.
             "live" => OrderStatus::Submitted,
             "canceled" => OrderStatus::Cancelled,
+            "expired" => OrderStatus::Expired,
+            "canceling" => OrderStatus::PendingCancel,
             _ => OrderStatus::Pending,
         }
     }
