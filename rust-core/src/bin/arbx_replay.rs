@@ -24,6 +24,9 @@ use arbx_core::models::trade_log::{TradeLog, TradeOutcome};
 use arbx_core::strategy::Opportunity;
 use arbx_core::strategy::base::ArbitrageStrategy;
 use arbx_core::strategy::cross_exchange::CrossExchangeStrategy;
+use arbx_core::strategy::cross_venue_funding::CrossVenueFundingStrategy;
+use arbx_core::strategy::ewma_spread::EwmaSpreadStrategy;
+use arbx_core::strategy::funding_rate::FundingRateStrategy;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use rust_decimal::Decimal;
@@ -331,22 +334,81 @@ fn build_strategy_from_config(config_path: &str) -> anyhow::Result<Box<dyn Arbit
     let tick = cfg.strategy.tick_size_a.unwrap_or(dec!(0.01));
     let lot = cfg.strategy.lot_size_a.unwrap_or(dec!(0.001));
 
-    Ok(Box::new(CrossExchangeStrategy {
-        venue_a,
-        venue_b,
-        instrument_a,
-        instrument_b,
-        min_net_profit_bps: cfg.strategy.min_net_profit_bps,
-        max_quantity: cfg.strategy.max_quantity,
-        fee_a,
-        fee_b,
-        max_quote_age_ms: cfg.strategy.max_quote_age_ms,
-        tick_size_a: tick,
-        tick_size_b: cfg.strategy.tick_size_b.unwrap_or(tick),
-        lot_size_a: lot,
-        lot_size_b: cfg.strategy.lot_size_b.unwrap_or(lot),
-        max_book_depth: cfg.strategy.max_book_depth,
-    }))
+    let tick_b = cfg.strategy.tick_size_b.unwrap_or(tick);
+    let lot_b = cfg.strategy.lot_size_b.unwrap_or(lot);
+
+    match cfg.strategy.name.as_str() {
+        "cross_exchange" => Ok(Box::new(CrossExchangeStrategy {
+            venue_a,
+            venue_b,
+            instrument_a,
+            instrument_b,
+            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+            max_quantity: cfg.strategy.max_quantity,
+            fee_a,
+            fee_b,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            tick_size_a: tick,
+            tick_size_b: tick_b,
+            lot_size_a: lot,
+            lot_size_b: lot_b,
+            max_book_depth: cfg.strategy.max_book_depth,
+        })),
+        "ewma_spread" => Ok(Box::new(EwmaSpreadStrategy::new(
+            venue_a,
+            venue_b,
+            instrument_a,
+            instrument_b,
+            fee_a,
+            fee_b,
+            cfg.strategy.ewma_alpha.unwrap_or(dec!(0.05)),
+            cfg.strategy.ewma_entry_sigma.unwrap_or(dec!(2.0)),
+            cfg.strategy.max_quantity,
+            cfg.strategy.min_net_profit_bps,
+            cfg.strategy.max_quote_age_ms,
+            tick,
+            tick_b,
+            lot,
+            cfg.strategy.max_book_depth,
+            cfg.strategy.ewma_min_samples.unwrap_or(60),
+        ))),
+        "funding_rate" => Ok(Box::new(FundingRateStrategy {
+            venue: venue_a,
+            instrument_perp: instrument_a,
+            instrument_spot: instrument_b,
+            min_funding_rate_bps: cfg
+                .strategy
+                .funding_min_bps
+                .unwrap_or(cfg.strategy.min_net_profit_bps),
+            max_quantity: cfg.strategy.max_quantity,
+            fee_perp: fee_a,
+            fee_spot: fee_b,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            funding_interval_hours: cfg.strategy.funding_interval_hours.unwrap_or(8),
+        })),
+        "cross_venue_funding" => Ok(Box::new(CrossVenueFundingStrategy {
+            venue_a,
+            venue_b,
+            instrument_a,
+            instrument_b,
+            min_funding_diff_bps: cfg.strategy.min_net_profit_bps,
+            max_quantity: cfg.strategy.max_quantity,
+            fee_a,
+            fee_b,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            funding_interval_hours: cfg.strategy.funding_interval_hours.unwrap_or(8),
+            tick_size_a: tick,
+            tick_size_b: tick_b,
+            lot_size_a: lot,
+            lot_size_b: lot_b,
+            holding_intervals: 21,
+        })),
+        other => anyhow::bail!(
+            "unsupported strategy '{}' in --config; supported: cross_exchange, \
+             ewma_spread, funding_rate, cross_venue_funding",
+            other
+        ),
+    }
 }
 
 fn default_replay_strategy() -> CrossExchangeStrategy {
