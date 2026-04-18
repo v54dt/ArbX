@@ -396,6 +396,7 @@ impl ArbitrageEngine {
             if let Some(hb) = self.heartbeat.as_ref() {
                 hb.beat();
             }
+            self.risk_state.maybe_reset_daily(self.clock.utc_now());
             tokio::select! {
                 Some(quote) = merged_rx.recv() => {
                     self.handle_quote(quote).await?;
