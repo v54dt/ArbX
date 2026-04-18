@@ -218,6 +218,12 @@ pub struct RiskConfig {
     /// max_position_size. Venues omitted are uncapped (only global applies).
     #[serde(default)]
     pub max_position_per_venue: Option<std::collections::HashMap<String, Decimal>>,
+    /// Backtest fill delay in ms. Default 100 if omitted (realistic Taipei→exchange RTT).
+    #[serde(default)]
+    pub backtest_fill_delay_ms: Option<u64>,
+    /// Backtest adverse slippage in bps. Default 2 if omitted.
+    #[serde(default)]
+    pub backtest_slippage_bps: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize)]

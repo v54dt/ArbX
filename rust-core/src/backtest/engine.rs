@@ -73,7 +73,13 @@ pub async fn run_backtest(
         risk_config.circuit_breaker.max_consecutive_failures,
     );
 
-    let executor = PaperExecutor::new();
+    let executor = PaperExecutor::new()
+        .with_fill_delay_ms(risk_config.backtest_fill_delay_ms.unwrap_or(100))
+        .with_slippage_bps(
+            risk_config
+                .backtest_slippage_bps
+                .unwrap_or(rust_decimal_macros::dec!(2)),
+        );
     let position_manager = NullPositionManager;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
