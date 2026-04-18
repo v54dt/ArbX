@@ -109,7 +109,7 @@ pub async fn run_backtest(
     engine.run().await?;
 
     let duration_ms = start.elapsed().as_millis() as u64;
-    let trade_logs = engine.trade_logs().to_vec();
+    let trade_logs = engine.trade_logs().iter().cloned().collect::<Vec<_>>();
     let result = compute_result(trade_logs, duration_ms);
     Ok(result)
 }
