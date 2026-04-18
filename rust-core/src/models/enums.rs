@@ -27,6 +27,8 @@ pub enum OrderStatus {
     Filled,
     Cancelled,
     Rejected,
+    Expired,
+    PendingCancel,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

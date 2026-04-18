@@ -86,10 +86,11 @@ impl BybitOrderExecutor {
         match s {
             "Filled" => OrderStatus::Filled,
             "PartiallyFilled" => OrderStatus::PartiallyFilled,
-            // "New" = accepted and resting — matches private_stream mapping.
             "New" => OrderStatus::Submitted,
             "Cancelled" => OrderStatus::Cancelled,
             "Rejected" => OrderStatus::Rejected,
+            "Expired" | "Deactivated" => OrderStatus::Expired,
+            "Cancelling" => OrderStatus::PendingCancel,
             _ => OrderStatus::Pending,
         }
     }
