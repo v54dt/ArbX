@@ -1,3 +1,4 @@
+use chrono::{DateTime, FixedOffset, Utc};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 
@@ -21,6 +22,7 @@ pub struct StrategyRiskBudget {
     pub notional_submitted: Decimal,
     pub order_count: u64,
     config: StrategyRiskBudgetConfig,
+    last_reset_date: Option<chrono::NaiveDate>,
 }
 
 impl StrategyRiskBudget {
@@ -30,6 +32,18 @@ impl StrategyRiskBudget {
             notional_submitted: Decimal::ZERO,
             order_count: 0,
             config,
+            last_reset_date: None,
+        }
+    }
+
+    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) {
+        let taipei = FixedOffset::east_opt(8 * 3600).unwrap();
+        let today = now.with_timezone(&taipei).date_naive();
+        if self.last_reset_date != Some(today) {
+            self.daily_pnl = Decimal::ZERO;
+            self.notional_submitted = Decimal::ZERO;
+            self.order_count = 0;
+            self.last_reset_date = Some(today);
         }
     }
 
