@@ -236,7 +236,7 @@ impl MarketDataFeed for BinanceMarketData {
                                         crate::metrics::set_ws_connected("binance", false);
                                         break 'msg;
                                     }
-                                    let ping = tokio_tungstenite::tungstenite::Message::Ping(bytes::Bytes::new());
+                                    let ping = tokio_tungstenite::tungstenite::Message::Ping(Default::default());
                                     if let Err(e) = write.send(ping).await {
                                         warn!(error = %e, "Binance WS ping failed, will reconnect");
                                         break 'msg;
