@@ -73,7 +73,10 @@ async def run(config_path: str) -> None:
     try:
         while True:
             quote = await quote_queue.get()
-            logger.debug("Quote: %s %s bid=%s ask=%s", quote.venue, quote.base, quote.bid, quote.ask)
+            logger.debug(
+                "Quote: %s %s bid=%s ask=%s",
+                quote.venue, quote.base, quote.bid, quote.ask,
+            )
             payload = encode_quote(quote)
             await aeron.publish(payload)
     except asyncio.CancelledError:

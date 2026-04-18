@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 import shioaji
-from shioaji.constant import Action, OrderType, StockPriceType, TFTStockPriceType
+from shioaji.constant import Action, OrderType, StockPriceType
 
 from src.adapters.base import BaseAdapter
 from src.models.messages import (
