@@ -15,6 +15,7 @@ use crate::adapters::order_executor::OrderExecutor;
 use crate::adapters::position_manager::PositionManager;
 use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
+use crate::engine::clock::{Clock, LiveClock};
 use crate::engine::event_bus::{EngineEvent, EngineEventBus};
 use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
@@ -99,6 +100,7 @@ pub struct ArbitrageEngine {
     /// `process_opportunity` BEFORE the global `risk_state` / `risk_manager`.
     strategy_budgets: HashMap<String, StrategyRiskBudget>,
     event_bus: Option<EngineEventBus>,
+    clock: Box<dyn Clock>,
 }
 
 impl ArbitrageEngine {
@@ -145,6 +147,7 @@ impl ArbitrageEngine {
             heartbeat: None,
             strategy_budgets: HashMap::new(),
             event_bus: None,
+            clock: Box::new(LiveClock),
         }
     }
 
@@ -193,6 +196,12 @@ impl ArbitrageEngine {
     /// the fill / target venue matches.
     pub fn with_position_manager_for(mut self, venue: Venue, pm: Box<dyn PositionManager>) -> Self {
         self.position_managers_by_venue.insert(venue, pm);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_clock(mut self, clock: Box<dyn Clock>) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -502,7 +511,7 @@ impl ArbitrageEngine {
                     self.emit(EngineEvent::Reconciled { succeeded, failed });
                 }
                 _ = cancel_check_interval.tick() => {
-                    let now = Utc::now();
+                    let now = self.clock.utc_now();
                     let mut still_pending: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
                     // Collect first so the drain's mutable borrow of self.pending_cancels
                     // doesn't overlap with the immutable borrows of self for executor_for /
@@ -564,7 +573,7 @@ impl ArbitrageEngine {
         }
 
         let key = book_key(quote.venue, &quote.instrument);
-        let quote_age_ms = (chrono::Utc::now() - quote.timestamp).num_milliseconds();
+        let quote_age_ms = (self.clock.utc_now() - quote.timestamp).num_milliseconds();
         tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
         crate::metrics::record_quote_received();
         crate::metrics::record_quote_age_ms(quote_age_ms as f64);
@@ -708,7 +717,7 @@ impl ArbitrageEngine {
                         intended_price: req.price.unwrap_or(Decimal::ZERO),
                         intended_quantity: req.quantity,
                         order_id: None,
-                        submitted_at: Utc::now(),
+                        submitted_at: self.clock.utc_now(),
                     });
                     continue;
                 }
@@ -733,7 +742,7 @@ impl ArbitrageEngine {
                         intended_price: req.price.unwrap_or(Decimal::ZERO),
                         intended_quantity: req.quantity,
                         order_id: None,
-                        submitted_at: Utc::now(),
+                        submitted_at: self.clock.utc_now(),
                     });
                     continue;
                 }
@@ -758,7 +767,7 @@ impl ArbitrageEngine {
                         intended_price: req.price.unwrap_or(Decimal::ZERO),
                         intended_quantity: req.quantity,
                         order_id: None,
-                        submitted_at: Utc::now(),
+                        submitted_at: self.clock.utc_now(),
                     });
                     continue;
                 }
@@ -802,13 +811,13 @@ impl ArbitrageEngine {
                                     side: order.side,
                                     intended_price,
                                     venue: order.venue,
-                                    submitted_at: Utc::now(),
+                                    submitted_at: self.clock.utc_now(),
                                 },
                             );
                         }
                         if self.order_ttl_secs > 0 {
-                            let deadline =
-                                Utc::now() + chrono::Duration::seconds(self.order_ttl_secs as i64);
+                            let deadline = self.clock.utc_now()
+                                + chrono::Duration::seconds(self.order_ttl_secs as i64);
                             self.pending_cancels.push((deadline, order_id.clone()));
                         }
                         trade_legs.push(TradeLeg {
@@ -818,7 +827,7 @@ impl ArbitrageEngine {
                             intended_price,
                             intended_quantity: order.quantity,
                             order_id: Some(order_id.clone()),
-                            submitted_at: Utc::now(),
+                            submitted_at: self.clock.utc_now(),
                         });
                     }
                     Err(e) => {
@@ -833,7 +842,7 @@ impl ArbitrageEngine {
                             intended_price: order.price.unwrap_or(Decimal::ZERO),
                             intended_quantity: order.quantity,
                             order_id: None,
-                            submitted_at: Utc::now(),
+                            submitted_at: self.clock.utc_now(),
                         });
                     }
                 }
@@ -865,7 +874,7 @@ impl ArbitrageEngine {
                 expected_net_profit: opp.economics.net_profit,
                 expected_net_profit_bps: opp.economics.net_profit_bps,
                 notional: opp.economics.notional,
-                created_at: Utc::now(),
+                created_at: self.clock.utc_now(),
             };
 
             info!(
@@ -960,7 +969,7 @@ mod tests {
             ask,
             bid_size: dec!(1.5),
             ask_size: dec!(2.0),
-            timestamp: Utc::now(),
+            timestamp: chrono::Utc::now(),
         }
     }
 
