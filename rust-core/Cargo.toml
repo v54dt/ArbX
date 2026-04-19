@@ -8,7 +8,7 @@ serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", features = ["serde"] }
 rust_decimal_macros = "1"
 chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net"] }
 async-trait = "0.1"
 anyhow = "1"
 futures-util = "0.3.32"
@@ -36,8 +36,15 @@ arrayvec = "0.7"
 core_affinity = "0.8"
 axum = "0.8"
 uuid = { version = "1", features = ["v4"] }
-ratatui = "0.30"
-crossterm = "0.29"
+ratatui = { version = "0.30", optional = true }
+crossterm = { version = "0.29", optional = true }
+
+[features]
+tui = ["dep:ratatui", "dep:crossterm"]
+
+[[bin]]
+name = "arbx_tui"
+required-features = ["tui"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
