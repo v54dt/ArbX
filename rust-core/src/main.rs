@@ -88,9 +88,10 @@ struct Cli {
     #[arg(long)]
     aeron_publish: bool,
 
-    /// Replace WS feeds with an Aeron Subscriber on the given stream id (requires media driver).
+    /// Replace WS feeds with Aeron Subscriber(s). Accepts one or more stream ids,
+    /// e.g. `--aeron-subscribe 1001 --aeron-subscribe 1002` for separate sidecar processes.
     #[arg(long, value_name = "STREAM_ID")]
-    aeron_subscribe: Option<i32>,
+    aeron_subscribe: Vec<i32>,
 
     /// Load + validate config, log resolved venues / strategy / pairs, exit 0.
     /// No network, no threads. Pre-deploy sanity check.
@@ -1005,10 +1006,14 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let (feed_a, feed_b): (Box<dyn MarketDataFeed>, Option<Box<dyn MarketDataFeed>>) =
-        if let Some(stream_id) = cli.aeron_subscribe {
-            tracing::info!(stream_id, "Aeron subscriber feed (replaces WS feeds)");
+        if !cli.aeron_subscribe.is_empty() {
+            let first = cli.aeron_subscribe[0];
+            tracing::info!(
+                stream_id = first,
+                "Aeron subscriber feed (replaces WS feeds)"
+            );
             (
-                Box::new(adapters::aeron_feed::AeronMarketDataFeed::new(stream_id)),
+                Box::new(adapters::aeron_feed::AeronMarketDataFeed::new(first)),
                 None,
             )
         } else {
@@ -1039,6 +1044,13 @@ async fn main() -> anyhow::Result<()> {
     let mut feeds: Vec<Box<dyn MarketDataFeed>> = vec![feed_a];
     if let Some(b) = feed_b {
         feeds.push(b);
+    }
+    // Additional Aeron streams (e.g. separate sidecar per TW broker).
+    for &stream_id in cli.aeron_subscribe.get(1..).unwrap_or_default() {
+        tracing::info!(stream_id, "additional Aeron subscriber feed");
+        feeds.push(Box::new(adapters::aeron_feed::AeronMarketDataFeed::new(
+            stream_id,
+        )));
     }
 
     let mut risk_limits: Vec<Box<dyn risk::limits::RiskLimit>> = vec![
