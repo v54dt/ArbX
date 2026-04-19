@@ -11,10 +11,17 @@ services:
     build:
       context: .
     container_name: arbx-aeron-driver
-    # Share the host's /dev/shm/aeron so local Rust/Python processes on
-    # the host see the same shared-memory files the driver creates.
+    # Run as the host caller uid so /dev/shm/aeron files are accessible
+    # to host-side Rust/Python clients without root. Override with
+    # `AERON_UID=$(id -u) AERON_GID=$(id -g) docker compose up -d`.
+    user: "${AERON_UID:-1000}:${AERON_GID:-1000}"
+    # Share the host's /dev/shm so local Rust/Python processes on the host
+    # see the same shared-memory files the driver creates under /dev/shm/aeron.
+    # (Mounting the parent /dev/shm — not /dev/shm/aeron — lets Aeron
+    # recreate its own subdir cleanly on startup; mounting the subdir
+    # itself would turn it into a busy mount point that Aeron can't delete.)
     volumes:
-      - /dev/shm/aeron:/dev/shm/aeron
+      - /dev/shm:/dev/shm
     # The Media Driver is latency-sensitive; ulimit for locked memory
     # avoids OOM-style page faults on large term buffers.
     ulimits:
