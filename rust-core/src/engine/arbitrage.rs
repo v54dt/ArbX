@@ -549,6 +549,7 @@ impl ArbitrageEngine {
                         match self.executor_for(venue).cancel_order(&order_id).await {
                             Ok(true) => {
                                 info!(order_id = order_id.as_str(), "order cancelled after TTL");
+                                crate::metrics::record_order_ttl_expired(self.strategy.name());
                                 self.intended_fills.remove(&order_id);
                             }
                             Ok(false) => {
@@ -825,13 +826,25 @@ impl ArbitrageEngine {
 
             let futures: Vec<_> = approved_orders
                 .iter()
-                .map(|order| self.executor_for(order.venue).submit_order(order))
+                .map(|order| {
+                    let fut = self.executor_for(order.venue).submit_order(order);
+                    async move {
+                        let t = std::time::Instant::now();
+                        let result = fut.await;
+                        (result, t.elapsed())
+                    }
+                })
                 .collect();
             let results = join_all(futures).await;
 
-            for (order, result) in approved_orders.iter().zip(results.iter()) {
+            for (order, (result, ack_elapsed)) in approved_orders.iter().zip(results.iter()) {
                 match result {
                     Ok(order_id) => {
+                        let venue_label = format!("{:?}", order.venue).to_lowercase();
+                        crate::metrics::record_send_to_ack_latency_us(
+                            &venue_label,
+                            ack_elapsed.as_micros() as f64,
+                        );
                         info!(
                             order_id = order_id.as_str(),
                             side = ?order.side,

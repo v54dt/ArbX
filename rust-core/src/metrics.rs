@@ -109,3 +109,36 @@ pub fn record_opportunity_reverified(strategy: &str, accepted: bool) {
 pub fn set_cert_seconds_until_expiry(name: &str, secs: f64) {
     gauge!("arbx_cert_seconds_until_expiry", "name" => name.to_string()).set(secs);
 }
+
+#[allow(dead_code)]
+pub fn set_orders_pending(venue: &str, strategy: &str, count: f64) {
+    gauge!(
+        "arbx_orders_pending_total",
+        "venue" => venue.to_string(),
+        "strategy" => strategy.to_string()
+    )
+    .set(count);
+}
+
+pub fn record_order_ttl_expired(strategy: &str) {
+    counter!("arbx_order_ttl_expired_total", "strategy" => strategy.to_string()).increment(1);
+}
+
+pub fn record_send_to_ack_latency_us(venue: &str, us: f64) {
+    histogram!(
+        "arbx_send_to_ack_latency_us",
+        "venue" => venue.to_string()
+    )
+    .record(us);
+}
+
+#[allow(dead_code)]
+pub fn record_fees_paid(venue: &str, strategy: &str, maker_taker: &str, amount: f64) {
+    counter!(
+        "arbx_fees_paid_total",
+        "venue" => venue.to_string(),
+        "strategy" => strategy.to_string(),
+        "type" => maker_taker.to_string()
+    )
+    .increment(amount as u64);
+}

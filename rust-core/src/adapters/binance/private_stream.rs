@@ -166,6 +166,8 @@ impl PrivateStream for BinancePrivateStream {
         let ws_task = tokio::spawn(async move {
             let mut backoff = std::time::Duration::from_secs(1);
             let max_backoff = std::time::Duration::from_secs(60);
+            let retry_window = std::time::Duration::from_secs(30 * 60);
+            let mut first_failure_at: Option<std::time::Instant> = None;
             let mut first_connect = true;
             loop {
                 match run_binance_stream(
@@ -186,6 +188,16 @@ impl PrivateStream for BinancePrivateStream {
                         break;
                     }
                     Err(e) => {
+                        let started = *first_failure_at.get_or_insert_with(std::time::Instant::now);
+                        if started.elapsed() > retry_window {
+                            tracing::error!(
+                                venue = "binance",
+                                elapsed_mins = started.elapsed().as_secs() / 60,
+                                "private stream circuit-break: failures exceeded 30 min window, giving up"
+                            );
+                            crate::metrics::set_ws_private_connected("binance", false);
+                            break;
+                        }
                         warn!(
                             error = %e,
                             backoff_ms = backoff.as_millis() as u64,
