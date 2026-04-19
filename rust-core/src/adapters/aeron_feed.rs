@@ -75,6 +75,8 @@ impl MarketDataFeed for AeronMarketDataFeed {
                         }
                     }
                     Ok(None) => {
+                        // Required: poll() is non-blocking; this sleep prevents a
+                        // busy-spin when the Aeron buffer is empty.
                         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                     }
                     Err(e) => {
