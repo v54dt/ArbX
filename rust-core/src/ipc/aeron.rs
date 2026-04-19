@@ -32,11 +32,12 @@ impl AeronPublisher {
     }
 }
 
-const MAX_OFFER_RETRIES: usize = 3;
+const MAX_OFFER_RETRIES: usize = 5;
 
 #[async_trait]
 impl IpcPublisher for AeronPublisher {
     async fn publish(&self, data: &[u8]) -> anyhow::Result<()> {
+        let mut delay = Duration::from_micros(100);
         for attempt in 0..MAX_OFFER_RETRIES {
             let result = self
                 .publication
@@ -44,11 +45,13 @@ impl IpcPublisher for AeronPublisher {
             if result >= 0 {
                 return Ok(());
             }
+            crate::metrics::record_aeron_backpressure();
             if attempt + 1 < MAX_OFFER_RETRIES {
-                tokio::task::yield_now().await;
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_millis(100));
             } else {
                 anyhow::bail!(
-                    "offer returned {} after {} attempts",
+                    "offer returned {} after {} attempts (backpressure)",
                     result,
                     MAX_OFFER_RETRIES
                 );
@@ -94,22 +97,18 @@ impl AeronSubscriber {
 impl IpcSubscriber for AeronSubscriber {
     async fn poll(&mut self) -> anyhow::Result<Option<Vec<u8>>> {
         let buf = Arc::clone(&self.buffer);
-        let subscription = self.subscription.clone();
-
-        tokio::task::spawn_blocking(move || {
-            subscription
-                .poll_once(
-                    move |data: &[u8], _header: AeronHeader| {
-                        if let Ok(mut b) = buf.lock() {
-                            b.push(data.to_vec());
-                        }
-                    },
-                    10,
-                )
-                .map_err(|e| anyhow::anyhow!("poll error: {:?}", e))
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking join: {}", e))??;
+        // Aeron's poll_once is lock-free shared-memory read — safe to call
+        // directly from async context without spawn_blocking overhead.
+        self.subscription
+            .poll_once(
+                move |data: &[u8], _header: AeronHeader| {
+                    if let Ok(mut b) = buf.lock() {
+                        b.push(data.to_vec());
+                    }
+                },
+                10,
+            )
+            .map_err(|e| anyhow::anyhow!("poll error: {:?}", e))?;
 
         let mut guard = self
             .buffer

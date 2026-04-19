@@ -77,8 +77,24 @@ class AeronClient:
         if self._proc is None or self._proc.stdin is None:
             raise RuntimeError("AeronClient not connected")
         frame = struct.pack(">I", len(data)) + data
-        self._proc.stdin.write(frame)
-        await self._proc.stdin.drain()
+        try:
+            self._proc.stdin.write(frame)
+            await self._proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            logger.warning("aeron_pub subprocess pipe broken, respawning")
+            await self._respawn()
+
+    async def _respawn(self) -> None:
+        """Kill the dead subprocess and reconnect."""
+        old = self._proc
+        self._proc = None
+        if old is not None:
+            try:
+                old.kill()
+                await old.wait()
+            except Exception:
+                pass
+        await self.connect()
 
     async def disconnect(self) -> None:
         proc, self._proc = self._proc, None

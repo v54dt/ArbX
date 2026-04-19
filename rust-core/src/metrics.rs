@@ -142,3 +142,7 @@ pub fn record_fees_paid(venue: &str, strategy: &str, maker_taker: &str, amount: 
     )
     .increment(amount as u64);
 }
+
+pub fn record_aeron_backpressure() {
+    counter!("arbx_aeron_publish_backpressure_total").increment(1);
+}
