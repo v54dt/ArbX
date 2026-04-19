@@ -1,0 +1,12 @@
+ipc:
+  stream_id: 1001
+
+venues:
+  - venue: shioaji
+    api_key: ${SHIOAJI_API_KEY}
+    secret_key: ${SHIOAJI_SECRET_KEY}
+    ca_path: ${SHIOAJI_CERT_PATH}
+    ca_password: ${SHIOAJI_CERT_PASSWORD}
+    symbols:
+      - "2330"   # TSMC
+      - "2317"   # Hon Hai

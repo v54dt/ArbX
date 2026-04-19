@@ -1,0 +1,12 @@
+ipc:
+  stream_id: 1002
+
+venues:
+  - venue: fubon
+    user_id: ${FUBON_USER_ID}
+    password: ${FUBON_PASSWORD}
+    pfx_path: ${FUBON_PFX_PATH}
+    pfx_password: ${FUBON_PFX_PASSWORD}
+    symbols:
+      - "2330"   # TSMC
+      - "2317"   # Hon Hai
