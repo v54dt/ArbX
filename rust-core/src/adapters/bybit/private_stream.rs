@@ -185,7 +185,6 @@ impl PrivateStream for BybitPrivateStream {
                     .await
                 {
                     Ok(()) => {
-                        first_failure_at = None;
                         info!("Bybit private stream ended cleanly, exiting reconnect loop");
                         crate::metrics::set_ws_private_connected("bybit", false);
                         break;

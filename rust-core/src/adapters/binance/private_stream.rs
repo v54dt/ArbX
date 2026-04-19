@@ -183,7 +183,6 @@ impl PrivateStream for BinancePrivateStream {
                 .await
                 {
                     Ok(()) => {
-                        first_failure_at = None;
                         info!("Binance private stream ended cleanly, exiting reconnect loop");
                         crate::metrics::set_ws_private_connected("binance", false);
                         break;

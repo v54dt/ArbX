@@ -201,7 +201,6 @@ impl PrivateStream for OkxPrivateStream {
                 .await
                 {
                     Ok(()) => {
-                        first_failure_at = None;
                         info!("OKX private stream ended cleanly, exiting reconnect loop");
                         crate::metrics::set_ws_private_connected("okx", false);
                         break;

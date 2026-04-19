@@ -34,10 +34,10 @@ impl FeeProvider for CachedFeeProvider {
         // Fast path: cache hit within TTL.
         {
             let guard = self.cache.read().await;
-            if let Some((ref schedule, fetched_at)) = *guard {
-                if fetched_at.elapsed() < self.ttl {
-                    return Ok(schedule.clone());
-                }
+            if let Some((ref schedule, fetched_at)) = *guard
+                && fetched_at.elapsed() < self.ttl
+            {
+                return Ok(schedule.clone());
             }
         }
 
@@ -81,10 +81,10 @@ mod tests {
     impl FeeProvider for CountingProvider {
         async fn get_fee_schedule(&self) -> anyhow::Result<FeeSchedule> {
             let n = self.call_count.fetch_add(1, Ordering::SeqCst);
-            if let Some(limit) = self.fail_after {
-                if n >= limit {
-                    anyhow::bail!("simulated failure");
-                }
+            if let Some(limit) = self.fail_after
+                && n >= limit
+            {
+                anyhow::bail!("simulated failure");
             }
             Ok(FeeSchedule::new(Venue::Binance, dec!(0.0002), dec!(0.0004)))
         }
