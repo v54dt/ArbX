@@ -186,6 +186,8 @@ impl PrivateStream for OkxPrivateStream {
         let ws_task = tokio::spawn(async move {
             let mut backoff = std::time::Duration::from_secs(1);
             let max_backoff = std::time::Duration::from_secs(60);
+            let retry_window = std::time::Duration::from_secs(30 * 60);
+            let mut first_failure_at: Option<std::time::Instant> = None;
             let mut first_connect = true;
             loop {
                 match run_okx_stream(
@@ -199,11 +201,22 @@ impl PrivateStream for OkxPrivateStream {
                 .await
                 {
                     Ok(()) => {
+                        first_failure_at = None;
                         info!("OKX private stream ended cleanly, exiting reconnect loop");
                         crate::metrics::set_ws_private_connected("okx", false);
                         break;
                     }
                     Err(e) => {
+                        let started = *first_failure_at.get_or_insert_with(std::time::Instant::now);
+                        if started.elapsed() > retry_window {
+                            tracing::error!(
+                                venue = "okx",
+                                elapsed_mins = started.elapsed().as_secs() / 60,
+                                "private stream circuit-break: failures exceeded 30 min window, giving up"
+                            );
+                            crate::metrics::set_ws_private_connected("okx", false);
+                            break;
+                        }
                         warn!(
                             error = %e,
                             backoff_ms = backoff.as_millis() as u64,
