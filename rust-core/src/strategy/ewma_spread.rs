@@ -329,6 +329,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
                 time_in_force: Some(TimeInForce::Ioc),
                 price: Some(leg.order_price),
                 quantity: leg.quantity,
+                estimated_notional: None,
             })
             .collect()
     }

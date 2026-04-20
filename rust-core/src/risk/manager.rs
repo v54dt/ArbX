@@ -141,6 +141,7 @@ mod tests {
             time_in_force: None,
             price,
             quantity: qty,
+            estimated_notional: None,
         }
     }
 

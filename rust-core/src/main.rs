@@ -1263,6 +1263,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(event) => handle.push_event(format!("{:?}", event)).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         tracing::debug!(skipped = n, "event bus collector lagged");
+                        crate::metrics::record_event_bus_dropped(n);
                     }
                     Err(_) => break,
                 }

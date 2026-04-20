@@ -14,9 +14,24 @@ pub struct OrderRequest {
     pub time_in_force: Option<TimeInForce>,
     pub price: Option<Decimal>,
     pub quantity: Decimal,
+    /// Pre-computed notional estimate for market orders (price=None).
+    /// Set by the engine from the order book before risk checks.
+    /// Risk limits use this when `price` is None to avoid 0-notional bypass.
+    #[serde(default)]
+    pub estimated_notional: Option<Decimal>,
 }
 
 impl OrderRequest {
+    /// Returns the best notional estimate: price*qty if price is set,
+    /// otherwise falls back to `estimated_notional`, then ZERO.
+    pub fn effective_notional(&self) -> Decimal {
+        if let Some(p) = self.price {
+            p * self.quantity
+        } else {
+            self.estimated_notional.unwrap_or(Decimal::ZERO)
+        }
+    }
+
     pub fn into_order(self) -> Order {
         // Market orders should not carry a price — silently clear it to
         // prevent adapters from receiving a contradictory field.
@@ -109,6 +124,7 @@ mod tests {
             time_in_force: Some(TimeInForce::Ioc),
             price: Some(dec!(50000)),
             quantity: dec!(1),
+            estimated_notional: None,
         }
     }
 

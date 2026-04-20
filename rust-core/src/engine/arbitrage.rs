@@ -231,6 +231,21 @@ impl ArbitrageEngine {
         self.executors_by_venue.contains_key(&venue)
     }
 
+    /// Estimate notional for an order. Uses order.price if set, otherwise
+    /// looks up the order book (asks[0] for Buy, bids[0] for Sell).
+    /// Returns ZERO if no book or no levels (safe degradation).
+    fn estimate_notional(&self, order: &OrderRequest) -> Decimal {
+        if let Some(price) = order.price {
+            return price * order.quantity;
+        }
+        let key = book_key(order.venue, &order.instrument);
+        let price = self.books.get(&key).and_then(|book| match order.side {
+            crate::models::enums::Side::Buy => book.asks.first().map(|l| l.price),
+            crate::models::enums::Side::Sell => book.bids.first().map(|l| l.price),
+        });
+        price.unwrap_or(Decimal::ZERO) * order.quantity
+    }
+
     fn executor_for(&self, venue: Venue) -> &dyn OrderExecutor {
         if let Some(e) = self.executors_by_venue.get(&venue) {
             return e.as_ref();
@@ -484,6 +499,15 @@ impl ArbitrageEngine {
                     );
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received(self.strategy.name());
+                    {
+                        let venue_label = format!("{:?}", fill.venue).to_lowercase();
+                        crate::metrics::record_fees_paid(
+                            &venue_label,
+                            self.strategy.name(),
+                            "taker",
+                            fill.fee.to_string().parse::<f64>().unwrap_or(0.0),
+                        );
+                    }
                     self.emit(EngineEvent::OrderFilled {
                         venue: fill.venue,
                         order_id: fill.order_id.clone(),
@@ -513,6 +537,11 @@ impl ArbitrageEngine {
                         crate::metrics::record_tca_fill_delay_ms(
                             &venue_label,
                             delay_ms.max(0) as f64,
+                        );
+                        crate::metrics::set_orders_pending(
+                            &venue_label,
+                            self.strategy.name(),
+                            self.intended_fills.len() as f64,
                         );
                     }
                     let pos = self.risk_state.position_by_instrument.get(fill_key.as_str()).copied().unwrap_or(Decimal::ZERO);
@@ -574,19 +603,35 @@ impl ArbitrageEngine {
                             continue;
                         };
                         let venue = intended.venue;
+                        let venue_label = format!("{:?}", venue).to_lowercase();
                         match self.executor_for(venue).cancel_order(&order_id).await {
                             Ok(true) => {
                                 info!(order_id = order_id.as_str(), "order cancelled after TTL");
                                 crate::metrics::record_order_ttl_expired(self.strategy.name());
                                 self.intended_fills.remove(&order_id);
+                                crate::metrics::set_orders_pending(
+                                    &venue_label,
+                                    self.strategy.name(),
+                                    self.intended_fills.len() as f64,
+                                );
                             }
                             Ok(false) => {
                                 tracing::debug!(order_id = order_id.as_str(), "TTL cancel: already filled or unknown");
                                 self.intended_fills.remove(&order_id);
+                                crate::metrics::set_orders_pending(
+                                    &venue_label,
+                                    self.strategy.name(),
+                                    self.intended_fills.len() as f64,
+                                );
                             }
                             Err(e) => {
                                 warn!(error = %e, order_id = order_id.as_str(), "TTL cancel failed");
                                 self.intended_fills.remove(&order_id);
+                                crate::metrics::set_orders_pending(
+                                    &venue_label,
+                                    self.strategy.name(),
+                                    self.intended_fills.len() as f64,
+                                );
                             }
                         }
                     }
@@ -632,6 +677,11 @@ impl ArbitrageEngine {
             .entry(key)
             .and_modify(|b| b.update_from_quote(&quote))
             .or_insert_with(|| quote_to_book(&quote));
+        self.emit(EngineEvent::QuoteReceived {
+            venue: quote.venue,
+            symbol: key.to_string(),
+            ts: quote.timestamp,
+        });
 
         // Primary strategy
         let eval_start = std::time::Instant::now();
@@ -779,7 +829,12 @@ impl ArbitrageEngine {
                 }
 
                 let inst_key = book_key(req.venue, &req.instrument);
-                let order_notional = req.quantity * req.price.unwrap_or(Decimal::ZERO);
+                let order_notional = self.estimate_notional(&req);
+                // Stamp estimate so downstream risk limits (MaxNotionalExposure)
+                // can use it when price is None (market orders).
+                if req.price.is_none() {
+                    req.estimated_notional = Some(order_notional);
+                }
                 let fast_verdict =
                     self.risk_state
                         .check_order(inst_key.as_str(), req.quantity, order_notional);
@@ -894,6 +949,11 @@ impl ArbitrageEngine {
                         if let Some(fill) = self.intended_fills.remove(&order.client_order_id) {
                             self.intended_fills.insert(order_id.clone(), fill);
                         }
+                        crate::metrics::set_orders_pending(
+                            &venue_label,
+                            strategy_name,
+                            self.intended_fills.len() as f64,
+                        );
                         if self.order_ttl_secs > 0 {
                             let deadline = self.clock.utc_now()
                                 + chrono::Duration::seconds(self.order_ttl_secs as i64);

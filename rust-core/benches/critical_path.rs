@@ -124,6 +124,7 @@ fn bench_risk_check(c: &mut Criterion) {
         time_in_force: None,
         price: Some(dec!(50000)),
         quantity: dec!(1),
+        estimated_notional: None,
     };
 
     let portfolio = PortfolioSnapshot {
@@ -388,6 +389,7 @@ fn bench_e2e_quote_to_orders(c: &mut Criterion) {
                             time_in_force: order.time_in_force,
                             price: order.price,
                             quantity: order.quantity,
+                            estimated_notional: None,
                         },
                         &portfolio,
                     );
