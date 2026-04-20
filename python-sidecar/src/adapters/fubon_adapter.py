@@ -36,10 +36,18 @@ class FubonAdapter(BaseAdapter):
 
         self._loop = asyncio.get_running_loop()
         self._sdk = FubonSDK()
-        self._accounts = self._sdk.login(
-            self._user_id, self._password, self._pfx_path, self._pfx_password
-        )
-        self._sdk.init_realtime()
+        try:
+            self._accounts = self._sdk.login(
+                self._user_id, self._password, self._pfx_path, self._pfx_password
+            )
+        except Exception:
+            logger.exception("Fubon login failed")
+            raise
+        try:
+            self._sdk.init_realtime()
+        except Exception:
+            logger.exception("Fubon init_realtime failed")
+            raise
         logger.info("Fubon connected, accounts: %d", len(self._accounts.data))
 
     async def disconnect(self) -> None:

@@ -7,6 +7,7 @@ import shioaji
 from shioaji.constant import Action, OrderType, StockPriceType
 
 from src.adapters.base import BaseAdapter
+from src.adapters.rate_limiter import TokenBucket
 from src.models.messages import (
     Fill,
     OrderRequest,
@@ -29,17 +30,27 @@ class ShioajiAdapter(BaseAdapter):
         self._quote_queue: asyncio.Queue[Quote] = asyncio.Queue()
         self._fill_queue: asyncio.Queue[Fill] = asyncio.Queue()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._md_limiter = TokenBucket(50, 5.0)
+        self._order_limiter = TokenBucket(250, 10.0)
 
     async def connect(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._api.login(
-            api_key=self._api_key,
-            secret_key=self._secret_key,
-        )
-        self._api.activate_ca(
-            ca_path=self._ca_path,
-            ca_passwd=self._ca_password,
-        )
+        try:
+            self._api.login(
+                api_key=self._api_key,
+                secret_key=self._secret_key,
+            )
+        except Exception:
+            logger.exception("Shioaji login failed")
+            raise
+        try:
+            self._api.activate_ca(
+                ca_path=self._ca_path,
+                ca_passwd=self._ca_password,
+            )
+        except Exception:
+            logger.exception("Shioaji CA activation failed")
+            raise
         self._api.set_order_callback(self._on_order_event)
         logger.info("Shioaji connected and CA activated")
 
@@ -89,10 +100,15 @@ class ShioajiAdapter(BaseAdapter):
             if contract is None:
                 logger.warning("Contract not found: %s", symbol)
                 continue
-            self._api.quote.subscribe(contract, quote_type=shioaji.constant.QuoteType.BidAsk)
-            logger.info("Subscribed to %s", symbol)
+            try:
+                await self._md_limiter.acquire()
+                self._api.quote.subscribe(contract, quote_type=shioaji.constant.QuoteType.BidAsk)
+                logger.info("Subscribed to %s", symbol)
+            except Exception:
+                logger.exception("Failed to subscribe to %s, skipping", symbol)
 
     async def place_order(self, request: OrderRequest) -> OrderResponse:
+        await self._order_limiter.acquire()
         contract = self._api.Contracts.Stocks.get(request.base)
         if contract is None:
             contract = self._api.Contracts.Futures.get(request.base)

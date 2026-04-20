@@ -43,14 +43,14 @@ impl WeightGuard {
 
     /// Update the last-observed used weight (from an HTTP response header).
     pub(crate) fn observe(&self, used: u64) {
-        self.used_1m.store(used, Ordering::Relaxed);
+        self.used_1m.store(used, Ordering::SeqCst);
     }
 
     /// How long to sleep before the next outbound request given current usage.
     /// Returns zero below the threshold; scales linearly up to ~5x base at 100%.
     pub(crate) fn adaptive_delay(&self) -> Duration {
-        let used = self.used_1m.load(Ordering::Relaxed);
-        let limit = self.limit_1m.load(Ordering::Relaxed).max(1);
+        let used = self.used_1m.load(Ordering::SeqCst);
+        let limit = self.limit_1m.load(Ordering::SeqCst).max(1);
         let ratio = used as f64 / limit as f64;
         if ratio < WEIGHT_BACKOFF_THRESHOLD {
             return Duration::ZERO;
@@ -103,7 +103,7 @@ impl BinanceRestClient {
             .and_then(|s| s.parse::<u64>().ok())
         {
             self.weight_guard.observe(used);
-            let limit = self.weight_guard.limit_1m.load(Ordering::Relaxed);
+            let limit = self.weight_guard.limit_1m.load(Ordering::SeqCst);
             if limit > 0 && used as f64 / limit as f64 >= WEIGHT_BACKOFF_THRESHOLD {
                 debug!(
                     used_weight_1m = used,

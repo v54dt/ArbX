@@ -72,13 +72,19 @@ async def run(config_path: str) -> None:
     logger.info("Sidecar running, forwarding quotes to Rust engine via Aeron")
     try:
         while True:
-            quote = await quote_queue.get()
-            logger.debug(
-                "Quote: %s %s bid=%s ask=%s",
-                quote.venue, quote.base, quote.bid, quote.ask,
-            )
-            payload = encode_quote(quote)
-            await aeron.publish(payload)
+            try:
+                quote = await quote_queue.get()
+                logger.debug(
+                    "Quote: %s %s bid=%s ask=%s",
+                    quote.venue, quote.base, quote.bid, quote.ask,
+                )
+                payload = encode_quote(quote)
+                await aeron.publish(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("quote forwarding error, will retry in 5s")
+                await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
     finally:
