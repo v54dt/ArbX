@@ -300,6 +300,7 @@ async fn run_okx_stream(
                             warn!(ord_id, inst_id, error = %e, "OKX cancel failed");
                         }
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
         }
