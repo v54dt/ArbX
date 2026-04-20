@@ -114,7 +114,6 @@ pub fn set_cert_seconds_until_expiry(name: &str, secs: f64) {
     gauge!("arbx_cert_seconds_until_expiry", "name" => name.to_string()).set(secs);
 }
 
-#[allow(dead_code)]
 pub fn set_orders_pending(venue: &str, strategy: &str, count: f64) {
     gauge!(
         "arbx_orders_pending_total",
@@ -136,7 +135,6 @@ pub fn record_send_to_ack_latency_us(venue: &str, us: f64) {
     .record(us);
 }
 
-#[allow(dead_code)]
 pub fn record_fees_paid(venue: &str, strategy: &str, maker_taker: &str, amount: f64) {
     counter!(
         "arbx_fees_paid_total",
@@ -145,6 +143,10 @@ pub fn record_fees_paid(venue: &str, strategy: &str, maker_taker: &str, amount: 
         "type" => maker_taker.to_string()
     )
     .increment(amount as u64);
+}
+
+pub fn record_event_bus_dropped(count: u64) {
+    counter!("arbx_event_bus_dropped_total").increment(count);
 }
 
 pub fn record_aeron_backpressure() {

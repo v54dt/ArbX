@@ -118,7 +118,7 @@ impl RiskLimit for MaxNotionalExposure {
             .map(|p| (p.quantity * p.average_cost).abs())
             .sum();
 
-        let order_notional = order.quantity * order.price.unwrap_or(Decimal::ZERO);
+        let order_notional = order.effective_notional();
 
         if current_notional + order_notional > self.max_notional {
             RiskVerdict::rejected("max notional exposure exceeded")
@@ -164,6 +164,7 @@ mod tests {
             time_in_force: None,
             price,
             quantity: qty,
+            estimated_notional: None,
         }
     }
 
@@ -345,6 +346,7 @@ mod tests {
             time_in_force: None,
             price,
             quantity: qty,
+            estimated_notional: None,
         }
     }
 
@@ -419,13 +421,28 @@ mod tests {
     }
 
     #[test]
-    fn max_notional_exposure_handles_missing_order_price() {
+    fn max_notional_exposure_uses_estimated_notional_for_market_orders() {
+        let limit = MaxNotionalExposure {
+            max_notional: dec!(100000),
+        };
+        // Existing position: qty=5, avg_cost=10000 → notional=50000
+        let portfolio = portfolio_with_position(dec!(5), dec!(10000));
+        // Market order with no price but engine-stamped estimated_notional
+        let mut order = buy_order(dec!(5), None);
+        order.estimated_notional = Some(dec!(60000)); // 50000+60000 > 100000
+        let verdict = limit.check(&order, &portfolio);
+
+        assert!(!verdict.approved);
+    }
+
+    #[test]
+    fn max_notional_exposure_falls_back_to_zero_without_estimate() {
         let limit = MaxNotionalExposure {
             max_notional: dec!(100000),
         };
         // Existing position: qty=5, avg_cost=10000 → notional=50000 (under cap)
         let portfolio = portfolio_with_position(dec!(5), dec!(10000));
-        // Order has no price → order_notional = 0
+        // No price and no estimate — falls back to 0 (safe degradation)
         let order = buy_order(dec!(5), None);
         let verdict = limit.check(&order, &portfolio);
 

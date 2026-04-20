@@ -166,6 +166,7 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
                     time_in_force: Some(TimeInForce::Ioc),
                     price: Some(aligned_price),
                     quantity: leg.quantity,
+                    estimated_notional: None,
                 }
             })
             .collect()

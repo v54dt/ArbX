@@ -323,6 +323,7 @@ pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
         time_in_force: Some(tif_from_i8(tif_i8)?),
         price: parse_optional_decimal(price_str)?,
         quantity: parse_decimal_str(qty_str)?,
+        estimated_notional: None,
     })
 }
 
@@ -568,6 +569,7 @@ mod tests {
             time_in_force: Some(DomainTimeInForce::Ioc),
             price: Some(dec!(49999.99)),
             quantity: dec!(0.5),
+            estimated_notional: None,
         };
 
         let bytes = encode_order_request(&original);
