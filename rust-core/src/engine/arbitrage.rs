@@ -515,7 +515,15 @@ impl ArbitrageEngine {
                         quantity: fill.quantity,
                     });
 
-                    if let Some(intended) = self.intended_fills.remove(&fill.order_id)
+                    // A55 fix: try venue order_id first; if the fill arrived
+                    // before join_all returned (re-key hasn't happened yet), fall
+                    // back to client_order_id which was used as the pre-insert key.
+                    let intended_opt = self.intended_fills.remove(&fill.order_id).or_else(|| {
+                        fill.client_order_id
+                            .as_ref()
+                            .and_then(|cid| self.intended_fills.remove(cid))
+                    });
+                    if let Some(intended) = intended_opt
                         && !intended.intended_price.is_zero()
                     {
                         let raw = (fill.price - intended.intended_price)
@@ -647,6 +655,42 @@ impl ArbitrageEngine {
             }
         }
 
+        // Graceful shutdown: cancel all pending orders so we don't abandon
+        // in-flight requests that were submitted in the last loop iteration.
+        let pending_order_ids: Vec<(String, Venue)> = self
+            .pending_cancels
+            .drain(..)
+            .map(|(_deadline, oid)| {
+                let venue = self
+                    .intended_fills
+                    .get(&oid)
+                    .map(|f| f.venue)
+                    .unwrap_or(Venue::Binance);
+                (oid, venue)
+            })
+            .collect();
+
+        let mut cancelled = 0usize;
+        for (order_id, venue) in &pending_order_ids {
+            match self.executor_for(*venue).cancel_order(order_id).await {
+                Ok(_) => cancelled += 1,
+                Err(e) => {
+                    warn!(error = %e, order_id = order_id.as_str(), "shutdown cancel failed");
+                }
+            }
+        }
+
+        let abandoned = self.intended_fills.len();
+        self.intended_fills.clear();
+
+        info!(
+            cancelled,
+            abandoned,
+            "shutdown cleanup: cancelled {} pending orders, cleared {} intended fills",
+            cancelled,
+            abandoned,
+        );
+
         self.emit(EngineEvent::Shutdown);
         info!(
             trade_logs = self.trade_logs.len(),
@@ -677,6 +721,11 @@ impl ArbitrageEngine {
             .entry(key)
             .and_modify(|b| b.update_from_quote(&quote))
             .or_insert_with(|| quote_to_book(&quote));
+        // Refresh mark price so notional exposure tracks live prices between fills.
+        if !quote.bid.is_zero() && !quote.ask.is_zero() {
+            let mid = (quote.bid + quote.ask) / Decimal::TWO;
+            self.risk_state.update_mark_price(key.as_str(), mid);
+        }
         self.emit(EngineEvent::QuoteReceived {
             venue: quote.venue,
             symbol: key.to_string(),

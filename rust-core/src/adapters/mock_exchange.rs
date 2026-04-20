@@ -158,6 +158,7 @@ impl OrderExecutor for MockExchange {
                 let fills_tx = self.fills_tx.clone();
                 let updates_tx = self.updates_tx.clone();
                 let oid = order_id.clone();
+                let client_oid = order.client_order_id.clone();
                 let venue = order.venue;
                 let instrument = order.instrument.clone();
                 let side = order.side;
@@ -169,6 +170,7 @@ impl OrderExecutor for MockExchange {
                     if let Some(tx) = &fills_tx {
                         let _ = tx.send(Fill {
                             order_id: oid.clone(),
+                            client_order_id: Some(client_oid.clone()),
                             venue,
                             instrument: instrument.clone(),
                             side,
@@ -194,6 +196,7 @@ impl OrderExecutor for MockExchange {
                 if let Some(tx) = &self.fills_tx {
                     let _ = tx.send(Fill {
                         order_id: order_id.clone(),
+                        client_order_id: Some(order.client_order_id.clone()),
                         venue: order.venue,
                         instrument: order.instrument.clone(),
                         side: order.side,

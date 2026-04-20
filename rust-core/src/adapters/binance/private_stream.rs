@@ -96,6 +96,7 @@ impl BinancePrivateStream {
         let commission: Decimal = msg.get("n")?.as_str()?.parse().ok()?;
         let commission_asset = msg.get("N")?.as_str().unwrap_or("").to_string();
         let order_id = msg.get("i")?.as_u64()?.to_string();
+        let client_order_id = msg.get("c").and_then(|v| v.as_str()).map(|s| s.to_string());
         let cum_qty: Decimal = msg.get("z")?.as_str()?.parse().ok()?;
         let cum_quote: Decimal = msg.get("Z")?.as_str()?.parse().ok()?;
         let orig_qty: Decimal = msg.get("q")?.as_str()?.parse().ok()?;
@@ -128,6 +129,7 @@ impl BinancePrivateStream {
 
         let fill = Fill {
             order_id: order_id.clone(),
+            client_order_id,
             venue: Venue::Binance,
             instrument: instrument.clone(),
             side,

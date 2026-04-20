@@ -395,6 +395,7 @@ async fn private_stream_fill_updates_position_manager() {
 
     let fill = Fill {
         order_id: "external-exchange-fill-1".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,
@@ -493,6 +494,7 @@ async fn duplicate_fill_is_deduplicated_by_fingerprint() {
     let same_ts = Utc::now();
     let fill = Fill {
         order_id: "dup-order-1".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,
@@ -972,6 +974,7 @@ async fn fill_with_unknown_order_id_does_not_panic() {
     // Inject a fill via private stream for an order_id that was never submitted
     let rogue_fill = Fill {
         order_id: "rogue-never-submitted".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,
@@ -1067,11 +1070,10 @@ async fn pending_cancels_not_flushed_on_shutdown() {
     let logs = engine.trade_logs();
     assert!(!logs.is_empty(), "should have submitted orders");
 
-    // Cancels should NOT have been called — shutdown breaks the loop before
-    // TTL expiry. This is by design: D-1A cancel-all handles orphans on restart.
+    // A57: shutdown now drains pending_cancels (graceful cancel-all before exit).
     let cancel_count = cancels.lock().await.len();
-    assert_eq!(
-        cancel_count, 0,
-        "pending_cancels should NOT be flushed on shutdown (current design); got {cancel_count}"
+    assert!(
+        cancel_count > 0,
+        "pending_cancels should be flushed on shutdown (A57 graceful drain)"
     );
 }

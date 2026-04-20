@@ -13,6 +13,9 @@ pub struct RiskState {
     /// `apply_fill` so closes shrink the entry. `total_notional_exposure` is
     /// the sum across this map.
     pub position_notional: HashMap<String, Decimal>,
+    /// Last known mark price per instrument, used by `update_mark_price` to
+    /// refresh notional between fills.
+    mark_price_by_instrument: HashMap<String, Decimal>,
     pub total_notional_exposure: Decimal,
     pub realized_pnl_today: Decimal,
     pub max_position_size: Decimal,
@@ -32,6 +35,7 @@ impl RiskState {
         Self {
             position_by_instrument: HashMap::new(),
             position_notional: HashMap::new(),
+            mark_price_by_instrument: HashMap::new(),
             total_notional_exposure: Decimal::ZERO,
             realized_pnl_today: Decimal::ZERO,
             max_position_size,
@@ -109,6 +113,8 @@ impl RiskState {
             .entry(instrument_key.to_string())
             .or_insert(Decimal::ZERO);
         *pos += quantity;
+        self.mark_price_by_instrument
+            .insert(instrument_key.to_string(), mark_price);
         let new_notional = (*pos * mark_price).abs();
         if new_notional.is_zero() {
             self.position_notional.remove(instrument_key);
@@ -118,6 +124,29 @@ impl RiskState {
         }
         self.total_notional_exposure = self.position_notional.values().copied().sum();
         self.realized_pnl_today += realized_pnl;
+    }
+
+    /// Refresh mark price for an instrument and recompute its notional
+    /// contribution to `total_notional_exposure`. O(1) per call — only
+    /// updates the delta for the single instrument, no iteration over all
+    /// positions.
+    pub fn update_mark_price(&mut self, instrument_key: &str, mark_price: Decimal) {
+        self.mark_price_by_instrument
+            .insert(instrument_key.to_string(), mark_price);
+        // Only recompute if we hold a position in this instrument.
+        let pos = match self.position_by_instrument.get(instrument_key) {
+            Some(p) if !p.is_zero() => *p,
+            _ => return,
+        };
+        let old_notional = self
+            .position_notional
+            .get(instrument_key)
+            .copied()
+            .unwrap_or(Decimal::ZERO);
+        let new_notional = (pos * mark_price).abs();
+        self.position_notional
+            .insert(instrument_key.to_string(), new_notional);
+        self.total_notional_exposure += new_notional - old_notional;
     }
 
     pub fn halt(&mut self) {
@@ -277,5 +306,59 @@ mod tests {
             elapsed.as_millis() < 50,
             "1000 checks took {elapsed:?}, expected <50ms"
         );
+    }
+
+    #[test]
+    fn update_mark_price_refreshes_notional() {
+        let mut state = default_state();
+        // Open 1 BTC @ 50000
+        state.apply_fill("BTC-USDT", dec!(1), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, dec!(50000));
+
+        // Price moves to 55000 — exposure should update without a fill.
+        state.update_mark_price("BTC-USDT", dec!(55000));
+        assert_eq!(state.total_notional_exposure, dec!(55000));
+        assert_eq!(
+            *state.position_notional.get("BTC-USDT").unwrap(),
+            dec!(55000)
+        );
+    }
+
+    #[test]
+    fn update_mark_price_no_position_is_noop() {
+        let mut state = default_state();
+        // No position — update should not add spurious notional.
+        state.update_mark_price("BTC-USDT", dec!(55000));
+        assert_eq!(state.total_notional_exposure, Decimal::ZERO);
+        assert!(!state.position_notional.contains_key("BTC-USDT"));
+    }
+
+    #[test]
+    fn update_mark_price_multi_instrument_only_updates_one() {
+        let mut state = default_state();
+        state.apply_fill("BTC-USDT", dec!(1), dec!(50000), Decimal::ZERO);
+        state.apply_fill("ETH-USDT", dec!(10), dec!(3000), Decimal::ZERO);
+        // total = 50000 + 30000 = 80000
+        assert_eq!(state.total_notional_exposure, dec!(80000));
+
+        // BTC moves 50k→60k, ETH unchanged.
+        state.update_mark_price("BTC-USDT", dec!(60000));
+        // total = 60000 + 30000 = 90000
+        assert_eq!(state.total_notional_exposure, dec!(90000));
+        assert_eq!(
+            *state.position_notional.get("ETH-USDT").unwrap(),
+            dec!(30000)
+        );
+    }
+
+    #[test]
+    fn update_mark_price_short_position() {
+        let mut state = default_state();
+        state.apply_fill("BTC-USDT", dec!(-2), dec!(50000), Decimal::ZERO);
+        assert_eq!(state.total_notional_exposure, dec!(100000));
+
+        // Price drops to 45000 — short exposure shrinks.
+        state.update_mark_price("BTC-USDT", dec!(45000));
+        assert_eq!(state.total_notional_exposure, dec!(90000));
     }
 }

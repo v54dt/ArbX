@@ -112,6 +112,7 @@ impl TradeLogWriter {
         self.writer.write_all(line.as_bytes())?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()?;
+        self.writer.get_mut().sync_all()?;
         Ok(())
     }
 }
