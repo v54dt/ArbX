@@ -48,7 +48,7 @@ fn fill_fingerprint(fill: &Fill) -> String {
         "{:?}:{}:{}:{}:{}",
         fill.venue,
         fill.order_id,
-        fill.filled_at.timestamp_millis(),
+        fill.filled_at.timestamp_nanos_opt().unwrap_or(0),
         fill.price,
         fill.quantity
     )
@@ -102,6 +102,9 @@ pub struct ArbitrageEngine {
     strategy_budgets: HashMap<String, StrategyRiskBudget>,
     event_bus: Option<EngineEventBus>,
     clock: Box<dyn Clock>,
+    /// Tracks previous realized_pnl per venue so fill handling can compute
+    /// the delta after PositionManager::apply_fill and pass it to RiskState.
+    prev_venue_realized_pnl: HashMap<String, Decimal>,
 }
 
 impl ArbitrageEngine {
@@ -149,6 +152,7 @@ impl ArbitrageEngine {
             strategy_budgets: HashMap::new(),
             event_bus: None,
             clock: Box::new(LiveClock),
+            prev_venue_realized_pnl: HashMap::new(),
         }
     }
 
@@ -445,7 +449,39 @@ impl ArbitrageEngine {
                         crate::models::enums::Side::Buy => fill.quantity,
                         crate::models::enums::Side::Sell => -fill.quantity,
                     };
-                    self.risk_state.apply_fill(fill_key.as_str(), signed_qty, fill.price, Decimal::ZERO);
+
+                    // A52 fix: apply fill to PM first, then compute realized PnL
+                    // delta from the portfolio snapshot so RiskState gets the real
+                    // value instead of hardcoded ZERO.
+                    let venue = fill.venue;
+                    let venue_key = format!("{:?}", venue).to_lowercase();
+                    self.position_manager_mut_for(venue).apply_fill(&fill).await?;
+                    let realized_pnl_delta = match self
+                        .position_manager_for(venue)
+                        .get_portfolio()
+                        .await
+                    {
+                        Ok(snapshot) => {
+                            let prev = self
+                                .prev_venue_realized_pnl
+                                .get(&venue_key)
+                                .copied()
+                                .unwrap_or(Decimal::ZERO);
+                            let delta = snapshot.realized_pnl - prev;
+                            self.prev_venue_realized_pnl
+                                .insert(venue_key.clone(), snapshot.realized_pnl);
+                            self.portfolios.insert(venue_key, snapshot);
+                            delta
+                        }
+                        Err(_) => Decimal::ZERO,
+                    };
+
+                    self.risk_state.apply_fill(
+                        fill_key.as_str(),
+                        signed_qty,
+                        fill.price,
+                        realized_pnl_delta,
+                    );
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received(self.strategy.name());
                     self.emit(EngineEvent::OrderFilled {
@@ -482,14 +518,6 @@ impl ArbitrageEngine {
                     let pos = self.risk_state.position_by_instrument.get(fill_key.as_str()).copied().unwrap_or(Decimal::ZERO);
                     crate::metrics::set_position(fill_key.as_str(), pos.to_string().parse::<f64>().unwrap_or(0.0));
                     crate::metrics::set_realized_pnl(self.risk_state.realized_pnl_today.to_string().parse::<f64>().unwrap_or(0.0));
-
-                    let venue = fill.venue;
-                    self.position_manager_mut_for(venue).apply_fill(&fill).await?;
-                    let snapshot_result = self.position_manager_for(venue).get_portfolio().await;
-                    let key = format!("{:?}", venue).to_lowercase();
-                    if let Ok(snapshot) = snapshot_result {
-                        self.portfolios.insert(key, snapshot);
-                    }
                 }
                 _ = reconcile_interval.tick() => {
                     // D-3 PR3: reconcile each PM (legacy + per-venue) so a
@@ -590,6 +618,7 @@ impl ArbitrageEngine {
             && admin.paused.load(std::sync::atomic::Ordering::Relaxed)
         {
             crate::metrics::record_quote_received();
+            crate::metrics::record_quote_dropped_paused();
             return Ok(());
         }
 

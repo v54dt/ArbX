@@ -13,6 +13,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use subtle::ConstantTimeEq;
+
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -85,7 +87,7 @@ fn check_bearer(
         return Err((StatusCode::BAD_REQUEST, "non-ASCII Authorization header"));
     };
     if let Some(token) = value.strip_prefix("Bearer ")
-        && token == expected
+        && bool::from(token.as_bytes().ct_eq(expected.as_bytes()))
     {
         return Ok(());
     }

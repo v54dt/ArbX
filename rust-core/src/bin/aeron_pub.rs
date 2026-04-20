@@ -64,6 +64,23 @@ async fn main() -> anyhow::Result<()> {
             warn!("zero-length frame, skipping");
             continue;
         }
+        const MAX_FRAME_SIZE: usize = 1_048_576; // 1 MB
+        if len > MAX_FRAME_SIZE {
+            warn!(
+                len,
+                max = MAX_FRAME_SIZE,
+                "frame exceeds max size, skipping"
+            );
+            // drain the oversized payload to stay in sync
+            let mut drain = vec![0u8; 8192];
+            let mut remaining = len;
+            while remaining > 0 {
+                let chunk = remaining.min(8192);
+                stdin.read_exact(&mut drain[..chunk])?;
+                remaining -= chunk;
+            }
+            continue;
+        }
         let mut payload = vec![0u8; len];
         stdin
             .read_exact(&mut payload)
