@@ -90,6 +90,7 @@ impl OrderExecutor for PaperExecutor {
 
         let fill = Fill {
             order_id: order_id.clone(),
+            client_order_id: Some(order.client_order_id.clone()),
             venue: order.venue,
             instrument: order.instrument.clone(),
             side: order.side,

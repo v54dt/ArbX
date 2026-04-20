@@ -376,6 +376,7 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
 
     Ok(Fill {
         order_id: order_id.to_string(),
+        client_order_id: None,
         venue: venue_from_i8(venue_i8)?,
         instrument: make_instrument(base, quote_cur, inst_type)?,
         side: side_from_i8(side_i8)?,
@@ -589,6 +590,7 @@ mod tests {
         let ts = Utc::now();
         let original = Fill {
             order_id: "ord-123".into(),
+            client_order_id: None,
             venue: DomainVenue::Bybit,
             instrument: sample_instrument(),
             side: DomainSide::Buy,

@@ -113,6 +113,11 @@ impl OkxPrivateStream {
 
     fn parse_order_event(data: &serde_json::Value) -> Option<(Option<Fill>, OrderUpdate)> {
         let ord_id = data.get("ordId")?.as_str()?.to_string();
+        let client_order_id = data
+            .get("clOrdId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let inst_id = data.get("instId")?.as_str()?;
         let inst_type = data.get("instType")?.as_str().unwrap_or("SPOT");
         let side_str = data.get("side")?.as_str()?;
@@ -147,6 +152,7 @@ impl OkxPrivateStream {
         let fill = if fill_sz > Decimal::ZERO {
             Some(Fill {
                 order_id: ord_id.clone(),
+                client_order_id,
                 venue: Venue::Okx,
                 instrument: instrument.clone(),
                 side,

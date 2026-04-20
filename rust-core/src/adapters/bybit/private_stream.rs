@@ -92,6 +92,11 @@ impl BybitPrivateStream {
 
     fn parse_execution(data: &serde_json::Value) -> Option<(Option<Fill>, OrderUpdate)> {
         let order_id = data.get("orderId")?.as_str()?.to_string();
+        let client_order_id = data
+            .get("orderLinkId")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let symbol = data.get("symbol")?.as_str()?;
         let side_str = data.get("side")?.as_str()?;
         let exec_qty_str = data.get("execQty")?.as_str().unwrap_or("0");
@@ -139,6 +144,7 @@ impl BybitPrivateStream {
         let fill = if exec_qty > Decimal::ZERO {
             Some(Fill {
                 order_id: order_id.clone(),
+                client_order_id: client_order_id.clone(),
                 venue: Venue::Bybit,
                 instrument: instrument.clone(),
                 side,

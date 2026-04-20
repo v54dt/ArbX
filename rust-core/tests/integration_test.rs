@@ -395,6 +395,7 @@ async fn private_stream_fill_updates_position_manager() {
 
     let fill = Fill {
         order_id: "external-exchange-fill-1".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,
@@ -493,6 +494,7 @@ async fn duplicate_fill_is_deduplicated_by_fingerprint() {
     let same_ts = Utc::now();
     let fill = Fill {
         order_id: "dup-order-1".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,
@@ -972,6 +974,7 @@ async fn fill_with_unknown_order_id_does_not_panic() {
     // Inject a fill via private stream for an order_id that was never submitted
     let rogue_fill = Fill {
         order_id: "rogue-never-submitted".into(),
+        client_order_id: None,
         venue: Venue::Binance,
         instrument: spot_instrument(),
         side: Side::Buy,

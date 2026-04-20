@@ -478,6 +478,7 @@ mod tests {
     fn make_fill(instrument: &Instrument, side: Side, price: Decimal, qty: Decimal) -> Fill {
         Fill {
             order_id: "test-order".to_string(),
+            client_order_id: None,
             venue: Venue::Bybit,
             instrument: instrument.clone(),
             side,

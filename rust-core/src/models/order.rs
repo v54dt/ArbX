@@ -76,6 +76,11 @@ pub struct Order {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fill {
     pub order_id: String,
+    /// Client-assigned order ID (if available from the venue's WS message).
+    /// Used as a fallback key for intended_fills lookup when fills arrive
+    /// before the engine re-keys from client_order_id to venue order_id.
+    #[serde(default)]
+    pub client_order_id: Option<String>,
     pub venue: Venue,
     pub instrument: Instrument,
     pub side: Side,
