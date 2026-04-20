@@ -96,6 +96,10 @@ pub fn record_tca_fill_delay_ms(venue: &str, ms: f64) {
     .record(ms);
 }
 
+pub fn record_quote_dropped_paused() {
+    counter!("arbx_quotes_dropped_paused_total").increment(1);
+}
+
 pub fn record_opportunity_reverified(strategy: &str, accepted: bool) {
     let result = if accepted { "accept" } else { "reject" };
     counter!(

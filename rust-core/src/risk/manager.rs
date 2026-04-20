@@ -82,6 +82,10 @@ impl RiskManager {
         }
 
         if let Some(qty) = min_adjusted_qty {
+            if qty == Decimal::ZERO {
+                warn!("adjusted quantity is zero — rejecting order");
+                return RiskVerdict::rejected("adjusted quantity is zero");
+            }
             info!(adjusted_qty = %qty, "order quantity adjusted by risk limits");
             RiskVerdict::adjusted(qty, "quantity adjusted by risk limits")
         } else {

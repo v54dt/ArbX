@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rust_decimal::Decimal;
 
-use crate::models::enums::Venue;
+use crate::models::enums::{Side, Venue};
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
 
@@ -82,11 +82,15 @@ impl RiskLimit for MaxPositionPerVenue {
             .positions
             .iter()
             .find(|p| p.instrument == order.instrument)
-            .map(|p| p.quantity.abs())
+            .map(|p| p.quantity)
             .unwrap_or(Decimal::ZERO);
-        let projected = current + order.quantity;
+        let signed_qty = match order.side {
+            Side::Buy => order.quantity,
+            Side::Sell => -order.quantity,
+        };
+        let projected = (current + signed_qty).abs();
         if projected > cap {
-            let allowed = cap - current;
+            let allowed = cap - current.abs();
             if allowed > Decimal::ZERO {
                 RiskVerdict::adjusted(allowed, "per-venue position cap")
             } else {

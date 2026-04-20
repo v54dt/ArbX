@@ -53,6 +53,7 @@ mod vt {
     pub const FILL_FEE: u16 = 18;
     pub const FILL_FEE_CURRENCY: u16 = 20;
     pub const FILL_TIMESTAMP_MS: u16 = 22;
+    pub const FILL_INSTRUMENT_TYPE: u16 = 24;
 
     pub const OB_VENUE: u16 = 4;
     pub const OB_BASE: u16 = 6;
@@ -330,6 +331,7 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
     let order_id = fbb.create_string(&fill.order_id);
     let base = fbb.create_string(&fill.instrument.base);
     let quote_cur = fbb.create_string(&fill.instrument.quote);
+    let inst_type = fbb.create_string(instrument_type_str(fill.instrument.instrument_type));
     let fee_cur = fbb.create_string(&fill.fee_currency);
     let price_off = fbb.create_string(&dec_to_string(fill.price));
     let qty_off = fbb.create_string(&dec_to_string(fill.quantity));
@@ -346,6 +348,7 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_FEE, fee_off);
     fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_FEE_CURRENCY, fee_cur);
     fbb.push_slot::<i64>(vt::FILL_TIMESTAMP_MS, fill.filled_at.timestamp_millis(), 0);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::FILL_INSTRUMENT_TYPE, inst_type);
     let root = fbb.end_table(start);
     fbb.finish(root, None);
     fbb.finished_data().to_vec()
@@ -357,6 +360,7 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
     let venue_i8 = unsafe { get_field::<i8>(&table, vt::FILL_VENUE, 0) };
     let base = unsafe { get_str(&table, vt::FILL_BASE) }.unwrap_or("");
     let quote_cur = unsafe { get_str(&table, vt::FILL_QUOTE_CURRENCY) }.unwrap_or("");
+    let inst_type = unsafe { get_str(&table, vt::FILL_INSTRUMENT_TYPE) }.unwrap_or("spot");
     let side_i8 = unsafe { get_field::<i8>(&table, vt::FILL_SIDE, 0) };
     let price_str = unsafe { get_str(&table, vt::FILL_PRICE) }.unwrap_or("0");
     let qty_str = unsafe { get_str(&table, vt::FILL_QUANTITY) }.unwrap_or("0");
@@ -372,7 +376,7 @@ pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
     Ok(Fill {
         order_id: order_id.to_string(),
         venue: venue_from_i8(venue_i8)?,
-        instrument: make_instrument(base, quote_cur, "spot")?,
+        instrument: make_instrument(base, quote_cur, inst_type)?,
         side: side_from_i8(side_i8)?,
         price: parse_decimal_str(price_str)?,
         quantity: parse_decimal_str(qty_str)?,
