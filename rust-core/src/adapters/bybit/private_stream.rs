@@ -174,6 +174,10 @@ impl BybitPrivateStream {
 #[async_trait]
 impl PrivateStream for BybitPrivateStream {
     async fn connect(&mut self) -> anyhow::Result<PrivateStreamReceivers> {
+        if let Some(old_task) = self.ws_task.take() {
+            old_task.abort();
+        }
+
         let (fill_tx, fill_rx) = mpsc::unbounded_channel();
         let (order_tx, order_rx) = mpsc::unbounded_channel();
 

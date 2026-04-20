@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use futures_util::FutureExt;
 use futures_util::future::join_all;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -294,27 +295,35 @@ impl ArbitrageEngine {
             if let Some(mut ff) = feed_fills {
                 let ftx = fill_tx.clone();
                 let mut ff_shutdown = self.shutdown_rx.clone();
-                tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = ff_shutdown.changed() => {
-                                if *ff_shutdown.borrow() { break; }
-                            }
-                            msg = ff.recv() => {
-                                match msg {
-                                    Some(f) => { if ftx.send(f).is_err() { break; } }
-                                    None => break,
+                tokio::spawn(
+                    std::panic::AssertUnwindSafe(async move {
+                        loop {
+                            tokio::select! {
+                                _ = ff_shutdown.changed() => {
+                                    if *ff_shutdown.borrow() { break; }
+                                }
+                                msg = ff.recv() => {
+                                    match msg {
+                                        Some(f) => { if ftx.send(f).is_err() { break; } }
+                                        None => break,
+                                    }
                                 }
                             }
                         }
-                    }
-                });
+                    })
+                    .catch_unwind()
+                    .then(|r| async {
+                        if let Err(e) = r {
+                            tracing::error!("feed-level fill forwarder task panicked: {:?}", e);
+                        }
+                    }),
+                );
             }
             let tx = merged_tx.clone();
             let btx = merged_book_tx.clone();
             let publishers = self.quote_publishers.clone();
             let mut feed_shutdown = self.shutdown_rx.clone();
-            tokio::spawn(async move {
+            tokio::spawn(std::panic::AssertUnwindSafe(async move {
                 loop {
                     tokio::select! {
                         _ = feed_shutdown.changed() => {
@@ -347,7 +356,11 @@ impl ArbitrageEngine {
                         else => break,
                     }
                 }
-            });
+            }).catch_unwind().then(|r| async {
+                if let Err(e) = r {
+                    tracing::error!("feed quote/book merge task panicked: {:?}", e);
+                }
+            }));
         }
 
         drop(merged_tx);
@@ -361,13 +374,21 @@ impl ArbitrageEngine {
         {
             let tx = fill_tx.clone();
             let mut fills = exec_receivers.fills;
-            tokio::spawn(async move {
-                while let Some(f) = fills.recv().await {
-                    if tx.send(f).is_err() {
-                        break;
+            tokio::spawn(
+                std::panic::AssertUnwindSafe(async move {
+                    while let Some(f) = fills.recv().await {
+                        if tx.send(f).is_err() {
+                            break;
+                        }
                     }
-                }
-            });
+                })
+                .catch_unwind()
+                .then(|r| async {
+                    if let Err(e) = r {
+                        tracing::error!("legacy executor fill forwarder task panicked: {:?}", e);
+                    }
+                }),
+            );
         }
 
         for (venue, exec) in self.executors_by_venue.iter_mut() {
@@ -376,17 +397,30 @@ impl ArbitrageEngine {
                     let tx = fill_tx.clone();
                     let mut fills = rcv.fills;
                     let venue_label = format!("{:?}", venue);
-                    tokio::spawn(async move {
-                        while let Some(f) = fills.recv().await {
-                            if tx.send(f).is_err() {
-                                break;
+                    let venue_label2 = venue_label.clone();
+                    tokio::spawn(
+                        std::panic::AssertUnwindSafe(async move {
+                            while let Some(f) = fills.recv().await {
+                                if tx.send(f).is_err() {
+                                    break;
+                                }
                             }
-                        }
-                        tracing::debug!(
-                            venue = venue_label.as_str(),
-                            "per-venue executor fill channel closed"
-                        );
-                    });
+                            tracing::debug!(
+                                venue = venue_label.as_str(),
+                                "per-venue executor fill channel closed"
+                            );
+                        })
+                        .catch_unwind()
+                        .then(|r| async move {
+                            if let Err(e) = r {
+                                tracing::error!(
+                                    venue = venue_label2.as_str(),
+                                    "per-venue executor fill forwarder task panicked: {:?}",
+                                    e
+                                );
+                            }
+                        }),
+                    );
                 }
                 Err(e) => {
                     warn!(?venue, error = %e, "per-venue executor connect failed, skipping");
@@ -399,19 +433,28 @@ impl ArbitrageEngine {
                 Ok(ps_receivers) => {
                     let tx = fill_tx.clone();
                     let mut fills = ps_receivers.fills;
-                    tokio::spawn(async move {
-                        while let Some(f) = fills.recv().await {
-                            if tx.send(f).is_err() {
-                                break;
+                    tokio::spawn(
+                        std::panic::AssertUnwindSafe(async move {
+                            while let Some(f) = fills.recv().await {
+                                if tx.send(f).is_err() {
+                                    break;
+                                }
                             }
-                        }
-                    });
-                    let mut updates = ps_receivers.order_updates;
-                    tokio::spawn(async move {
-                        while let Some(u) = updates.recv().await {
-                            tracing::debug!(order_id = u.order_id.as_str(), status = ?u.status, "private stream order update");
-                        }
-                    });
+                        })
+                        .catch_unwind()
+                        .then(|r| async {
+                            if let Err(e) = r {
+                                tracing::error!(
+                                    "private stream fill forwarder task panicked: {:?}",
+                                    e
+                                );
+                            }
+                        }),
+                    );
+                    // OrderUpdate events intentionally dropped — engine tracks
+                    // state via fills. Wire into main select! loop when
+                    // order-status UI is needed.
+                    drop(ps_receivers.order_updates);
                 }
                 Err(e) => {
                     warn!(error = %e, "private stream connect failed, skipping");
