@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use subtle::ConstantTimeEq;
 
@@ -25,6 +25,16 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
+/// An event entry with a monotonic sequence number for ordering.
+/// Broadcast lag can deliver events out of order; the sequence number
+/// (assigned at push time from a single-threaded collector) ensures
+/// `/recent-events` always returns chronological output.
+#[derive(Clone, Debug)]
+struct TimestampedEvent {
+    seq: u64,
+    desc: String,
+}
+
 /// Shared state the engine updates and the admin server reads. Cloning the
 /// outer `Arc` is cheap; all interior mutability is atomic / locked.
 #[derive(Clone)]
@@ -37,7 +47,10 @@ pub struct EngineHandle {
     pub admin_token: Option<String>,
     /// Bounded buffer of recent engine events (populated by a collector task
     /// subscribing to the event bus). Exposed via GET /recent-events.
-    pub recent_events: Arc<Mutex<VecDeque<String>>>,
+    /// Each entry carries a monotonic sequence number so the serve path
+    /// can sort, compensating for broadcast lag reordering.
+    recent_events: Arc<Mutex<VecDeque<TimestampedEvent>>>,
+    event_seq: Arc<AtomicU64>,
 }
 
 const MAX_RECENT_EVENTS: usize = 100;
@@ -55,6 +68,7 @@ impl EngineHandle {
             shutdown_tx,
             admin_token: None,
             recent_events: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_RECENT_EVENTS))),
+            event_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -64,12 +78,15 @@ impl EngineHandle {
     }
 
     /// Push an event description into the recent_events buffer (capped at 100).
+    /// Assigns a monotonic sequence number so the serve path can sort to
+    /// compensate for broadcast lag reordering.
     pub async fn push_event(&self, desc: String) {
+        let seq = self.event_seq.fetch_add(1, Ordering::Relaxed);
         let mut buf = self.recent_events.lock().await;
         if buf.len() >= MAX_RECENT_EVENTS {
             buf.pop_front();
         }
-        buf.push_back(desc);
+        buf.push_back(TimestampedEvent { seq, desc });
     }
 }
 
@@ -156,8 +173,12 @@ async fn kill(State(handle): State<EngineHandle>, headers: HeaderMap) -> impl In
 
 async fn recent_events(State(handle): State<EngineHandle>) -> impl IntoResponse {
     let buf = handle.recent_events.lock().await;
-    let events: Vec<String> = buf.iter().cloned().collect();
-    Json(events)
+    let mut events: Vec<TimestampedEvent> = buf.iter().cloned().collect();
+    // Sort by sequence number to guarantee chronological order even if
+    // broadcast lag caused out-of-order insertion.
+    events.sort_by_key(|e| e.seq);
+    let descs: Vec<String> = events.into_iter().map(|e| e.desc).collect();
+    Json(descs)
 }
 
 /// Build the Router. Exposed for tests; main.rs uses `serve` instead.

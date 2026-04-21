@@ -139,4 +139,36 @@ mod tests {
         assert!(!b.is_within_budget());
         assert!(b.rejection_reason().unwrap().contains("daily_loss"));
     }
+
+    #[test]
+    fn maybe_reset_daily_resets_on_new_day() {
+        let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
+            max_daily_loss: Some(dec!(100)),
+            max_notional: Some(dec!(1000)),
+        });
+        b.record_pnl(dec!(-101));
+        b.record_order(dec!(1001));
+        assert!(!b.is_within_budget());
+
+        // Advance to next day (UTC+8)
+        let tomorrow = Utc::now() + chrono::Duration::days(1);
+        b.maybe_reset_daily(tomorrow);
+        assert!(b.is_within_budget());
+        assert_eq!(b.daily_pnl, Decimal::ZERO);
+        assert_eq!(b.notional_submitted, Decimal::ZERO);
+        assert_eq!(b.order_count, 0);
+    }
+
+    #[test]
+    fn maybe_reset_daily_no_reset_same_day() {
+        let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
+            max_daily_loss: Some(dec!(100)),
+            max_notional: None,
+        });
+        let now = Utc::now();
+        b.maybe_reset_daily(now);
+        b.record_pnl(dec!(-50));
+        b.maybe_reset_daily(now);
+        assert_eq!(b.daily_pnl, dec!(-50)); // not reset
+    }
 }
