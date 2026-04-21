@@ -251,6 +251,10 @@ impl ArbitrageEngine {
         if let Some(e) = self.executors_by_venue.get(&venue) {
             return e.as_ref();
         }
+        tracing::warn!(
+            ?venue,
+            "no per-venue executor registered, using legacy fallback"
+        );
         self.executor.as_ref()
     }
 
@@ -258,6 +262,7 @@ impl ArbitrageEngine {
         if let Some(p) = self.position_managers_by_venue.get_mut(&venue) {
             return p.as_mut();
         }
+        tracing::warn!(?venue, "no per-venue PM registered, using legacy fallback");
         self.position_manager.as_mut()
     }
 
@@ -265,6 +270,7 @@ impl ArbitrageEngine {
         if let Some(p) = self.position_managers_by_venue.get(&venue) {
             return p.as_ref();
         }
+        tracing::warn!(?venue, "no per-venue PM registered, using legacy fallback");
         self.position_manager.as_ref()
     }
 
