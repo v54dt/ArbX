@@ -1,0 +1,9 @@
+# shioaji supports 3.7-3.14; separate process from fubon so we use 3.14
+FROM python:3.14-slim-bookworm
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY python-sidecar/ ./
+RUN pip install uv && uv pip install --system -e .[tw-stock]
+ENV TZ=Asia/Taipei
+ENTRYPOINT ["python", "-m", "src.main"]
+CMD ["config/shioaji.yaml"]
