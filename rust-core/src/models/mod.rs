@@ -2,6 +2,7 @@ pub mod enums;
 pub mod fee;
 pub mod instrument;
 pub mod instrument_index;
+pub mod instrument_provider;
 pub mod market;
 pub mod order;
 pub mod position;
