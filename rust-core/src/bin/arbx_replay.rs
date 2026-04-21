@@ -57,9 +57,9 @@ struct Cli {
     #[arg(long)]
     quotes: Option<String>,
 
-    /// Overwrite every replayed quote's `timestamp` with `Utc::now()` before
-    /// updating the book. Defaults to true so `max_quote_age_ms` filters
-    /// don't drop stale fixture data.
+    /// Re-stamp every replayed quote's `timestamp` to the latest fixture
+    /// timestamp seen so far, so `max_quote_age_ms` filters don't drop stale
+    /// fixture data. Defaults to true.
     #[arg(long, default_value_t = true)]
     re_stamp: bool,
 
@@ -443,7 +443,7 @@ fn quote_to_book(q: &Quote) -> OrderBook {
             size: q.ask_size,
         }],
         timestamp: q.timestamp,
-        local_timestamp: Utc::now(),
+        local_timestamp: q.timestamp, // OK: replay uses fixture timestamp for determinism
     }
 }
 
@@ -456,10 +456,25 @@ async fn replay_quotes(
     let portfolios: HashMap<String, arbx_core::models::position::PortfolioSnapshot> =
         HashMap::new();
     let mut opportunities = Vec::new();
+    // Monotonic replay clock: each quote advances to the latest timestamp seen.
+    let mut replay_now: Option<DateTime<Utc>> = None;
 
     for mut q in quotes {
         if re_stamp {
-            q.timestamp = Utc::now();
+            // Advance the replay clock to the latest fixture timestamp, then
+            // re-stamp the quote so staleness filters see it as "just arrived".
+            let now = match replay_now {
+                Some(prev) => prev.max(q.timestamp),
+                None => q.timestamp,
+            };
+            replay_now = Some(now);
+            q.timestamp = now;
+        } else {
+            // Even without re-stamp, track the latest quote time for evaluate().
+            replay_now = Some(match replay_now {
+                Some(prev) => prev.max(q.timestamp),
+                None => q.timestamp,
+            });
         }
         let key = book_key(q.venue, &q.instrument);
         books
@@ -467,10 +482,10 @@ async fn replay_quotes(
             .and_modify(|b| b.update_from_quote(&q))
             .or_insert_with(|| quote_to_book(&q));
 
-        if let Some(opp) = strategy
-            .evaluate(&books, &portfolios, chrono::Utc::now())
-            .await
-        {
+        // Use the replay clock (fixture-derived) instead of wall time so
+        // strategy staleness checks are deterministic across runs.
+        let eval_now = replay_now.unwrap_or_else(Utc::now);
+        if let Some(opp) = strategy.evaluate(&books, &portfolios, eval_now).await {
             opportunities.push(opp);
         }
     }
@@ -634,14 +649,14 @@ mod tests {
                 intended_price: dec!(50000),
                 intended_quantity: dec!(1),
                 order_id: None,
-                submitted_at: Utc::now(),
+                submitted_at: Utc::now(), // OK: test fixture only
             }],
             expected_gross_profit: net + dec!(2),
             expected_fees: dec!(2),
             expected_net_profit: net,
             expected_net_profit_bps: bps,
             notional: dec!(50000),
-            created_at: Utc::now(),
+            created_at: Utc::now(), // OK: test fixture only
         }
     }
 
@@ -667,8 +682,8 @@ mod tests {
                 notional: dec!(50000),
             },
             meta: OpportunityMeta {
-                detected_at: Utc::now(),
-                quote_ts_per_leg: smallvec![Utc::now()],
+                detected_at: Utc::now(),                 // OK: test fixture only
+                quote_ts_per_leg: smallvec![Utc::now()], // OK: test fixture only
                 ttl: Duration::milliseconds(500),
                 strategy_id: "cross_exchange".into(),
             },
@@ -819,7 +834,7 @@ mod tests {
                 ask: dec!(49950),
                 bid_size: dec!(10),
                 ask_size: dec!(10),
-                timestamp: Utc::now(),
+                timestamp: Utc::now(), // OK: test fixture, re-stamped by replay
             },
             Quote {
                 venue: Venue::Bybit,
@@ -828,7 +843,7 @@ mod tests {
                 ask: dec!(50250),
                 bid_size: dec!(10),
                 ask_size: dec!(10),
-                timestamp: Utc::now(),
+                timestamp: Utc::now(), // OK: test fixture, re-stamped by replay
             },
         ];
         quotes
@@ -864,7 +879,7 @@ mod tests {
             ask: dec!(50010),
             bid_size: dec!(10),
             ask_size: dec!(10),
-            timestamp: Utc::now(),
+            timestamp: Utc::now(), // OK: test fixture, re-stamped by replay
         };
         let mut q2 = q.clone();
         q2.venue = Venue::Bybit;

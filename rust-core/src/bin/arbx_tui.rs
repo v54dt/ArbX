@@ -69,6 +69,9 @@ struct AppState {
     last_status: Option<StatusBody>,
     last_ws: WsStatus,
     last_poll_at: Option<Instant>,
+    /// Tracks when the last *successful* /status poll completed. Used to show
+    /// a [STALE] indicator when the engine becomes unreachable.
+    last_successful_poll: Option<Instant>,
     last_error: Option<String>,
 }
 
@@ -174,6 +177,10 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
         ])
         .split(frame.area());
 
+    let is_stale = state
+        .last_successful_poll
+        .is_some_and(|t| t.elapsed() > Duration::from_secs(3));
+
     let header_text = match &state.last_status {
         Some(s) if s.paused => Span::styled(
             "ArbX — PAUSED",
@@ -194,8 +201,21 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
                 .add_modifier(Modifier::BOLD),
         ),
     };
+
+    let header_spans = if is_stale {
+        vec![
+            header_text,
+            Span::raw("  "),
+            Span::styled(
+                "[STALE]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![header_text]
+    };
     frame.render_widget(
-        Paragraph::new(Line::from(header_text)).block(Block::default().borders(Borders::ALL)),
+        Paragraph::new(Line::from(header_spans)).block(Block::default().borders(Borders::ALL)),
         chunks[0],
     );
 
@@ -304,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
             match poll_status(&client, &cli.admin_url).await {
                 Ok(body) => {
                     state.last_status = Some(body);
+                    state.last_successful_poll = Some(now);
                     state.last_error = None;
                 }
                 Err(e) => {
