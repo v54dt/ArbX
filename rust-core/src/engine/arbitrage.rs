@@ -272,6 +272,11 @@ impl ArbitrageEngine {
         &self.trade_logs
     }
 
+    #[allow(dead_code)] // used by integration tests
+    pub fn risk_state(&self) -> &RiskState {
+        &self.risk_state
+    }
+
     pub async fn run(&mut self) -> Result<()> {
         info!(
             strategy = self.strategy.name(),

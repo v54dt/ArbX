@@ -683,4 +683,225 @@ mod tests {
         assert!(decoded.bids.is_empty());
         assert!(decoded.asks.is_empty());
     }
+
+    // --- proptest round-trip fuzz tests for Decimal precision ---
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn arb_decimal() -> impl Strategy<Value = Decimal> {
+            (-99_999_999i64..=99_999_999i64, 0u32..=8u32)
+                .prop_map(|(mantissa, scale)| Decimal::new(mantissa, scale))
+        }
+
+        fn arb_positive_decimal() -> impl Strategy<Value = Decimal> {
+            (1i64..=99_999_999i64, 0u32..=8u32)
+                .prop_map(|(mantissa, scale)| Decimal::new(mantissa, scale))
+        }
+
+        fn arb_venue() -> impl Strategy<Value = DomainVenue> {
+            prop_oneof![
+                Just(DomainVenue::Binance),
+                Just(DomainVenue::Okx),
+                Just(DomainVenue::Bybit),
+                Just(DomainVenue::Shioaji),
+                Just(DomainVenue::Fubon),
+            ]
+        }
+
+        fn arb_side() -> impl Strategy<Value = DomainSide> {
+            prop_oneof![Just(DomainSide::Buy), Just(DomainSide::Sell),]
+        }
+
+        fn arb_instrument_type() -> impl Strategy<Value = InstrumentType> {
+            prop_oneof![
+                Just(InstrumentType::Spot),
+                Just(InstrumentType::Futures),
+                Just(InstrumentType::Option),
+                Just(InstrumentType::Swap),
+            ]
+        }
+
+        // Alphanumeric only: the codec stores raw strings, no escaping needed,
+        // but we avoid empty strings since make_instrument would parse them OK
+        // while semantics are questionable. We do test short + long names.
+        fn arb_symbol() -> impl Strategy<Value = String> {
+            "[A-Z0-9]{1,20}"
+        }
+
+        fn arb_timestamp_ms() -> impl Strategy<Value = i64> {
+            // 2020-01-01 to 2030-01-01 in millis
+            1_577_836_800_000i64..1_893_456_000_000i64
+        }
+
+        fn make_test_instrument(
+            base: String,
+            quote_currency: String,
+            inst_type: InstrumentType,
+        ) -> Instrument {
+            Instrument {
+                asset_class: AssetClass::Crypto,
+                instrument_type: inst_type,
+                base,
+                quote: quote_currency,
+                settle_currency: None,
+                expiry: None,
+                last_trade_time: None,
+                settlement_time: None,
+            }
+        }
+
+        proptest! {
+            #[test]
+            fn quote_round_trip(
+                venue in arb_venue(),
+                base in arb_symbol(),
+                quote_cur in arb_symbol(),
+                inst_type in arb_instrument_type(),
+                bid in arb_positive_decimal(),
+                ask in arb_positive_decimal(),
+                bid_size in arb_positive_decimal(),
+                ask_size in arb_positive_decimal(),
+                ts_ms in arb_timestamp_ms(),
+            ) {
+                let ts = Utc.timestamp_millis_opt(ts_ms).single().unwrap();
+                let original = Quote {
+                    venue,
+                    instrument: make_test_instrument(base.clone(), quote_cur.clone(), inst_type),
+                    bid,
+                    ask,
+                    bid_size,
+                    ask_size,
+                    timestamp: ts,
+                };
+                let bytes = encode_quote(&original);
+                let decoded = decode_quote(&bytes).unwrap();
+
+                prop_assert_eq!(decoded.venue, venue);
+                prop_assert_eq!(&decoded.instrument.base, &base);
+                prop_assert_eq!(&decoded.instrument.quote, &quote_cur);
+                prop_assert_eq!(decoded.instrument.instrument_type, inst_type);
+                prop_assert_eq!(decoded.bid, bid, "bid mismatch: encoded {:?}", bid);
+                prop_assert_eq!(decoded.ask, ask, "ask mismatch: encoded {:?}", ask);
+                prop_assert_eq!(decoded.bid_size, bid_size);
+                prop_assert_eq!(decoded.ask_size, ask_size);
+                prop_assert_eq!(decoded.timestamp.timestamp_millis(), ts_ms);
+            }
+
+            #[test]
+            fn fill_round_trip(
+                venue in arb_venue(),
+                base in arb_symbol(),
+                quote_cur in arb_symbol(),
+                inst_type in arb_instrument_type(),
+                side in arb_side(),
+                price in arb_positive_decimal(),
+                quantity in arb_positive_decimal(),
+                fee in arb_decimal(),
+                fee_currency in arb_symbol(),
+                order_id in "[a-z0-9\\-]{1,30}",
+                ts_ms in arb_timestamp_ms(),
+            ) {
+                let ts = Utc.timestamp_millis_opt(ts_ms).single().unwrap();
+                let original = Fill {
+                    order_id: order_id.clone(),
+                    client_order_id: None,
+                    venue,
+                    instrument: make_test_instrument(base.clone(), quote_cur.clone(), inst_type),
+                    side,
+                    price,
+                    quantity,
+                    fee,
+                    fee_currency: fee_currency.clone(),
+                    filled_at: ts,
+                };
+                let bytes = encode_fill(&original);
+                let decoded = decode_fill(&bytes).unwrap();
+
+                prop_assert_eq!(&decoded.order_id, &order_id);
+                prop_assert_eq!(decoded.venue, venue);
+                prop_assert_eq!(&decoded.instrument.base, &base);
+                prop_assert_eq!(&decoded.instrument.quote, &quote_cur);
+                prop_assert_eq!(decoded.instrument.instrument_type, inst_type);
+                prop_assert_eq!(decoded.side, side);
+                prop_assert_eq!(decoded.price, price, "price mismatch");
+                prop_assert_eq!(decoded.quantity, quantity, "quantity mismatch");
+                prop_assert_eq!(decoded.fee, fee, "fee mismatch");
+                prop_assert_eq!(&decoded.fee_currency, &fee_currency);
+                prop_assert_eq!(decoded.filled_at.timestamp_millis(), ts_ms);
+            }
+
+            #[test]
+            fn order_book_round_trip(
+                venue in arb_venue(),
+                base in arb_symbol(),
+                quote_cur in arb_symbol(),
+                inst_type in arb_instrument_type(),
+                bid_prices in proptest::collection::vec(arb_positive_decimal(), 0..10),
+                bid_sizes in proptest::collection::vec(arb_positive_decimal(), 0..10),
+                ask_prices in proptest::collection::vec(arb_positive_decimal(), 0..10),
+                ask_sizes in proptest::collection::vec(arb_positive_decimal(), 0..10),
+                ts_ms in arb_timestamp_ms(),
+            ) {
+                let n_bids = bid_prices.len().min(bid_sizes.len());
+                let n_asks = ask_prices.len().min(ask_sizes.len());
+                let bids: smallvec::SmallVec<[OrderBookLevel; 20]> = bid_prices[..n_bids]
+                    .iter()
+                    .zip(&bid_sizes[..n_bids])
+                    .map(|(&p, &s)| OrderBookLevel { price: p, size: s })
+                    .collect();
+                let asks: smallvec::SmallVec<[OrderBookLevel; 20]> = ask_prices[..n_asks]
+                    .iter()
+                    .zip(&ask_sizes[..n_asks])
+                    .map(|(&p, &s)| OrderBookLevel { price: p, size: s })
+                    .collect();
+                let ts = Utc.timestamp_millis_opt(ts_ms).single().unwrap();
+                let original = OrderBook {
+                    venue,
+                    instrument: make_test_instrument(base.clone(), quote_cur.clone(), inst_type),
+                    bids: bids.clone(),
+                    asks: asks.clone(),
+                    timestamp: ts,
+                    local_timestamp: ts,
+                };
+                let bytes = encode_order_book(&original);
+                let decoded = decode_order_book(&bytes).unwrap();
+
+                prop_assert_eq!(decoded.venue, venue);
+                prop_assert_eq!(&decoded.instrument.base, &base);
+                prop_assert_eq!(&decoded.instrument.quote, &quote_cur);
+                prop_assert_eq!(decoded.instrument.instrument_type, inst_type);
+                prop_assert_eq!(decoded.bids.len(), n_bids);
+                prop_assert_eq!(decoded.asks.len(), n_asks);
+                for (i, (orig, dec_level)) in bids.iter().zip(decoded.bids.iter()).enumerate() {
+                    prop_assert_eq!(dec_level.price, orig.price, "bid[{}] price", i);
+                    prop_assert_eq!(dec_level.size, orig.size, "bid[{}] size", i);
+                }
+                for (i, (orig, dec_level)) in asks.iter().zip(decoded.asks.iter()).enumerate() {
+                    prop_assert_eq!(dec_level.price, orig.price, "ask[{}] price", i);
+                    prop_assert_eq!(dec_level.size, orig.size, "ask[{}] size", i);
+                }
+                prop_assert_eq!(decoded.timestamp.timestamp_millis(), ts_ms);
+            }
+
+            #[test]
+            fn decimal_edge_cases_quote(
+                val in prop_oneof![
+                    Just(Decimal::ZERO),
+                    Just(Decimal::new(1, 8)),          // 0.00000001
+                    Just(Decimal::new(9999999999, 2)), // 99999999.99
+                    Just(Decimal::new(1, 0)),          // 1
+                    Just(Decimal::new(-1, 0)),         // -1 (fees can be negative: rebates)
+                    Just(Decimal::MAX),
+                    arb_decimal(),
+                ],
+            ) {
+                // Pure Decimal string round-trip: the codec's core guarantee.
+                let s = dec_to_string(val);
+                let back = parse_decimal_str(&s).unwrap();
+                prop_assert_eq!(back, val, "dec_to_string -> parse_decimal_str mismatch for {}", s);
+            }
+        }
+    }
 }

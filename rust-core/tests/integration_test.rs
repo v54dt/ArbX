@@ -1077,3 +1077,182 @@ async fn pending_cancels_not_flushed_on_shutdown() {
         "pending_cancels should be flushed on shutdown (A57 graceful drain)"
     );
 }
+
+// ── A71: realized_pnl_today ticks when fills arrive ──────────────────────
+
+use arbx_core::adapters::position_manager::PositionManager;
+use arbx_core::models::position::Position;
+use std::collections::HashMap;
+
+/// Minimal PositionManager that tracks weighted-avg cost and computes
+/// realized PnL on closing fills. MockExchange does NOT do this, which
+/// is why A52 (the Decimal::ZERO bug) survived 12 review rounds.
+struct PnlTrackingPM {
+    positions: HashMap<String, (Decimal, Decimal)>, // instrument_key -> (signed_qty, avg_cost)
+    realized_pnl: Decimal,
+}
+
+impl PnlTrackingPM {
+    fn new() -> Self {
+        Self {
+            positions: HashMap::new(),
+            realized_pnl: Decimal::ZERO,
+        }
+    }
+}
+
+#[async_trait]
+impl PositionManager for PnlTrackingPM {
+    async fn get_position(&self, symbol: &str) -> anyhow::Result<Option<Position>> {
+        Ok(self.positions.get(symbol).map(|(qty, cost)| Position {
+            venue: Venue::Binance,
+            instrument: spot_instrument(),
+            quantity: *qty,
+            average_cost: *cost,
+            unrealized_pnl: Decimal::ZERO,
+            realized_pnl: self.realized_pnl,
+            settlement_date: None,
+        }))
+    }
+
+    async fn get_portfolio(
+        &self,
+    ) -> anyhow::Result<arbx_core::models::position::PortfolioSnapshot> {
+        Ok(arbx_core::models::position::PortfolioSnapshot {
+            venue: Venue::Binance,
+            positions: Vec::new(),
+            total_equity: Decimal::ZERO,
+            available_balance: Decimal::ZERO,
+            unrealized_pnl: Decimal::ZERO,
+            realized_pnl: self.realized_pnl,
+        })
+    }
+
+    async fn sync_positions(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn apply_fill(&mut self, fill: &Fill) -> anyhow::Result<()> {
+        let key = format!("{:?}:{}", fill.venue, fill.instrument.base).to_lowercase();
+        let (pos_qty, avg_cost) = self
+            .positions
+            .entry(key)
+            .or_insert((Decimal::ZERO, Decimal::ZERO));
+
+        let fill_signed_qty = match fill.side {
+            Side::Buy => fill.quantity,
+            Side::Sell => -fill.quantity,
+        };
+
+        // Closing: fill direction opposes existing position
+        let is_closing = (*pos_qty > Decimal::ZERO && fill_signed_qty < Decimal::ZERO)
+            || (*pos_qty < Decimal::ZERO && fill_signed_qty > Decimal::ZERO);
+
+        if is_closing && !pos_qty.is_zero() {
+            let close_qty = fill.quantity.min(pos_qty.abs());
+            // realized = close_qty * (fill_price - avg_cost) * sign_of_position
+            let pnl = close_qty
+                * (fill.price - *avg_cost)
+                * if *pos_qty > Decimal::ZERO {
+                    Decimal::ONE
+                } else {
+                    -Decimal::ONE
+                };
+            self.realized_pnl += pnl;
+        }
+
+        // Update position
+        let new_qty = *pos_qty + fill_signed_qty;
+        if !is_closing || pos_qty.abs() <= fill.quantity {
+            // Opened new or flipped: avg_cost = fill_price for the remainder
+            *avg_cost = fill.price;
+        }
+        *pos_qty = new_qty;
+
+        Ok(())
+    }
+}
+
+/// A71: Verifies that RiskState.realized_pnl_today becomes negative when
+/// losing fills arrive. This is the regression guard for A52 — the
+/// Decimal::ZERO bug survived 12 review rounds because MockExchange's
+/// apply_fill never computes realized PnL.
+#[tokio::test]
+async fn realized_pnl_ticks_negative_on_losing_fills() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0).with_quote_interval(50);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(50);
+    // fill_rate=0: executor does not generate fills; we inject via private stream
+    let executor = MockExchange::new(vec![], 0, 0.0);
+    let pm = PnlTrackingPM::new();
+
+    let now = Utc::now();
+    // Round-trip: Buy 1 BTC @ 50000, then Sell 1 BTC @ 49000 → loss of 1000
+    let buy_fill = Fill {
+        order_id: "pnl-buy-1".into(),
+        client_order_id: None,
+        venue: Venue::Binance,
+        instrument: spot_instrument(),
+        side: Side::Buy,
+        price: dec!(50000),
+        quantity: dec!(1),
+        fee: Decimal::ZERO,
+        fee_currency: "USDT".into(),
+        filled_at: now,
+    };
+    let sell_fill = Fill {
+        order_id: "pnl-sell-1".into(),
+        client_order_id: None,
+        venue: Venue::Binance,
+        instrument: spot_instrument(),
+        side: Side::Sell,
+        price: dec!(49000),
+        quantity: dec!(1),
+        fee: Decimal::ZERO,
+        fee_currency: "USDT".into(),
+        filled_at: now + chrono::Duration::milliseconds(100),
+    };
+    let private_stream: Box<dyn PrivateStream> =
+        Box::new(PrecannedPrivateStream::many(vec![buy_fill, sell_fill]));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let risk_manager = RiskManager::new(Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new());
+    let risk_state = RiskState::new(dec!(100), dec!(1_000_000), dec!(100_000));
+    let circuit_breaker = CircuitBreaker::new(dec!(500_000), 1000, 10);
+
+    let mut engine = arbx_core::engine::arbitrage::ArbitrageEngine::new(
+        vec![Box::new(feed_a), Box::new(feed_b)],
+        Box::new(build_strategy()),
+        risk_manager,
+        risk_state,
+        circuit_breaker,
+        Box::new(executor),
+        Box::new(pm),
+        vec![private_stream],
+        Vec::new(),
+        3600,
+        0,
+        shutdown_rx,
+    );
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+
+    tokio::time::sleep(Duration::from_millis(2000)).await;
+    let _ = shutdown_tx.send(true);
+    let engine = handle.await.unwrap();
+
+    let pnl = engine.risk_state().realized_pnl_today;
+    assert!(
+        pnl < Decimal::ZERO,
+        "realized_pnl_today should be negative after losing round-trip; got {pnl}"
+    );
+    assert_eq!(
+        pnl,
+        dec!(-1000),
+        "expected -1000 from buy@50000 sell@49000 x 1 BTC"
+    );
+}
