@@ -1,11 +1,17 @@
 use metrics::{counter, gauge, histogram};
 
-pub fn setup_metrics_server(port: u16) {
+pub fn try_setup_metrics_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
     builder
         .with_http_listener(([0, 0, 0, 0], port))
         .install()
-        .expect("failed to install Prometheus exporter");
+        .map_err(|e| e.into())
+}
+
+pub fn setup_metrics_server(port: u16) {
+    if let Err(e) = try_setup_metrics_server(port) {
+        tracing::warn!(error = %e, "metrics server install failed (may already be running)");
+    }
 }
 
 pub fn record_quote_received() {
