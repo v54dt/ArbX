@@ -3,6 +3,7 @@ ipc:
 
 venues:
   - venue: shioaji
+    vault_path: arbx/tw/shioaji
     api_key: ${SHIOAJI_API_KEY}
     secret_key: ${SHIOAJI_SECRET_KEY}
     ca_path: ${SHIOAJI_CERT_PATH}
