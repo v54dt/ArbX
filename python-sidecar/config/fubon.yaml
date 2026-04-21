@@ -3,6 +3,7 @@ ipc:
 
 venues:
   - venue: fubon
+    vault_path: arbx/tw/fubon
     user_id: ${FUBON_USER_ID}
     password: ${FUBON_PASSWORD}
     pfx_path: ${FUBON_PFX_PATH}

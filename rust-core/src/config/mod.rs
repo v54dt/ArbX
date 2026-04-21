@@ -342,6 +342,29 @@ fn validate_triangle_connectivity(idx: usize, cycle: &TriangleCycleConfig) -> an
     Ok(())
 }
 
+/// Warn when cross_exchange is configured with spot on both legs — you can't
+/// short spot without margin/borrowing so the arb is paper-only.
+fn warn_spot_vs_spot(strat: &StrategyConfig, label: &str) {
+    if strat.name.to_lowercase() == "cross_exchange" {
+        let spot_a = strat
+            .instrument_a
+            .instrument_type
+            .eq_ignore_ascii_case("spot");
+        let spot_b = strat
+            .instrument_b
+            .instrument_type
+            .eq_ignore_ascii_case("spot");
+        if spot_a && spot_b {
+            tracing::warn!(
+                config_path = label,
+                "cross_exchange with spot-vs-spot is paper-arb only \
+                 (can't short spot without borrowing). \
+                 Use perp-vs-perp or perp-vs-spot for live trading."
+            );
+        }
+    }
+}
+
 /// Structural validation beyond what serde can express. Runs after YAML parse.
 /// Fails fast with a clear message instead of letting a misconfig reach runtime.
 pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
@@ -442,6 +465,11 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
             "strategy.ewma_alpha must be in (0, 1) exclusive (got {})",
             alpha
         );
+    }
+
+    warn_spot_vs_spot(&config.strategy, "strategy");
+    for (i, extra) in config.extra_strategies.iter().enumerate() {
+        warn_spot_vs_spot(extra, &format!("extra_strategies[{}]", i));
     }
 
     if config.risk.max_position_size <= Decimal::ZERO {
@@ -741,6 +769,23 @@ logging:
   level: info
 "#;
         assert!(try_load(yaml).is_ok());
+    }
+
+    #[test]
+    fn spot_vs_spot_cross_exchange_still_loads() {
+        // D-34: spot-vs-spot should warn but NOT error.
+        let yaml = sample_yaml().replace("instrument_type: swap", "instrument_type: spot");
+        let cfg = try_load(&yaml);
+        assert!(cfg.is_ok(), "spot-vs-spot should load (warning only)");
+        let cfg = cfg.unwrap();
+        assert_eq!(
+            cfg.strategy.instrument_a.instrument_type.to_lowercase(),
+            "spot"
+        );
+        assert_eq!(
+            cfg.strategy.instrument_b.instrument_type.to_lowercase(),
+            "spot"
+        );
     }
 
     #[test]
