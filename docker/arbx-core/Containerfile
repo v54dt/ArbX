@@ -1,0 +1,19 @@
+# Stage 1: Build
+FROM rust:1.94.1-bookworm AS builder
+RUN apt-get update && apt-get install -y cmake uuid-dev libssl-dev pkg-config && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY rust-core/ rust-core/
+RUN cargo build --release -p arbx-core
+RUN cargo build --release --bin aeron_pub --bin arbx_replay
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates libuuid1 && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /build/target/release/arbx-core /usr/local/bin/
+COPY --from=builder /build/target/release/aeron_pub /usr/local/bin/
+COPY --from=builder /build/target/release/arbx_replay /usr/local/bin/
+COPY config/ /etc/arbx/config/
+ENV RUST_LOG=info
+ENTRYPOINT ["arbx-core"]
+CMD ["--config", "/etc/arbx/config/default.yaml"]
