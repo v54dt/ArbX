@@ -47,20 +47,20 @@ impl ExecutionAlgorithm for PostOnlyMaker {
             .into_iter()
             .map(|mut order| {
                 let key = book_key(order.venue, &order.instrument);
-                if let Some(book) = books.get(key.as_str()) {
-                    if let (Some(bid), Some(ask)) = (book.bids.first(), book.asks.first()) {
-                        let mid = (bid.price + ask.price) / Decimal::TWO;
-                        if !mid.is_zero() {
-                            let spread_bps = (ask.price - bid.price) / mid * Decimal::from(10_000);
-                            if spread_bps > self.min_spread_bps {
-                                // Wide spread: post as maker at touch
-                                order.order_type = crate::models::enums::OrderType::Limit;
-                                order.time_in_force = Some(crate::models::enums::TimeInForce::Rod);
-                                order.price = Some(match order.side {
-                                    Side::Buy => bid.price,
-                                    Side::Sell => ask.price,
-                                });
-                            }
+                if let Some(book) = books.get(key.as_str())
+                    && let (Some(bid), Some(ask)) = (book.bids.first(), book.asks.first())
+                {
+                    let mid = (bid.price + ask.price) / Decimal::TWO;
+                    if !mid.is_zero() {
+                        let spread_bps = (ask.price - bid.price) / mid * Decimal::from(10_000);
+                        if spread_bps > self.min_spread_bps {
+                            // Wide spread: post as maker at touch
+                            order.order_type = crate::models::enums::OrderType::Limit;
+                            order.time_in_force = Some(crate::models::enums::TimeInForce::Rod);
+                            order.price = Some(match order.side {
+                                Side::Buy => bid.price,
+                                Side::Sell => ask.price,
+                            });
                         }
                     }
                 }
@@ -128,8 +128,6 @@ mod tests {
     use crate::models::market::{OrderBook, OrderBookLevel};
     use chrono::Utc;
     use rust_decimal_macros::dec;
-    use smallvec::smallvec;
-
     fn btc_usdt() -> Instrument {
         Instrument {
             asset_class: AssetClass::Crypto,
@@ -257,10 +255,11 @@ mod tests {
 
     #[tokio::test]
     async fn walk_the_book_shallow_reduces_quantity() {
-        // Buy order for 10, but only 3 available at level 0 (100.00)
-        // and level 1 (200.00) is way too far from vwap => walk stops.
+        // Buy order for 10. Level 0: 100.00 (3 units), level 1: 200.00 (7 units).
+        // After level 0: vwap=100. Level 1 marginal bps = (200-100)/100*10000 = 10000.
+        // Threshold 20000 means "stop if marginal < 20000", so 10000 < 20000 → stops.
         let algo = WalkTheBook {
-            min_marginal_bps: dec!(100),
+            min_marginal_bps: dec!(20000),
         };
         let orders = vec![make_order(Side::Buy, dec!(10))];
         let books = make_book(
@@ -269,7 +268,7 @@ mod tests {
         );
         let result = algo.prepare(orders, &books).await;
 
-        // Should reduce to 3 (only level 0 taken)
+        // Should reduce to 3 (only level 0 taken, level 1 marginal too low vs threshold)
         assert_eq!(result[0].quantity, dec!(3));
     }
 
