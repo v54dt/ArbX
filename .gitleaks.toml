@@ -1,0 +1,9 @@
+[extend]
+# Use default gitleaks rules
+
+[allowlist]
+paths = [
+  "Cargo.lock",
+  "rust-core/tests/fixtures/",
+  ".github/workflows/",
+]

@@ -1,0 +1,27 @@
+[Unit]
+Description=ArbX Core Engine
+After=network-online.target aeron-driver.service
+Wants=network-online.target
+Requires=aeron-driver.service
+
+[Service]
+Type=simple
+User=arbx
+EnvironmentFile=/etc/arbx/.env
+ExecStartPre=/usr/bin/podman pull localhost/arbx-core:latest
+ExecStart=/usr/bin/podman run --rm --name arbx-core \
+    --network=host \
+    --ipc=host \
+    --ulimit memlock=-1:-1 \
+    --env-file /etc/arbx/.env \
+    -v /dev/shm:/dev/shm \
+    -v /etc/arbx/config:/etc/arbx/config:ro \
+    localhost/arbx-core:latest \
+    --config /etc/arbx/config/default.yaml \
+    --aeron-subscribe 1001 --aeron-subscribe 1002
+ExecStop=/usr/bin/podman stop arbx-core
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
