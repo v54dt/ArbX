@@ -1,0 +1,28 @@
+[Unit]
+Description=ArbX Sidecar - Fubon (stream 1002)
+After=network-online.target aeron-driver.service
+Wants=network-online.target
+Requires=aeron-driver.service
+
+[Service]
+Type=simple
+User=arbx
+EnvironmentFile=/etc/arbx/.env
+ExecStartPre=/usr/bin/podman pull localhost/sidecar-fubon:latest
+ExecStart=/usr/bin/podman run --rm --name arbx-sidecar-fubon \
+    --network=host \
+    --ipc=host \
+    --ulimit memlock=-1:-1 \
+    --env-file /etc/arbx/.env \
+    -v /dev/shm:/dev/shm \
+    -v /etc/arbx/config:/etc/arbx/config:ro \
+    --mount type=tmpfs,destination=/certs,tmpfs-size=1M \
+    -v /etc/arbx/certs/fubon:/certs:ro \
+    localhost/sidecar-fubon:latest \
+    /etc/arbx/config/fubon.yaml
+ExecStop=/usr/bin/podman stop arbx-sidecar-fubon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
