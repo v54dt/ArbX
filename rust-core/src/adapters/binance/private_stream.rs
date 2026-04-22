@@ -248,7 +248,8 @@ async fn run_binance_stream(
     let rest = BinanceRestClient::new(rest_base_url, api_key, api_secret)?;
     let listen_key_path = match market {
         BinanceMarket::Spot => "/api/v3/userDataStream",
-        BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => "/fapi/v1/listenKey",
+        BinanceMarket::UsdtFutures => "/fapi/v1/listenKey",
+        BinanceMarket::CoinFutures => "/dapi/v1/listenKey",
     };
 
     let create_req = RestRequest {
