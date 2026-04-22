@@ -27,6 +27,10 @@ pub struct MockExchange {
     updates_tx: Option<mpsc::UnboundedSender<OrderUpdate>>,
     fail_submit: bool,
     cancels: Arc<Mutex<Vec<String>>>,
+    partial_fill_probability: f64,
+    ack_delay_ms: u64,
+    cancel_success_rate: f64,
+    fee_rate: Decimal,
 }
 
 impl MockExchange {
@@ -43,6 +47,10 @@ impl MockExchange {
             updates_tx: None,
             fail_submit: false,
             cancels: Arc::new(Mutex::new(Vec::new())),
+            partial_fill_probability: 0.0,
+            ack_delay_ms: 0,
+            cancel_success_rate: 1.0,
+            fee_rate: Decimal::ZERO,
         }
     }
 
@@ -55,6 +63,30 @@ impl MockExchange {
     /// CircuitBreaker via record_failure without needing real exchange down-time.
     pub fn with_submit_failure(mut self) -> Self {
         self.fail_submit = true;
+        self
+    }
+
+    /// Fraction of fills that are partial (50% of requested qty). Default 0.0.
+    pub fn with_partial_fill_probability(mut self, prob: f64) -> Self {
+        self.partial_fill_probability = prob;
+        self
+    }
+
+    /// Simulated network latency before returning from submit_order. Default 0.
+    pub fn with_ack_delay_ms(mut self, ms: u64) -> Self {
+        self.ack_delay_ms = ms;
+        self
+    }
+
+    /// Fraction of cancel_order calls that succeed. Default 1.0.
+    pub fn with_cancel_success_rate(mut self, rate: f64) -> Self {
+        self.cancel_success_rate = rate;
+        self
+    }
+
+    /// Fee as fraction of notional applied to each fill. Default ZERO.
+    pub fn with_fee_rate(mut self, rate: Decimal) -> Self {
+        self.fee_rate = rate;
         self
     }
 
@@ -136,6 +168,11 @@ impl OrderExecutor for MockExchange {
         if self.fail_submit {
             anyhow::bail!("mock submit forced-fail");
         }
+
+        if self.ack_delay_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.ack_delay_ms)).await;
+        }
+
         let order_id = format!(
             "mock-{}",
             self.next_order_id.fetch_add(1, Ordering::Relaxed)
@@ -152,6 +189,19 @@ impl OrderExecutor for MockExchange {
 
         if should_fill {
             let fill_price = order.price.unwrap_or(Decimal::ONE);
+            let is_partial = rand_fill(self.partial_fill_probability);
+            let fill_qty = if is_partial {
+                order.quantity / Decimal::from(2)
+            } else {
+                order.quantity
+            };
+            let remaining = order.quantity - fill_qty;
+            let status = if remaining > Decimal::ZERO {
+                OrderStatus::PartiallyFilled
+            } else {
+                OrderStatus::Filled
+            };
+            let fee = fill_price * fill_qty * self.fee_rate;
 
             if self.fill_delay_ms > 0 {
                 let delay = self.fill_delay_ms;
@@ -162,7 +212,6 @@ impl OrderExecutor for MockExchange {
                 let venue = order.venue;
                 let instrument = order.instrument.clone();
                 let side = order.side;
-                let quantity = order.quantity;
                 let quote_ccy = order.instrument.quote.clone();
 
                 tokio::spawn(async move {
@@ -175,8 +224,8 @@ impl OrderExecutor for MockExchange {
                             instrument: instrument.clone(),
                             side,
                             price: fill_price,
-                            quantity,
-                            fee: Decimal::ZERO,
+                            quantity: fill_qty,
+                            fee,
                             fee_currency: quote_ccy,
                             filled_at: chrono::Utc::now(),
                         });
@@ -184,9 +233,9 @@ impl OrderExecutor for MockExchange {
                     if let Some(tx) = &updates_tx {
                         let _ = tx.send(OrderUpdate {
                             order_id: oid,
-                            status: OrderStatus::Filled,
-                            filled_quantity: quantity,
-                            remaining_quantity: Decimal::ZERO,
+                            status,
+                            filled_quantity: fill_qty,
+                            remaining_quantity: remaining,
                             average_price: Some(fill_price),
                             updated_at: chrono::Utc::now(),
                         });
@@ -201,8 +250,8 @@ impl OrderExecutor for MockExchange {
                         instrument: order.instrument.clone(),
                         side: order.side,
                         price: fill_price,
-                        quantity: order.quantity,
-                        fee: Decimal::ZERO,
+                        quantity: fill_qty,
+                        fee,
                         fee_currency: order.instrument.quote.clone(),
                         filled_at: chrono::Utc::now(),
                     });
@@ -210,9 +259,9 @@ impl OrderExecutor for MockExchange {
                 if let Some(tx) = &self.updates_tx {
                     let _ = tx.send(OrderUpdate {
                         order_id: order_id.clone(),
-                        status: OrderStatus::Filled,
-                        filled_quantity: order.quantity,
-                        remaining_quantity: Decimal::ZERO,
+                        status,
+                        filled_quantity: fill_qty,
+                        remaining_quantity: remaining,
                         average_price: Some(fill_price),
                         updated_at: chrono::Utc::now(),
                     });
@@ -225,7 +274,7 @@ impl OrderExecutor for MockExchange {
 
     async fn cancel_order(&self, order_id: &str) -> anyhow::Result<bool> {
         self.cancels.lock().await.push(order_id.to_string());
-        Ok(true)
+        Ok(rand_fill(self.cancel_success_rate))
     }
 
     async fn get_order_status(&self, order_id: &str) -> anyhow::Result<OrderUpdate> {
@@ -300,4 +349,167 @@ fn rand_fill(fill_rate: f64) -> bool {
         .subsec_nanos() as f64
         / 1_000_000_000.0;
     val < fill_rate
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::enums::{OrderType, TimeInForce, Venue};
+    use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
+    use rust_decimal_macros::dec;
+
+    fn test_instrument() -> Instrument {
+        Instrument {
+            asset_class: AssetClass::Crypto,
+            instrument_type: InstrumentType::Spot,
+            base: "BTC".into(),
+            quote: "USDT".into(),
+            settle_currency: None,
+            expiry: None,
+            last_trade_time: None,
+            settlement_time: None,
+        }
+    }
+
+    fn test_order() -> Order {
+        Order {
+            id: String::new(),
+            client_order_id: "test-coid-1".into(),
+            venue: Venue::Binance,
+            instrument: test_instrument(),
+            side: Side::Buy,
+            order_type: OrderType::Limit,
+            time_in_force: Some(TimeInForce::Ioc),
+            price: Some(dec!(50000)),
+            quantity: dec!(2),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_fill_probability_zero_gives_full_fill() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0).with_partial_fill_probability(0.0);
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = fills_rx.recv().await.unwrap();
+        assert_eq!(fill.quantity, dec!(2));
+    }
+
+    #[tokio::test]
+    async fn partial_fill_probability_one_gives_half_fill() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0).with_partial_fill_probability(1.0);
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+        let mut updates_rx = recvs.updates;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = fills_rx.recv().await.unwrap();
+        assert_eq!(fill.quantity, dec!(1));
+
+        let update = updates_rx.recv().await.unwrap();
+        assert_eq!(update.filled_quantity, dec!(1));
+        assert_eq!(update.remaining_quantity, dec!(1));
+        assert_eq!(update.status, OrderStatus::PartiallyFilled);
+    }
+
+    #[tokio::test]
+    async fn ack_delay_adds_latency() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0).with_ack_delay_ms(50);
+        let _recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+
+        let start = std::time::Instant::now();
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let elapsed = start.elapsed();
+        assert!(elapsed >= std::time::Duration::from_millis(40));
+    }
+
+    #[tokio::test]
+    async fn cancel_success_rate_zero_always_fails() {
+        let mock = MockExchange::new(vec![], 0, 1.0).with_cancel_success_rate(0.0);
+        let result = mock.cancel_order("order-1").await.unwrap();
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn cancel_success_rate_one_always_succeeds() {
+        let mock = MockExchange::new(vec![], 0, 1.0).with_cancel_success_rate(1.0);
+        let result = mock.cancel_order("order-1").await.unwrap();
+        assert!(result);
+        // Also check it's still recorded
+        let cancels = mock.cancels_handle();
+        assert_eq!(cancels.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fee_rate_applied_to_fill() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0).with_fee_rate(dec!(0.001)); // 10 bps
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = fills_rx.recv().await.unwrap();
+        // notional = 50000 * 2 = 100000, fee = 100000 * 0.001 = 100
+        assert_eq!(fill.fee, dec!(100));
+    }
+
+    #[tokio::test]
+    async fn fee_rate_default_zero() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0);
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = fills_rx.recv().await.unwrap();
+        assert_eq!(fill.fee, Decimal::ZERO);
+    }
+
+    #[tokio::test]
+    async fn fee_rate_with_partial_fill() {
+        let mut mock = MockExchange::new(vec![], 0, 1.0)
+            .with_fee_rate(dec!(0.001))
+            .with_partial_fill_probability(1.0);
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = fills_rx.recv().await.unwrap();
+        // partial: qty=1, notional = 50000*1 = 50000, fee = 50
+        assert_eq!(fill.quantity, dec!(1));
+        assert_eq!(fill.fee, dec!(50));
+    }
+
+    #[tokio::test]
+    async fn builders_chainable() {
+        let mock = MockExchange::new(vec![], 0, 1.0)
+            .with_partial_fill_probability(0.5)
+            .with_ack_delay_ms(10)
+            .with_cancel_success_rate(0.8)
+            .with_fee_rate(dec!(0.0005))
+            .with_quote_interval(100);
+        // Just verify it compiles and the struct is usable
+        assert_eq!(mock.partial_fill_probability, 0.5);
+        assert_eq!(mock.ack_delay_ms, 10);
+        assert_eq!(mock.cancel_success_rate, 0.8);
+        assert_eq!(mock.fee_rate, dec!(0.0005));
+    }
+
+    #[tokio::test]
+    async fn fill_delay_with_partial_fill_and_fee() {
+        let mut mock = MockExchange::new(vec![], 10, 1.0)
+            .with_partial_fill_probability(1.0)
+            .with_fee_rate(dec!(0.002));
+        let recvs = OrderExecutor::connect(&mut mock).await.unwrap();
+        let mut fills_rx = recvs.fills;
+
+        let _ = mock.submit_order(&test_order()).await.unwrap();
+        let fill = tokio::time::timeout(std::time::Duration::from_millis(500), fills_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // partial: qty=1, notional=50000, fee=50000*0.002=100
+        assert_eq!(fill.quantity, dec!(1));
+        assert_eq!(fill.fee, dec!(100));
+    }
 }
