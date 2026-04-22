@@ -30,6 +30,7 @@ class FubonAdapter(BaseAdapter):
         self._sdk = None
         self._accounts = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._subscribed_symbols: set[str] = set()
 
     async def connect(self) -> None:
         from fubon_neo.sdk import FubonSDK
@@ -85,8 +86,21 @@ class FubonAdapter(BaseAdapter):
         ws_client.connect()
 
         for symbol in symbols:
+            if symbol in self._subscribed_symbols:
+                logger.debug("Fubon already subscribed to %s, skipping", symbol)
+                continue
             ws_client.subscribe({"channel": "books", "symbol": symbol})
+            self._subscribed_symbols.add(symbol)
             logger.info("Fubon subscribed to %s", symbol)
+
+    async def unsubscribe_quotes(self, symbols: list[str]) -> None:
+        ws_client = self._sdk.marketdata.websocket_client.stock
+        for symbol in symbols:
+            if symbol not in self._subscribed_symbols:
+                continue
+            ws_client.unsubscribe({"channel": "books", "symbol": symbol})
+            self._subscribed_symbols.discard(symbol)
+            logger.info("Fubon unsubscribed from %s", symbol)
 
     async def place_order(self, request: OrderRequest) -> OrderResponse:
         from fubon_neo.sdk import Order
