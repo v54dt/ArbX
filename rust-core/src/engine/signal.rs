@@ -14,6 +14,10 @@ pub const SIGNAL_MICROPRICE: SignalId = "microprice";
 pub const SIGNAL_OFI: SignalId = "ofi";
 pub const SIGNAL_VPIN: SignalId = "vpin";
 pub const SIGNAL_FUNDING_Z: SignalId = "funding_z";
+pub const SIGNAL_NEWS_SENTIMENT: SignalId = "news_sentiment";
+pub const SIGNAL_WHALE_ALERT: SignalId = "whale_alert";
+pub const SIGNAL_MACRO_EVENT: SignalId = "macro_event";
+pub const SIGNAL_EXCHANGE_FLOW: SignalId = "exchange_flow";
 
 /// A single signal data point.
 #[derive(Debug, Clone)]

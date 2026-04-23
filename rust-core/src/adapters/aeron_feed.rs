@@ -7,7 +7,8 @@ use super::market_data::{MarketDataFeed, MarketDataReceivers};
 use crate::ipc::IpcSubscriber;
 use crate::ipc::aeron::AeronSubscriber;
 use crate::ipc::flatbuf_codec::{
-    MSG_TAG_FILL, MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, decode_fill, decode_order_book, decode_quote,
+    MSG_TAG_FILL, MSG_TAG_ORDER_BOOK, MSG_TAG_QUOTE, MSG_TAG_SIGNAL, decode_fill,
+    decode_order_book, decode_quote, decode_signal,
 };
 use crate::models::order::Fill;
 
@@ -70,6 +71,16 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                     }
                                 }
                                 Err(e) => tracing::debug!(error = %e, "decode_fill failed"),
+                            },
+                            MSG_TAG_SIGNAL => match decode_signal(payload) {
+                                Ok((key, signal_id, _value, _confidence, _ts_ms)) => {
+                                    tracing::debug!(
+                                        key = key.as_str(),
+                                        signal_id = signal_id.as_str(),
+                                        "signal received via Aeron"
+                                    );
+                                }
+                                Err(e) => tracing::debug!(error = %e, "decode_signal failed"),
                             },
                             other => tracing::debug!(tag = other, "unknown msg tag; skipping"),
                         }

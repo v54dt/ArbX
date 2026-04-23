@@ -20,6 +20,7 @@ pub const MSG_TAG_QUOTE: u8 = 1;
 pub const MSG_TAG_ORDER_BOOK: u8 = 2;
 pub const MSG_TAG_FILL: u8 = 3;
 pub const MSG_TAG_ORDER_REQUEST: u8 = 4;
+pub const MSG_TAG_SIGNAL: u8 = 5;
 
 // Must match schemas/messages.fbs.
 mod vt {
@@ -54,6 +55,12 @@ mod vt {
     pub const FILL_FEE_CURRENCY: u16 = 20;
     pub const FILL_TIMESTAMP_MS: u16 = 22;
     pub const FILL_INSTRUMENT_TYPE: u16 = 24;
+
+    pub const SIG_INSTRUMENT_KEY: u16 = 4;
+    pub const SIG_SIGNAL_ID: u16 = 6;
+    pub const SIG_VALUE: u16 = 8;
+    pub const SIG_CONFIDENCE: u16 = 10;
+    pub const SIG_TIMESTAMP_MS: u16 = 12;
 
     pub const OB_VENUE: u16 = 4;
     pub const OB_BASE: u16 = 6;
@@ -497,6 +504,52 @@ pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
     })
 }
 
+pub fn encode_signal(
+    instrument_key: &str,
+    signal_id: &str,
+    value: Decimal,
+    confidence: Decimal,
+    timestamp_ms: i64,
+) -> Vec<u8> {
+    let mut fbb = FlatBufferBuilder::with_capacity(256);
+    let key_off = fbb.create_string(instrument_key);
+    let id_off = fbb.create_string(signal_id);
+    let value_off = fbb.create_string(&dec_to_string(value));
+    let conf_off = fbb.create_string(&dec_to_string(confidence));
+
+    let start = fbb.start_table();
+    fbb.push_slot_always::<WIPOffset<_>>(vt::SIG_INSTRUMENT_KEY, key_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::SIG_SIGNAL_ID, id_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::SIG_VALUE, value_off);
+    fbb.push_slot_always::<WIPOffset<_>>(vt::SIG_CONFIDENCE, conf_off);
+    fbb.push_slot::<i64>(vt::SIG_TIMESTAMP_MS, timestamp_ms, 0);
+    let root = fbb.end_table(start);
+    fbb.finish(root, None);
+
+    let fb_bytes = fbb.finished_data();
+    let mut out = Vec::with_capacity(1 + fb_bytes.len());
+    out.push(MSG_TAG_SIGNAL);
+    out.extend_from_slice(fb_bytes);
+    out
+}
+
+pub fn decode_signal(data: &[u8]) -> anyhow::Result<(String, String, Decimal, Decimal, i64)> {
+    let table = checked_root_as_table(data, "signal")?;
+    let instrument_key = unsafe { get_str(&table, vt::SIG_INSTRUMENT_KEY) }.unwrap_or("");
+    let signal_id = unsafe { get_str(&table, vt::SIG_SIGNAL_ID) }.unwrap_or("");
+    let value_str = unsafe { get_str(&table, vt::SIG_VALUE) }.unwrap_or("0");
+    let conf_str = unsafe { get_str(&table, vt::SIG_CONFIDENCE) }.unwrap_or("0");
+    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::SIG_TIMESTAMP_MS, 0) };
+
+    Ok((
+        instrument_key.to_string(),
+        signal_id.to_string(),
+        parse_decimal_str(value_str)?,
+        parse_decimal_str(conf_str)?,
+        timestamp_ms,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,6 +735,35 @@ mod tests {
         let decoded = decode_order_book(&bytes).unwrap();
         assert!(decoded.bids.is_empty());
         assert!(decoded.asks.is_empty());
+    }
+
+    #[test]
+    fn encode_decode_signal_roundtrip() {
+        let key = "binance:btc-usdt:spot";
+        let signal_id = "whale_alert";
+        let value = dec!(1500000.50);
+        let confidence = dec!(0.85);
+        let ts_ms = 1_700_000_000_000i64;
+
+        let bytes = encode_signal(key, signal_id, value, confidence, ts_ms);
+        assert_eq!(bytes[0], MSG_TAG_SIGNAL);
+
+        let (dec_key, dec_id, dec_val, dec_conf, dec_ts) = decode_signal(&bytes[1..]).unwrap();
+
+        assert_eq!(dec_key, key);
+        assert_eq!(dec_id, signal_id);
+        assert_eq!(dec_val, value);
+        assert_eq!(dec_conf, confidence);
+        assert_eq!(dec_ts, ts_ms);
+    }
+
+    #[test]
+    fn encode_decode_signal_negative_value() {
+        let bytes = encode_signal("k", "news_sentiment", dec!(-0.75), dec!(0.5), 123);
+        let (_, _, val, conf, ts) = decode_signal(&bytes[1..]).unwrap();
+        assert_eq!(val, dec!(-0.75));
+        assert_eq!(conf, dec!(0.5));
+        assert_eq!(ts, 123);
     }
 
     // --- proptest round-trip fuzz tests for Decimal precision ---
