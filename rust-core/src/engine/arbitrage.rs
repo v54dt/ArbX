@@ -227,6 +227,7 @@ impl ArbitrageEngine {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_signal_producers(mut self, producers: Vec<Box<dyn SignalProducer>>) -> Self {
         self.signal_producers = producers;
         self
