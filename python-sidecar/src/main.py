@@ -8,6 +8,8 @@ from src.config import load_config
 from src.ipc.aeron_client import AeronClient
 from src.ipc.flatbuf_codec import encode_quote
 from src.models.messages import Quote, Venue
+from src.signals.base import SignalSource
+from src.signals.encode import encode_signal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -45,6 +47,59 @@ def build_adapter(venue_cfg: dict) -> BaseAdapter:
     raise ValueError(f"Unknown venue: {venue}")
 
 
+def build_signal_sources(cfg: dict) -> list[SignalSource]:
+    sources: list[SignalSource] = []
+    for src_cfg in cfg.get("signal_sources", []):
+        name = src_cfg["source"]
+        if name == "cryptopanic":
+            from src.signals.cryptopanic import CryptoPanicSource
+
+            sources.append(CryptoPanicSource(
+                api_key=src_cfg.get("api_key", ""),
+                currencies=src_cfg.get("currencies", "BTC,ETH"),
+            ))
+        elif name == "fred":
+            from src.signals.fred import FredSource
+
+            sources.append(FredSource(api_key=src_cfg["api_key"]))
+        elif name == "cryptoquant":
+            from src.signals.cryptoquant import CryptoQuantSource
+
+            sources.append(CryptoQuantSource(api_key=src_cfg["api_key"]))
+        else:
+            logger.warning("Unknown signal source: %s", name)
+    return sources
+
+
+async def run_signal_loop(
+    sources: list[SignalSource],
+    aeron: AeronClient,
+    poll_interval: float = 60.0,
+) -> None:
+    """Poll signal sources periodically and publish via Aeron."""
+    if not sources:
+        return
+    logger.info("Signal loop started with %d sources: %s",
+                len(sources), [s.name() for s in sources])
+    while True:
+        for source in sources:
+            try:
+                signals = await source.poll()
+                for sig in signals:
+                    payload = encode_signal(
+                        sig.instrument_key, sig.signal_id,
+                        sig.value, sig.confidence, sig.timestamp_ms,
+                    )
+                    await aeron.publish(payload)
+                if signals:
+                    logger.info("%s: published %d signals", source.name(), len(signals))
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Signal source %s poll failed", source.name())
+        await asyncio.sleep(poll_interval)
+
+
 async def run(config_path: str) -> None:
     cfg = load_config(config_path)
     aeron = AeronClient(
@@ -69,6 +124,13 @@ async def run(config_path: str) -> None:
         if symbols:
             await adapter.subscribe_quotes(symbols, on_quote)
 
+    # Start signal polling as a background task (if configured).
+    signal_sources = build_signal_sources(cfg)
+    poll_interval = cfg.get("signal_sources_poll_interval", 60.0)
+    signal_task = asyncio.create_task(
+        run_signal_loop(signal_sources, aeron, poll_interval)
+    ) if signal_sources else None
+
     logger.info("Sidecar running, forwarding quotes to Rust engine via Aeron")
     try:
         while True:
@@ -88,6 +150,8 @@ async def run(config_path: str) -> None:
     except asyncio.CancelledError:
         pass
     finally:
+        if signal_task:
+            signal_task.cancel()
         for adapter in adapters:
             await adapter.disconnect()
         await aeron.disconnect()

@@ -1,0 +1,21 @@
+# Standalone signal ingester config — runs alongside venue sidecars.
+# Publishes intelligence signals via Aeron for strategy consumption.
+
+ipc:
+  stream_id: 1003  # dedicated stream for signals
+
+signal_sources_poll_interval: 60  # seconds between poll cycles
+
+signal_sources:
+  - source: cryptopanic
+    currencies: BTC,ETH,SOL
+
+  - source: fred
+    api_key: ${FRED_API_KEY}
+
+  - source: cryptoquant
+    api_key: ${CRYPTOQUANT_API_KEY}
+    # assets: btc, eth (defaults)
+
+# No venues needed — this sidecar only publishes signals, not quotes.
+venues: []
