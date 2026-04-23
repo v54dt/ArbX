@@ -14,6 +14,11 @@ use serde::Deserialize;
 pub struct StrategyRiskBudgetConfig {
     pub max_daily_loss: Option<Decimal>,
     pub max_notional: Option<Decimal>,
+    /// Hour in UTC at which the daily budget resets. Examples:
+    /// - `None` or absent → default UTC+8 midnight (legacy, = UTC 16:00)
+    /// - `0` → UTC 00:00 (crypto markets)
+    /// - `5` → UTC 05:00 = UTC+8 13:00 (near TW stock close)
+    pub reset_hour_utc: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,8 +42,14 @@ impl StrategyRiskBudget {
     }
 
     pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) {
-        let taipei = FixedOffset::east_opt(8 * 3600).unwrap();
-        let today = now.with_timezone(&taipei).date_naive();
+        // Compute the "trading date" — the calendar date boundary shifts
+        // depending on reset_hour_utc. For example, reset_hour_utc=0 means
+        // the trading day flips at UTC midnight; reset_hour_utc=16 (default,
+        // = UTC+8 midnight) means 15:59 UTC is still "yesterday".
+        let reset_hour = self.config.reset_hour_utc.unwrap_or(16); // 16 UTC = midnight UTC+8
+        let offset =
+            FixedOffset::east_opt(-reset_hour * 3600).unwrap_or(FixedOffset::east_opt(0).unwrap());
+        let today = now.with_timezone(&offset).date_naive();
         if self.last_reset_date != Some(today) {
             self.daily_pnl = Decimal::ZERO;
             self.notional_submitted = Decimal::ZERO;
@@ -102,6 +113,7 @@ mod tests {
         let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
             max_daily_loss: Some(dec!(100)),
             max_notional: None,
+            ..Default::default()
         });
         b.record_pnl(dec!(-50));
         assert!(b.is_within_budget());
@@ -118,6 +130,7 @@ mod tests {
         let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
             max_daily_loss: None,
             max_notional: Some(dec!(1000)),
+            ..Default::default()
         });
         b.record_order(dec!(600));
         assert!(b.is_within_budget());
@@ -134,6 +147,7 @@ mod tests {
         let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
             max_daily_loss: Some(dec!(100)),
             max_notional: Some(dec!(5000)),
+            ..Default::default()
         });
         b.record_pnl(dec!(-101));
         assert!(!b.is_within_budget());
@@ -145,6 +159,7 @@ mod tests {
         let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
             max_daily_loss: Some(dec!(100)),
             max_notional: Some(dec!(1000)),
+            ..Default::default()
         });
         b.record_pnl(dec!(-101));
         b.record_order(dec!(1001));
@@ -160,10 +175,78 @@ mod tests {
     }
 
     #[test]
+    fn reset_hour_utc_zero_resets_at_utc_midnight() {
+        let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
+            max_daily_loss: Some(dec!(100)),
+            max_notional: None,
+            reset_hour_utc: Some(0),
+        });
+        // 2026-04-22 23:59 UTC — still "today"
+        let before = chrono::DateTime::parse_from_rfc3339("2026-04-22T23:59:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(before);
+        b.record_pnl(dec!(-50));
+
+        // 2026-04-23 00:01 UTC — new day, should reset
+        let after = chrono::DateTime::parse_from_rfc3339("2026-04-23T00:01:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(after);
+        assert_eq!(b.daily_pnl, Decimal::ZERO);
+    }
+
+    #[test]
+    fn reset_hour_utc_5_resets_at_utc_0500() {
+        let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
+            max_daily_loss: Some(dec!(100)),
+            max_notional: None,
+            reset_hour_utc: Some(5),
+        });
+        // 2026-04-22 04:59 UTC — still in previous trading day
+        let before = chrono::DateTime::parse_from_rfc3339("2026-04-22T04:59:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(before);
+        b.record_pnl(dec!(-50));
+
+        // 2026-04-22 05:01 UTC — new trading day, should reset
+        let after = chrono::DateTime::parse_from_rfc3339("2026-04-22T05:01:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(after);
+        assert_eq!(b.daily_pnl, Decimal::ZERO);
+    }
+
+    #[test]
+    fn reset_hour_utc_default_matches_utc_plus_8_midnight() {
+        // Default (None) should behave like reset_hour_utc=16 (UTC+8 midnight)
+        let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
+            max_daily_loss: Some(dec!(100)),
+            max_notional: None,
+            reset_hour_utc: None,
+        });
+        // 2026-04-22 15:59 UTC = 2026-04-22 23:59 UTC+8 — still today
+        let before = chrono::DateTime::parse_from_rfc3339("2026-04-22T15:59:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(before);
+        b.record_pnl(dec!(-50));
+
+        // 2026-04-22 16:01 UTC = 2026-04-23 00:01 UTC+8 — new day
+        let after = chrono::DateTime::parse_from_rfc3339("2026-04-22T16:01:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        b.maybe_reset_daily(after);
+        assert_eq!(b.daily_pnl, Decimal::ZERO);
+    }
+
+    #[test]
     fn maybe_reset_daily_no_reset_same_day() {
         let mut b = StrategyRiskBudget::new(StrategyRiskBudgetConfig {
             max_daily_loss: Some(dec!(100)),
             max_notional: None,
+            ..Default::default()
         });
         let now = Utc::now();
         b.maybe_reset_daily(now);

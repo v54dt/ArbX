@@ -655,6 +655,7 @@ async fn per_strategy_budget_isolation() {
             arbx_core::risk::strategy_budget::StrategyRiskBudgetConfig {
                 max_daily_loss: Some(dec!(0)),
                 max_notional: None,
+                ..Default::default()
             },
         ),
     );
