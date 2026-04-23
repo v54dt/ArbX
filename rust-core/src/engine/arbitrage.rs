@@ -18,6 +18,7 @@ use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
 use crate::engine::clock::{Clock, LiveClock};
 use crate::engine::event_bus::{EngineEvent, EngineEventBus};
+use crate::engine::signal::{SignalCache, SignalProducer};
 use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
 use crate::models::enums::Venue;
@@ -103,6 +104,8 @@ pub struct ArbitrageEngine {
     strategy_budgets: HashMap<String, StrategyRiskBudget>,
     event_bus: Option<EngineEventBus>,
     clock: Box<dyn Clock>,
+    signal_cache: SignalCache,
+    signal_producers: Vec<Box<dyn SignalProducer>>,
     /// Tracks previous realized_pnl per venue so fill handling can compute
     /// the delta after PositionManager::apply_fill and pass it to RiskState.
     prev_venue_realized_pnl: HashMap<String, Decimal>,
@@ -153,6 +156,8 @@ impl ArbitrageEngine {
             strategy_budgets: HashMap::new(),
             event_bus: None,
             clock: Box::new(LiveClock),
+            signal_cache: SignalCache::new(),
+            signal_producers: Vec::new(),
             prev_venue_realized_pnl: HashMap::new(),
         }
     }
@@ -219,6 +224,12 @@ impl ArbitrageEngine {
     pub fn with_strategy_budget(mut self, strategy_name: &str, budget: StrategyRiskBudget) -> Self {
         self.strategy_budgets
             .insert(strategy_name.to_string(), budget);
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_signal_producers(mut self, producers: Vec<Box<dyn SignalProducer>>) -> Self {
+        self.signal_producers = producers;
         self
     }
 
@@ -786,11 +797,22 @@ impl ArbitrageEngine {
             ts: quote.timestamp,
         });
 
+        for producer in &mut self.signal_producers {
+            if let Some(sv) = producer.on_quote(key.as_str(), &quote) {
+                self.signal_cache.update(key.as_str(), producer.name(), sv);
+            }
+        }
+
         // Primary strategy
         let eval_start = std::time::Instant::now();
         let eval_result = self
             .strategy
-            .evaluate(&self.books, &self.portfolios, self.clock.utc_now())
+            .evaluate(
+                &self.books,
+                &self.portfolios,
+                self.clock.utc_now(),
+                &self.signal_cache,
+            )
             .await;
         let eval_us = eval_start.elapsed().as_micros();
         let primary_name = self.strategy.name().to_string();
@@ -815,7 +837,12 @@ impl ArbitrageEngine {
                 let s = &self.extra_strategies[i];
                 let t0 = std::time::Instant::now();
                 let opp = s
-                    .evaluate(&self.books, &self.portfolios, self.clock.utc_now())
+                    .evaluate(
+                        &self.books,
+                        &self.portfolios,
+                        self.clock.utc_now(),
+                        &self.signal_cache,
+                    )
                     .await;
                 let us = t0.elapsed().as_micros();
                 let n = s.name().to_string();

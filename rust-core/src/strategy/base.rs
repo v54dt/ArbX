@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::engine::signal::SignalCache;
 use crate::models::market::BookMap;
 use crate::models::order::OrderRequest;
 use crate::models::position::PortfolioSnapshot;
@@ -19,6 +20,7 @@ pub trait ArbitrageStrategy: Send + Sync {
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        signals: &SignalCache,
     ) -> Option<Opportunity>;
 
     fn compute_hedge_orders(&self, opportunity: &Opportunity) -> Vec<OrderRequest>;

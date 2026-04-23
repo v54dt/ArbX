@@ -231,6 +231,7 @@ impl ArbitrageStrategy for TriangularArbStrategy {
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         self.cycles
             .iter()
@@ -267,6 +268,7 @@ impl ArbitrageStrategy for TriangularArbStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
     use crate::models::market::{BookMap, OrderBook, OrderBookLevel, book_key};
     use chrono::Utc;
@@ -364,7 +366,7 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(15), dec!(15.01)),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -389,7 +391,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, eth_price, eth_price),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -411,7 +413,9 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(16), dec!(16.1)),
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_some());
         let opp = opp.unwrap();
         assert_eq!(opp.legs.len(), 3);
@@ -456,7 +460,9 @@ mod tests {
             orderbook(Venue::Binance, &btc_eth, dec!(15.9), dec!(16)),
             orderbook(Venue::Binance, &btc_usdt, dec!(51200), dec!(51201)),
         ]);
-        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_some());
         let opp = opp.unwrap();
         assert!(opp.economics.net_profit > Decimal::ZERO);
@@ -480,7 +486,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -501,7 +507,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -529,7 +535,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, eth_price, eth_price + dec!(1)),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -555,11 +561,11 @@ mod tests {
         let s_large = strategy_with_cycle(cycle_large);
 
         let opp_small = s_small
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let opp_large = s_large
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
 
@@ -611,7 +617,9 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
 
-        let opp = s.evaluate(&books, &empty_portfolios(), Utc::now()).await;
+        let opp = s
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_some());
         assert_eq!(opp.unwrap().legs[0].venue, Venue::Binance);
     }
@@ -680,7 +688,7 @@ mod tests {
         ]);
 
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         // reverse cycle should win (higher bps)
@@ -703,7 +711,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         // All quantities should be multiples of 0.01
@@ -734,7 +742,7 @@ mod tests {
             orderbook(Venue::Binance, &eth_usdt, dec!(3200), dec!(3201)),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.economics.notional, dec!(10000));
