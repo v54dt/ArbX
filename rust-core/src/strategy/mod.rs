@@ -4,6 +4,7 @@ pub mod cross_venue_funding;
 pub mod ewma_spread;
 pub mod funding_rate;
 pub mod multi_pair_cross_exchange;
+pub mod signal_momentum;
 pub mod triangular_arb;
 pub mod tw_etf_futures;
 
