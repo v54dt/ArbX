@@ -54,6 +54,7 @@ impl ArbitrageStrategy for FundingRateStrategy {
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         let perp_book = books.get(&book_key(self.venue, &self.instrument_perp))?;
         let spot_book = books.get(&book_key(self.venue, &self.instrument_spot))?;
@@ -193,6 +194,7 @@ impl ArbitrageStrategy for FundingRateStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::enums::Venue;
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
@@ -270,7 +272,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -283,7 +285,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell);
@@ -298,7 +300,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].side, Side::Buy);
@@ -313,7 +315,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(0.5));
@@ -328,7 +330,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -341,7 +343,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let orders = s.compute_hedge_orders(&opp);
@@ -359,7 +361,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(0.5));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(0.3));
@@ -372,7 +374,7 @@ mod tests {
         let spot = book(&spot_instrument(), dec!(50000), dec!(50001), dec!(10));
         let books = make_books(perp, spot);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert!(matches!(opp.kind, OpportunityKind::SpotFuturesBasis { .. }));

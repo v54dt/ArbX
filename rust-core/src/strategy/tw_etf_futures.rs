@@ -37,6 +37,7 @@ impl ArbitrageStrategy for TwEtfFuturesStrategy {
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         let etf_book = books.get(&book_key(self.venue, &self.etf_instrument))?;
         let fut_book = books.get(&book_key(self.venue, &self.futures_instrument))?;
@@ -211,6 +212,7 @@ fn align_to_tick(price: Decimal, tick: Decimal, side: Side) -> Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::enums::Venue;
     use crate::models::instrument::{AssetClass, InstrumentType};
     use crate::models::market::{BookMap, OrderBook, OrderBookLevel, book_key};
@@ -310,7 +312,7 @@ mod tests {
         let fair = etf_mid * (Decimal::ONE + dec!(200) / dec!(10000) * dec!(30) / dec!(365));
         let books = make_books(dec!(149), dec!(151), fair, fair);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -323,7 +325,7 @@ mod tests {
         // Futures bid well above fair value
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].side, Side::Buy); // buy ETF
@@ -341,7 +343,7 @@ mod tests {
         // Futures ask well below fair value
         let books = make_books(dec!(149), dec!(151), dec!(140), dec!(141));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell); // sell ETF
@@ -357,7 +359,7 @@ mod tests {
         // Small deviation that won't meet 500 bps threshold
         let books = make_books(dec!(149), dec!(151), dec!(151), dec!(152));
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -368,7 +370,7 @@ mod tests {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let fut_qty = opp.legs[1].quantity;
@@ -381,7 +383,7 @@ mod tests {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let orders = s.compute_hedge_orders(&opp);
@@ -407,7 +409,7 @@ mod tests {
         m.insert(book_key(Venue::Fubon, &etf), etf_book);
         m.insert(book_key(Venue::Fubon, &fut), fut_book);
         assert!(
-            s.evaluate(&m, &empty_portfolios(), Utc::now())
+            s.evaluate(&m, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -419,7 +421,7 @@ mod tests {
         s.max_quantity = dec!(2);
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert!(opp.legs[1].quantity <= dec!(2));
@@ -430,7 +432,7 @@ mod tests {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         matches!(opp.kind, OpportunityKind::SpotFuturesBasis { .. });
@@ -469,7 +471,7 @@ mod tests {
         let s = make_strategy();
         let books = make_books(dec!(149), dec!(151), dec!(155), dec!(156));
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let orders = s.compute_hedge_orders(&opp);

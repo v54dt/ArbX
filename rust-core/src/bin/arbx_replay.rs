@@ -485,7 +485,15 @@ async fn replay_quotes(
         // Use the replay clock (fixture-derived) instead of wall time so
         // strategy staleness checks are deterministic across runs.
         let eval_now = replay_now.unwrap_or_else(Utc::now);
-        if let Some(opp) = strategy.evaluate(&books, &portfolios, eval_now).await {
+        if let Some(opp) = strategy
+            .evaluate(
+                &books,
+                &portfolios,
+                eval_now,
+                &arbx_core::engine::signal::SignalCache::new(),
+            )
+            .await
+        {
             opportunities.push(opp);
         }
     }

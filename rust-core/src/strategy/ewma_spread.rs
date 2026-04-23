@@ -249,6 +249,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         let book_a = books.get(&book_key(self.venue_a, &self.instrument_a))?;
         let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
@@ -359,6 +360,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::enums::Venue;
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
@@ -481,7 +483,12 @@ mod tests {
         let rt = Runtime::new().unwrap();
         let books = symmetric_books(dec!(99), dec!(100), dec!(99), dec!(100));
         for _ in 0..4 {
-            let result = rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now()));
+            let result = rt.block_on(s.evaluate(
+                &books,
+                &empty_portfolios(),
+                Utc::now(),
+                &SignalCache::new(),
+            ));
             assert!(result.is_none());
         }
     }
@@ -491,7 +498,12 @@ mod tests {
         let s = strategy_with(dec!(0.3), dec!(1), 1, dec!(1));
         let rt = Runtime::new().unwrap();
         let normal = symmetric_books(dec!(100), dec!(101), dec!(100), dec!(101));
-        rt.block_on(s.evaluate(&normal, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(
+            &normal,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
         let deviated = make_books(vec![
             make_book(
                 Venue::Binance,
@@ -510,7 +522,12 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        let _ = rt.block_on(s.evaluate(&deviated, &empty_portfolios(), Utc::now()));
+        let _ = rt.block_on(s.evaluate(
+            &deviated,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
         assert_eq!(s.state.lock().unwrap().sample_count, 2);
     }
 
@@ -520,7 +537,12 @@ mod tests {
         let rt = Runtime::new().unwrap();
         let steady = symmetric_books(dec!(99), dec!(101), dec!(102), dec!(103));
         for _ in 0..4 {
-            let result = rt.block_on(s.evaluate(&steady, &empty_portfolios(), Utc::now()));
+            let result = rt.block_on(s.evaluate(
+                &steady,
+                &empty_portfolios(),
+                Utc::now(),
+                &SignalCache::new(),
+            ));
             assert!(result.is_none());
         }
     }
@@ -567,11 +589,12 @@ mod tests {
             ),
         ]);
 
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
 
-        let opp = rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
+        let opp =
+            rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
         if let Some(o) = opp {
             assert_eq!(o.legs[0].venue, Venue::Binance);
             assert_eq!(o.legs[0].side, Side::Buy);
@@ -622,11 +645,22 @@ mod tests {
             ),
         ]);
 
-        rt.block_on(s.evaluate(&high_a, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&low_a, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&high_a, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(
+            &high_a,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
+        rt.block_on(s.evaluate(&low_a, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(
+            &high_a,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
 
-        let opp = rt.block_on(s.evaluate(&low_a, &empty_portfolios(), Utc::now()));
+        let opp =
+            rt.block_on(s.evaluate(&low_a, &empty_portfolios(), Utc::now(), &SignalCache::new()));
         if let Some(o) = opp {
             assert_eq!(o.legs[0].venue, Venue::Bybit);
             assert_eq!(o.legs[0].side, Side::Buy);
@@ -658,7 +692,7 @@ mod tests {
             ),
         ]);
         for _ in 0..20 {
-            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now()));
+            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new()));
         }
         let state = s.state.lock().unwrap();
         // spread_a_to_b = bid_b(105) - ask_a(100) = 5
@@ -723,12 +757,22 @@ mod tests {
         ]);
 
         for _ in 0..10 {
-            rt.block_on(s.evaluate(&low_books, &empty_portfolios(), Utc::now()));
+            rt.block_on(s.evaluate(
+                &low_books,
+                &empty_portfolios(),
+                Utc::now(),
+                &SignalCache::new(),
+            ));
         }
         let ewma_before = s.state.lock().unwrap().ewma;
 
         for _ in 0..10 {
-            rt.block_on(s.evaluate(&high_books, &empty_portfolios(), Utc::now()));
+            rt.block_on(s.evaluate(
+                &high_books,
+                &empty_portfolios(),
+                Utc::now(),
+                &SignalCache::new(),
+            ));
         }
         let ewma_after = s.state.lock().unwrap().ewma;
 
@@ -763,7 +807,12 @@ mod tests {
             ),
         ]);
         for _ in 0..5 {
-            let r = rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now()));
+            let r = rt.block_on(s.evaluate(
+                &books,
+                &empty_portfolios(),
+                Utc::now(),
+                &SignalCache::new(),
+            ));
             assert!(r.is_none());
         }
     }
@@ -810,10 +859,11 @@ mod tests {
             ),
         ]);
 
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
-        let result = rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        let result =
+            rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
         assert!(result.is_none());
     }
 
@@ -847,7 +897,7 @@ mod tests {
         );
         let books = make_books(vec![stale, fresh]);
         assert!(
-            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now()))
+            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new()))
                 .is_none()
         );
     }
@@ -865,7 +915,7 @@ mod tests {
             dec!(1),
         )]);
         assert!(
-            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now()))
+            rt.block_on(s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new()))
                 .is_none()
         );
     }
@@ -905,7 +955,7 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        rt.block_on(s.evaluate(&obs1, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(&obs1, &empty_portfolios(), Utc::now(), &SignalCache::new()));
 
         {
             let st = s.state.lock().unwrap();
@@ -935,7 +985,7 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        rt.block_on(s.evaluate(&obs2, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(&obs2, &empty_portfolios(), Utc::now(), &SignalCache::new()));
 
         let st = s.state.lock().unwrap();
         let ewma_diff = (st.ewma - dec!(4)).abs();
@@ -991,8 +1041,18 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        rt.block_on(fast.evaluate(&zero_books_fast, &empty_portfolios(), Utc::now()));
-        rt.block_on(slow.evaluate(&zero_books_slow, &empty_portfolios(), Utc::now()));
+        rt.block_on(fast.evaluate(
+            &zero_books_fast,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
+        rt.block_on(slow.evaluate(
+            &zero_books_slow,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
 
         // Shift spread to 50 (bid_b=150, ask_a=100 => 50; bid_a=100, ask_b=150 => -50; avg=0... )
         // Use: bid_b=150, ask_b=151, ask_a=100 => spread_a_to_b=50; bid_a=50, ask_a=100 => spread_b_to_a=-100+50=-50 ... hmm
@@ -1038,8 +1098,18 @@ mod tests {
                 dec!(1),
             ),
         ]);
-        rt.block_on(fast.evaluate(&shifted_fast, &empty_portfolios(), Utc::now()));
-        rt.block_on(slow.evaluate(&shifted_slow, &empty_portfolios(), Utc::now()));
+        rt.block_on(fast.evaluate(
+            &shifted_fast,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
+        rt.block_on(slow.evaluate(
+            &shifted_slow,
+            &empty_portfolios(),
+            Utc::now(),
+            &SignalCache::new(),
+        ));
 
         let fast_ewma = fast.state.lock().unwrap().ewma;
         let slow_ewma = slow.state.lock().unwrap().ewma;
@@ -1098,13 +1168,14 @@ mod tests {
             ),
         ]);
 
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
-        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
+        rt.block_on(s.evaluate(&low, &empty_portfolios(), Utc::now(), &SignalCache::new()));
 
-        let opp = rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now()));
+        let opp =
+            rt.block_on(s.evaluate(&high, &empty_portfolios(), Utc::now(), &SignalCache::new()));
         if let Some(o) = opp {
             let orders = s.compute_hedge_orders(&o);
             assert_eq!(orders.len(), 2);

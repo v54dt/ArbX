@@ -275,6 +275,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
         books: &BookMap,
         portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         let a_to_b = self.evaluate_direction(
             books,
@@ -373,6 +374,7 @@ impl ArbitrageStrategy for CrossExchangeStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::enums::{Side, Venue};
     use crate::models::fee::FeeSchedule;
     use crate::models::instrument::{AssetClass, Instrument, InstrumentType};
@@ -501,7 +503,7 @@ mod tests {
             ),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -529,7 +531,7 @@ mod tests {
             ),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -557,7 +559,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs.len(), 2);
@@ -589,7 +591,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
@@ -620,7 +622,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].venue, Venue::Bybit);
@@ -652,7 +654,7 @@ mod tests {
             ),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -681,7 +683,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(1));
@@ -710,7 +712,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(2));
@@ -741,7 +743,7 @@ mod tests {
             ),
         ]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         let expected_fees = dec!(100) * dec!(1) * dec!(0.001) + dec!(105) * dec!(1) * dec!(0.002);
@@ -770,7 +772,7 @@ mod tests {
             ),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -798,7 +800,7 @@ mod tests {
         );
         let books = make_books(vec![buy, sell]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -826,7 +828,7 @@ mod tests {
         sell.local_timestamp = Utc::now() - Duration::seconds(10);
         let books = make_books(vec![buy, sell]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -855,7 +857,7 @@ mod tests {
         sell.local_timestamp = Utc::now();
         let books = make_books(vec![buy, sell]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_some()
         );
@@ -892,7 +894,7 @@ mod tests {
         );
         let books = make_books(vec![buy, sell]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(3));
@@ -920,7 +922,7 @@ mod tests {
         );
         let books = make_books(vec![buy, sell]);
         let opp = s
-            .evaluate(&books, &empty_portfolios(), Utc::now())
+            .evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
             .await
             .unwrap();
         assert_eq!(opp.legs[0].quantity, dec!(1.5));
@@ -965,7 +967,7 @@ mod tests {
             ),
         ]);
         assert!(
-            s.evaluate(&books, &empty_portfolios(), Utc::now())
+            s.evaluate(&books, &empty_portfolios(), Utc::now(), &SignalCache::new())
                 .await
                 .is_none()
         );
@@ -1018,7 +1020,10 @@ mod tests {
             },
         );
 
-        let opp = s.evaluate(&books, &portfolios, Utc::now()).await.unwrap();
+        let opp = s
+            .evaluate(&books, &portfolios, Utc::now(), &SignalCache::new())
+            .await
+            .unwrap();
         // max_quantity=1, half_max=0.5, existing=0.8 > 0.5, excess=0.3
         // raw_qty=1, reduced=1-0.3=0.7
         assert!(opp.legs[0].quantity < dec!(1));

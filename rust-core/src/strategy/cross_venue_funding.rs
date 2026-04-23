@@ -76,6 +76,7 @@ impl ArbitrageStrategy for CrossVenueFundingStrategy {
         books: &BookMap,
         _portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
+        _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
         let book_a = books.get(&book_key(self.venue_a, &self.instrument_a))?;
         let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
@@ -229,6 +230,7 @@ impl ArbitrageStrategy for CrossVenueFundingStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::signal::SignalCache;
     use crate::models::instrument::{AssetClass, InstrumentType};
     use crate::models::market::{OrderBook, OrderBookLevel};
     use rust_decimal_macros::dec;
@@ -293,7 +295,9 @@ mod tests {
         books.insert(key_a, make_book(Venue::Binance, dec!(52000), dec!(52100)));
         books.insert(key_b, make_book(Venue::Bybit, dec!(50000), dec!(50100)));
 
-        let opp = strat.evaluate(&books, &HashMap::new(), Utc::now()).await;
+        let opp = strat
+            .evaluate(&books, &HashMap::new(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_some(), "should detect when A is premium");
         let opp = opp.unwrap();
         assert_eq!(opp.legs[0].side, Side::Sell);
@@ -309,7 +313,9 @@ mod tests {
         books.insert(key_a, make_book(Venue::Binance, dec!(50000), dec!(50100)));
         books.insert(key_b, make_book(Venue::Bybit, dec!(52000), dec!(52100)));
 
-        let opp = strat.evaluate(&books, &HashMap::new(), Utc::now()).await;
+        let opp = strat
+            .evaluate(&books, &HashMap::new(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_some(), "should detect when B is premium");
         let opp = opp.unwrap();
         assert_eq!(opp.legs[0].side, Side::Buy);
@@ -325,7 +331,9 @@ mod tests {
         books.insert(key_a, make_book(Venue::Binance, dec!(50000), dec!(50001)));
         books.insert(key_b, make_book(Venue::Bybit, dec!(50000), dec!(50001)));
 
-        let opp = strat.evaluate(&books, &HashMap::new(), Utc::now()).await;
+        let opp = strat
+            .evaluate(&books, &HashMap::new(), Utc::now(), &SignalCache::new())
+            .await;
         assert!(opp.is_none(), "no opportunity when prices are near-equal");
     }
 
