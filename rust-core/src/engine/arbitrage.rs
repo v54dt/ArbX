@@ -66,9 +66,13 @@ const MERGED_CHANNEL_CAPACITY: usize = 4096;
 const FILL_CHANNEL_CAPACITY: usize = 1024;
 
 fn fill_fingerprint(fill: &Fill) -> String {
+    // Venue::label() avoids the {:?} Debug formatter allocation; everything
+    // else still goes through format!. Per-fill cost: one heap String,
+    // versus the previous two (label + final). Replacing the HashSet key
+    // type entirely (tuple) is a larger refactor and tracked separately.
     format!(
-        "{:?}:{}:{}:{}:{}",
-        fill.venue,
+        "{}:{}:{}:{}:{}",
+        fill.venue.label(),
         fill.order_id,
         fill.filled_at.timestamp_nanos_opt().unwrap_or(0),
         fill.price,
