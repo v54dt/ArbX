@@ -38,7 +38,6 @@ use rust_decimal::Decimal;
 struct IntendedFill {
     side: crate::models::enums::Side,
     intended_price: Decimal,
-    venue: Venue,
     submitted_at: chrono::DateTime<Utc>,
 }
 
@@ -85,7 +84,10 @@ pub struct ArbitrageEngine {
     portfolios: HashMap<String, PortfolioSnapshot>,
     trade_logs: std::collections::VecDeque<TradeLog>,
     intended_fills: HashMap<String, IntendedFill>,
-    pending_cancels: Vec<(chrono::DateTime<Utc>, String)>,
+    /// (deadline, order_id, venue). Venue is captured at insert so the
+    /// shutdown drain can route cancels to the correct executor even if the
+    /// fill-keyed `intended_fills` entry has already been removed.
+    pending_cancels: Vec<(chrono::DateTime<Utc>, String, Venue)>,
     seen_fills: std::collections::VecDeque<String>,
     seen_fills_set: std::collections::HashSet<String>,
     reconcile_interval_secs: u64,
@@ -661,21 +663,20 @@ impl ArbitrageEngine {
                 }
                 _ = cancel_check_interval.tick() => {
                     let now = self.clock.utc_now();
-                    let mut still_pending: Vec<(chrono::DateTime<Utc>, String)> = Vec::new();
+                    let mut still_pending: Vec<(chrono::DateTime<Utc>, String, Venue)> = Vec::new();
                     // Collect first so the drain's mutable borrow of self.pending_cancels
                     // doesn't overlap with the immutable borrows of self for executor_for /
                     // intended_fills inside the loop body.
-                    let to_check: Vec<(chrono::DateTime<Utc>, String)> =
+                    let to_check: Vec<(chrono::DateTime<Utc>, String, Venue)> =
                         self.pending_cancels.drain(..).collect();
-                    for (deadline, order_id) in to_check {
+                    for (deadline, order_id, venue) in to_check {
                         if now < deadline {
-                            still_pending.push((deadline, order_id));
+                            still_pending.push((deadline, order_id, venue));
                             continue;
                         }
-                        let Some(intended) = self.intended_fills.get(&order_id) else {
+                        if !self.intended_fills.contains_key(&order_id) {
                             continue;
-                        };
-                        let venue = intended.venue;
+                        }
                         let venue_label = format!("{:?}", venue).to_lowercase();
                         match self.executor_for(venue).cancel_order(&order_id).await {
                             Ok(true) => {
@@ -722,17 +723,12 @@ impl ArbitrageEngine {
 
         // Graceful shutdown: cancel all pending orders so we don't abandon
         // in-flight requests that were submitted in the last loop iteration.
+        // Venue is captured at insert so a fill that arrived between TTL
+        // enqueue and shutdown can't mis-route the cancel.
         let pending_order_ids: Vec<(String, Venue)> = self
             .pending_cancels
             .drain(..)
-            .map(|(_deadline, oid)| {
-                let venue = self
-                    .intended_fills
-                    .get(&oid)
-                    .map(|f| f.venue)
-                    .unwrap_or(Venue::Binance);
-                (oid, venue)
-            })
+            .map(|(_deadline, oid, venue)| (oid, venue))
             .collect();
 
         let mut cancelled = 0usize;
@@ -1031,7 +1027,6 @@ impl ArbitrageEngine {
                         IntendedFill {
                             side: order.side,
                             intended_price,
-                            venue: order.venue,
                             submitted_at: self.clock.utc_now(),
                         },
                     );
@@ -1087,7 +1082,8 @@ impl ArbitrageEngine {
                         if self.order_ttl_secs > 0 {
                             let deadline = self.clock.utc_now()
                                 + chrono::Duration::seconds(self.order_ttl_secs as i64);
-                            self.pending_cancels.push((deadline, order_id.clone()));
+                            self.pending_cancels
+                                .push((deadline, order_id.clone(), order.venue));
                         }
                         trade_legs.push(TradeLeg {
                             venue: order.venue,

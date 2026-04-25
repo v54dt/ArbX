@@ -1,15 +1,17 @@
 use metrics::{counter, gauge, histogram};
+use std::net::SocketAddr;
 
-pub fn try_setup_metrics_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+pub fn try_setup_metrics_server(bind: &str, port: u16) -> Result<(), Box<dyn std::error::Error>> {
+    let addr: SocketAddr = format!("{bind}:{port}").parse()?;
     let builder = metrics_exporter_prometheus::PrometheusBuilder::new();
     builder
-        .with_http_listener(([0, 0, 0, 0], port))
+        .with_http_listener(addr)
         .install()
         .map_err(|e| e.into())
 }
 
-pub fn setup_metrics_server(port: u16) {
-    if let Err(e) = try_setup_metrics_server(port) {
+pub fn setup_metrics_server(bind: &str, port: u16) {
+    if let Err(e) = try_setup_metrics_server(bind, port) {
         tracing::warn!(error = %e, "metrics server install failed (may already be running)");
     }
 }
