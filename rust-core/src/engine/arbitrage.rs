@@ -54,6 +54,10 @@ const TRADE_LOG_CAP: usize = 10_000;
 const SIGNAL_CACHE_TTL_SECS: i64 = 3600;
 /// Cadence at which the engine sweeps the SignalCache for stale entries.
 const SIGNAL_EVICT_INTERVAL_SECS: u64 = 60;
+/// Maximum age of a mark price before eviction. ~5 min covers brief venue
+/// reconnects without nuking marks unnecessarily; longer outages should
+/// freeze the mark so MaxNotionalExposure stops trusting stale data.
+const MARK_PRICE_TTL_SECS: i64 = 300;
 /// Capacity of the merged Quote / OrderBook channel into the engine main
 /// loop. At 1 kHz quote rate this is ~4 s of buffer before backpressure.
 const MERGED_CHANNEL_CAPACITY: usize = 4096;
@@ -555,9 +559,24 @@ impl ArbitrageEngine {
                 hb.beat();
             }
             let loop_now = self.clock.utc_now();
-            self.risk_state.maybe_reset_daily(loop_now);
-            for budget in self.strategy_budgets.values_mut() {
-                budget.maybe_reset_daily(loop_now);
+            if let Some(prev_pnl) = self.risk_state.maybe_reset_daily(loop_now) {
+                self.emit(EngineEvent::DailyPnLReset {
+                    scope: "global".to_string(),
+                    prev_pnl,
+                });
+            }
+            // Collect names first so we can borrow self.emit after the loop.
+            let mut budget_resets: Vec<(String, Decimal)> = Vec::new();
+            for (name, budget) in self.strategy_budgets.iter_mut() {
+                if let Some(prev) = budget.maybe_reset_daily(loop_now) {
+                    budget_resets.push((name.clone(), prev));
+                }
+            }
+            for (name, prev_pnl) in budget_resets {
+                self.emit(EngineEvent::DailyPnLReset {
+                    scope: format!("strategy:{name}"),
+                    prev_pnl,
+                });
             }
             // Channel depth = items currently buffered. Sustained high
             // values indicate the engine is the bottleneck; transient
@@ -604,9 +623,18 @@ impl ArbitrageEngine {
                     }
                 }
                 _ = signal_evict_interval.tick() => {
+                    let now = self.clock.utc_now();
                     self.signal_cache.evict_stale(
-                        self.clock.utc_now(),
+                        now,
                         chrono::Duration::seconds(SIGNAL_CACHE_TTL_SECS),
+                    );
+                    // Drop mark prices that haven't been refreshed in
+                    // MARK_PRICE_TTL — a disconnected venue's stale mark
+                    // would otherwise feed MaxNotionalExposure forever
+                    // (review §2.5).
+                    self.risk_state.evict_stale_marks(
+                        now,
+                        chrono::Duration::seconds(MARK_PRICE_TTL_SECS),
                     );
                 }
                 Some(fill) = fill_rx.recv() => {
@@ -879,7 +907,8 @@ impl ArbitrageEngine {
         }
 
         let key = book_key(quote.venue, &quote.instrument);
-        let quote_age_ms = (self.clock.utc_now() - quote.timestamp).num_milliseconds();
+        let now = self.clock.utc_now();
+        let quote_age_ms = (now - quote.timestamp).num_milliseconds();
         tracing::debug!(key = key.as_str(), quote_age_ms, "quote received");
         crate::metrics::record_quote_received();
         crate::metrics::record_quote_age_ms(quote_age_ms as f64);
@@ -887,11 +916,11 @@ impl ArbitrageEngine {
         self.books
             .entry(key)
             .and_modify(|b| b.update_from_quote(&quote))
-            .or_insert_with(|| quote_to_book(&quote));
+            .or_insert_with(|| quote_to_book(&quote, now));
         // Refresh mark price so notional exposure tracks live prices between fills.
         if !quote.bid.is_zero() && !quote.ask.is_zero() {
             let mid = (quote.bid + quote.ask) / Decimal::TWO;
-            self.risk_state.update_mark_price(key.as_str(), mid);
+            self.risk_state.update_mark_price_at(key.as_str(), mid, now);
         }
         self.emit(EngineEvent::QuoteReceived {
             venue: quote.venue,
@@ -1313,7 +1342,9 @@ impl ArbitrageEngine {
 
 /// Convert a top-of-book Quote into a minimal OrderBook (single level each side).
 /// Used only on first-seen instruments; hot-path uses update_from_quote instead.
-pub(crate) fn quote_to_book(q: &Quote) -> OrderBook {
+/// `now` is the engine's clock — use that instead of `Utc::now()` so replay
+/// produces deterministic local_timestamp values (review §3.3, PR #216).
+pub(crate) fn quote_to_book(q: &Quote, now: chrono::DateTime<Utc>) -> OrderBook {
     OrderBook {
         venue: q.venue,
         instrument: q.instrument.clone(),
@@ -1326,7 +1357,7 @@ pub(crate) fn quote_to_book(q: &Quote) -> OrderBook {
             size: q.ask_size,
         }],
         timestamp: q.timestamp,
-        local_timestamp: chrono::Utc::now(),
+        local_timestamp: now,
     }
 }
 
@@ -1367,7 +1398,7 @@ mod tests {
     #[test]
     fn quote_to_book_creates_single_level_book() {
         let q = test_quote(dec!(50000), dec!(50010));
-        let book = quote_to_book(&q);
+        let book = quote_to_book(&q, Utc::now());
 
         assert_eq!(book.bids.len(), 1);
         assert_eq!(book.asks.len(), 1);
@@ -1380,7 +1411,7 @@ mod tests {
     #[test]
     fn quote_to_book_preserves_venue_and_instrument() {
         let q = test_quote(dec!(100), dec!(101));
-        let book = quote_to_book(&q);
+        let book = quote_to_book(&q, Utc::now());
 
         assert_eq!(book.venue, Venue::Binance);
         assert_eq!(book.instrument.base, "BTC");
@@ -1400,7 +1431,7 @@ mod tests {
             ask_size: dec!(1),
             timestamp: ts,
         };
-        let book = quote_to_book(&q);
+        let book = quote_to_book(&q, Utc::now());
         assert_eq!(book.timestamp, ts);
     }
 }
