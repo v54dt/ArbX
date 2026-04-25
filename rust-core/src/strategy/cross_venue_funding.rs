@@ -211,12 +211,32 @@ impl ArbitrageStrategy for CrossVenueFundingStrategy {
         let book_b = books.get(&book_key(self.venue_b, &self.instrument_b))?;
         let mid_a = book_a.mid_price()?;
         let mid_b = book_b.mid_price()?;
-        let current_diff_bps = if mid_b > Decimal::ZERO {
-            ((mid_a - mid_b) / mid_b).abs() * Decimal::from(10_000)
-        } else {
-            Decimal::ZERO
-        };
-        if current_diff_bps < self.min_funding_diff_bps {
+        let diff = Self::implied_funding_diff(mid_a, mid_b);
+        let ann_bps = Self::annualize_bps(diff, self.funding_interval_hours);
+        // Threshold guard: spread must still be at least half the original
+        // signal, in the same direction.
+        let half_threshold = self.min_funding_diff_bps / Decimal::from(2);
+        if ann_bps.abs() < half_threshold {
+            return None;
+        }
+        let leg_a_side = opp.legs.first()?.side;
+        let same_dir = (ann_bps > Decimal::ZERO && leg_a_side == Side::Sell)
+            || (ann_bps < Decimal::ZERO && leg_a_side == Side::Buy);
+        if !same_dir {
+            return None;
+        }
+        // Recompute net_profit_bps against the current book; refuse if the
+        // arb has gone underwater (review §2.12 — was previously not checked).
+        let qty = opp.legs.first()?.quantity;
+        let abs_diff = if diff < Decimal::ZERO { -diff } else { diff };
+        let intervals = Decimal::from(self.holding_intervals.max(1));
+        let cur_notional = ((mid_a + mid_b) / Decimal::from(2)) * qty;
+        let cur_expected_funding =
+            abs_diff * cur_notional * intervals * Decimal::from(self.funding_interval_hours)
+                / Decimal::from(HOURS_PER_YEAR);
+        let cur_fees = (mid_a + mid_b) * qty * self.fee_a.taker();
+        let cur_net = cur_expected_funding - cur_fees;
+        if cur_net <= Decimal::ZERO {
             return None;
         }
         Some(opp.clone())

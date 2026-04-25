@@ -186,6 +186,33 @@ impl ArbitrageStrategy for FundingRateStrategy {
             .collect()
     }
 
+    /// Pre-submit re_verify: re-derive the funding-rate spread from the
+    /// current book and refuse if it has retraced past 50% of the original
+    /// signal. Without this, the orders submit at stale opportunity-time
+    /// prices when the basis snapped back between detection and ack
+    /// (review §2.12).
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        let perp_book = books.get(&book_key(self.venue, &self.instrument_perp))?;
+        let spot_book = books.get(&book_key(self.venue, &self.instrument_spot))?;
+        let perp_mid = perp_book.mid_price()?;
+        let spot_mid = spot_book.mid_price()?;
+        let funding_rate = Self::estimate_funding_rate(perp_mid, spot_mid);
+        let annualized_bps = Self::annualize_bps(funding_rate, self.funding_interval_hours);
+        // Half-threshold guard mirrors cross_exchange / ewma_spread.
+        let half_threshold = self.min_funding_rate_bps / Decimal::from(2);
+        if annualized_bps.abs() < half_threshold {
+            return None;
+        }
+        // Direction must still match the original opportunity.
+        let perp_side = opp.legs.first()?.side;
+        let same_dir = (annualized_bps > Decimal::ZERO && perp_side == Side::Sell)
+            || (annualized_bps < Decimal::ZERO && perp_side == Side::Buy);
+        if !same_dir {
+            return None;
+        }
+        Some(opp.clone())
+    }
+
     fn name(&self) -> &str {
         "funding_rate"
     }

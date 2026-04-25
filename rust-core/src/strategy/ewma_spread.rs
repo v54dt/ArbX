@@ -134,6 +134,7 @@ impl EwmaSpreadStrategy {
     fn evaluate_direction(
         &self,
         p: DirectionParams<'_>,
+        portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
     ) -> Option<Opportunity> {
         let DirectionParams {
@@ -158,7 +159,20 @@ impl EwmaSpreadStrategy {
         }
 
         let raw_qty = ask_fill.min(bid_fill).min(self.max_quantity);
-        let quantity = quantize(raw_qty, self.lot_size);
+        let raw_qty = quantize(raw_qty, self.lot_size);
+        if raw_qty <= Decimal::ZERO {
+            return None;
+        }
+
+        // Inventory cap on the buy leg — prevents unbounded inventory build-up
+        // from high-frequency oscillation around the EWMA mean (review §2.11).
+        let quantity = crate::strategy::cross_exchange::check_inventory_capped(
+            portfolios,
+            buy_venue,
+            buy_instrument,
+            self.max_quantity,
+            raw_qty,
+        );
         if quantity <= Decimal::ZERO {
             return None;
         }
@@ -247,7 +261,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
     async fn evaluate(
         &self,
         books: &BookMap,
-        _portfolios: &HashMap<String, PortfolioSnapshot>,
+        portfolios: &HashMap<String, PortfolioSnapshot>,
         now: DateTime<Utc>,
         _signals: &crate::engine::signal::SignalCache,
     ) -> Option<Opportunity> {
@@ -296,6 +310,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
                     buy_book: book_a,
                     sell_book: book_b,
                 },
+                portfolios,
                 now,
             )
         } else if z_score < -self.entry_threshold_sigma {
@@ -312,6 +327,7 @@ impl ArbitrageStrategy for EwmaSpreadStrategy {
                     buy_book: book_b,
                     sell_book: book_a,
                 },
+                portfolios,
                 now,
             )
         } else {

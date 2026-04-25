@@ -15,6 +15,8 @@ use crate::models::position::PortfolioSnapshot;
 use super::base::ArbitrageStrategy;
 use super::{Economics, Leg, Opportunity, OpportunityKind, OpportunityMeta};
 
+const BPS_MULTIPLIER: i64 = 10_000;
+
 pub struct TriangleLeg {
     pub instrument: Instrument,
     pub side: Side,
@@ -258,6 +260,37 @@ impl ArbitrageStrategy for TriangularArbStrategy {
                 estimated_notional: None,
             })
             .collect()
+    }
+
+    /// Pre-submit re_verify: re-walk the cycle through the current book
+    /// and refuse if any leg's price has moved against us by more than half
+    /// the original net_profit_bps. Triangular cycles are sensitive to even
+    /// small per-leg moves so a re-check guards against book reset between
+    /// detection and submit (review §2.12).
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        if opp.legs.len() != 3 {
+            return Some(opp.clone());
+        }
+        for leg in &opp.legs {
+            let book = books.get(&book_key(leg.venue, &leg.instrument))?;
+            let cur_price = match leg.side {
+                Side::Buy => book.best_ask()?.price,
+                Side::Sell => book.best_bid()?.price,
+            };
+            // Adverse move: buys care if ask went up; sells care if bid went down.
+            let adverse_bps = match leg.side {
+                Side::Buy => {
+                    (cur_price - leg.order_price) / leg.order_price * Decimal::from(BPS_MULTIPLIER)
+                }
+                Side::Sell => {
+                    (leg.order_price - cur_price) / leg.order_price * Decimal::from(BPS_MULTIPLIER)
+                }
+            };
+            if adverse_bps > opp.economics.net_profit_bps / Decimal::from(2) {
+                return None;
+            }
+        }
+        Some(opp.clone())
     }
 
     fn name(&self) -> &str {
