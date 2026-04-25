@@ -39,6 +39,15 @@ pub struct SignalMomentumStrategy {
     pub max_quote_age_ms: i64,
     /// Opportunity TTL (ms).
     pub ttl_ms: i64,
+    /// Expected price move (in bps) when the composite signal is at full
+    /// strength (|composite| = 1). At lower strengths the expected move
+    /// scales linearly. This is the strategy's alpha estimate — calibrated
+    /// from historical signal-to-return regressions, not assumed.
+    pub alpha_bps_at_full_signal: Decimal,
+    /// Minimum required net_profit_bps after fees + spread for the
+    /// strategy to fire. Acts as the cost-floor: if the signal-implied
+    /// edge doesn't beat half-spread + fees by this margin, skip.
+    pub min_net_profit_bps: Decimal,
 }
 
 /// Weights for combining different signal types into a composite score.
@@ -130,21 +139,50 @@ impl ArbitrageStrategy for SignalMomentumStrategy {
             (Side::Sell, bid.price)
         };
 
-        // Size: scale with signal strength, capped at max_quantity.
+        // Size: scale with signal strength, capped at max_quantity. No
+        // floor — if max_quantity is 0.0005 then qty stays 0.0005, never
+        // gets lifted to 0.001 against operator intent.
         let strength_ratio = composite.abs().min(Decimal::ONE);
-        let quantity = (self.max_quantity * strength_ratio).max(dec!(0.001));
+        let quantity = self.max_quantity * strength_ratio;
+        if quantity.is_zero() {
+            return None;
+        }
 
         let mid = (bid.price + ask.price) / Decimal::TWO;
-        let fee_est = quantity * mid * self.fee.taker();
-        let spread_cost = (ask.price - bid.price) * quantity;
-        let net_profit = -spread_cost - fee_est; // entering a position costs spread + fees
+        if mid.is_zero() {
+            return None;
+        }
+        let notional = quantity * mid;
+
+        // Cost side: pay the half-spread on entry (cross from mid to taker
+        // touch) plus taker fee.
+        let half_spread = (ask.price - bid.price) / Decimal::TWO;
+        let spread_cost = half_spread * quantity;
+        let fee_est = notional * self.fee.taker();
+        let cost_total = spread_cost + fee_est;
+
+        // Edge side: alpha estimate scaled by signal strength.
+        // expected_move_bps = composite.abs() * alpha_bps_at_full_signal.
+        let expected_move_bps = strength_ratio * self.alpha_bps_at_full_signal;
+        let expected_gross = notional * expected_move_bps / dec!(10_000);
+        let net_profit = expected_gross - cost_total;
+        let net_profit_bps = net_profit / notional * dec!(10_000);
+
+        if net_profit_bps < self.min_net_profit_bps {
+            return None;
+        }
 
         let opp = Opportunity {
-            id: uuid::Uuid::new_v4().to_string(),
-            kind: OpportunityKind::StatArb {
-                z_score: composite.to_string().parse::<f64>().unwrap_or(0.0),
-                hedge_ratio: Decimal::ONE,
-            },
+            // Deterministic ID keyed off (now, strategy, side) so replay
+            // produces stable opportunity IDs. Other strategies follow the
+            // same pattern (timestamp_nanos based) per #216.
+            id: format!(
+                "signal-momentum:{}:{}:{:?}",
+                self.venue as u8,
+                now.timestamp_nanos_opt().unwrap_or(0),
+                side
+            ),
+            kind: OpportunityKind::SignalMomentum { composite },
             legs: smallvec![Leg {
                 venue: self.venue,
                 instrument: self.instrument.clone(),
@@ -155,15 +193,11 @@ impl ArbitrageStrategy for SignalMomentumStrategy {
                 fee_estimate: fee_est,
             }],
             economics: Economics {
-                gross_profit: -spread_cost,
+                gross_profit: expected_gross,
                 fees_total: fee_est,
                 net_profit,
-                net_profit_bps: if mid.is_zero() {
-                    Decimal::ZERO
-                } else {
-                    net_profit / (quantity * mid) * dec!(10_000)
-                },
-                notional: quantity * mid,
+                net_profit_bps,
+                notional,
             },
             meta: OpportunityMeta {
                 detected_at: now,
@@ -203,6 +237,47 @@ impl ArbitrageStrategy for SignalMomentumStrategy {
             .collect()
     }
 
+    fn re_verify(&self, opp: &Opportunity, books: &BookMap) -> Option<Opportunity> {
+        let leg = opp.legs.first()?;
+        let key = book_key(leg.venue, &leg.instrument);
+        let book = books.get(key.as_str())?;
+        let bid = book.bids.first()?;
+        let ask = book.asks.first()?;
+        if bid.price.is_zero() || ask.price.is_zero() {
+            return None;
+        }
+        // Spread re-check: if the half-spread blew out enough that the
+        // original alpha estimate no longer covers cost + min_net_profit_bps,
+        // skip. Recompute net_profit_bps inline from current book.
+        let mid = (bid.price + ask.price) / Decimal::TWO;
+        if mid.is_zero() {
+            return None;
+        }
+        let qty = leg.quantity;
+        let notional = qty * mid;
+        let half_spread = (ask.price - bid.price) / Decimal::TWO;
+        let spread_cost = half_spread * qty;
+        let fee_est = notional * self.fee.taker();
+        let composite_strength = match opp.kind {
+            OpportunityKind::SignalMomentum { composite } => composite.abs().min(Decimal::ONE),
+            _ => return Some(opp.clone()),
+        };
+        let expected_gross =
+            notional * (composite_strength * self.alpha_bps_at_full_signal) / dec!(10_000);
+        let net_profit = expected_gross - spread_cost - fee_est;
+        let net_profit_bps = net_profit / notional * dec!(10_000);
+        if net_profit_bps < self.min_net_profit_bps {
+            return None;
+        }
+        let mut updated = opp.clone();
+        updated.economics.gross_profit = expected_gross;
+        updated.economics.fees_total = fee_est;
+        updated.economics.net_profit = net_profit;
+        updated.economics.net_profit_bps = net_profit_bps;
+        updated.economics.notional = notional;
+        Some(updated)
+    }
+
     fn name(&self) -> &str {
         "signal_momentum"
     }
@@ -237,6 +312,10 @@ mod tests {
             max_quantity: dec!(1),
             max_quote_age_ms: 5000,
             ttl_ms: 3000,
+            // 50 bps move at full signal — comfortably above ~5 bps cost
+            // (1bp half-spread on 50000/50010 + 4bps taker) so tests fire.
+            alpha_bps_at_full_signal: dec!(50),
+            min_net_profit_bps: dec!(0),
         }
     }
 
@@ -388,5 +467,102 @@ mod tests {
         let now = Utc::now();
         let result = s.evaluate(&books, &HashMap::new(), now, &signals).await;
         assert!(result.is_none());
+    }
+
+    /// Regression for review_new.md §1.2: previously net_profit was always
+    /// negative because it only counted spread + fee. Now expected_gross
+    /// (alpha-implied move) is included, so a strong signal yields net > 0.
+    #[tokio::test]
+    async fn strong_signal_produces_positive_net_profit() {
+        let s = make_strategy();
+        let books = make_book(dec!(50000), dec!(50010));
+        let signals = make_signals(dec!(0.9), dec!(0.9), dec!(0.9));
+        let opp = s
+            .evaluate(&books, &HashMap::new(), Utc::now(), &signals)
+            .await
+            .unwrap();
+        assert!(
+            opp.economics.net_profit > Decimal::ZERO,
+            "net_profit should be positive when alpha exceeds spread+fee; got {}",
+            opp.economics.net_profit
+        );
+        assert!(
+            opp.economics.net_profit_bps > Decimal::ZERO,
+            "net_profit_bps should be positive; got {}",
+            opp.economics.net_profit_bps
+        );
+    }
+
+    /// Wide-spread book consumes the alpha — strategy should refuse to trade.
+    #[tokio::test]
+    async fn wide_spread_rejects_trade() {
+        let s = make_strategy();
+        // half_spread = 500 → 100 bps on 50k mid — exceeds 50 bps alpha at
+        // full signal, even before fees.
+        let books = make_book(dec!(49500), dec!(50500));
+        let signals = make_signals(dec!(0.9), dec!(0.9), dec!(0.9));
+        let result = s
+            .evaluate(&books, &HashMap::new(), Utc::now(), &signals)
+            .await;
+        assert!(
+            result.is_none(),
+            "strategy must skip when spread > alpha — got an opportunity"
+        );
+    }
+
+    /// max_quantity below 0.001 must NOT be lifted to 0.001 (no silent floor).
+    #[tokio::test]
+    async fn small_max_quantity_is_respected() {
+        let mut s = make_strategy();
+        s.max_quantity = dec!(0.0005);
+        let books = make_book(dec!(50000), dec!(50010));
+        let signals = make_signals(dec!(0.9), dec!(0.9), dec!(0.9));
+        let opp = s
+            .evaluate(&books, &HashMap::new(), Utc::now(), &signals)
+            .await
+            .unwrap();
+        assert!(
+            opp.legs[0].quantity <= s.max_quantity,
+            "qty {} should not exceed max_quantity {}",
+            opp.legs[0].quantity,
+            s.max_quantity
+        );
+    }
+
+    /// Same now + same quotes + same signals → same opportunity ID
+    /// (replay determinism — see #216).
+    #[tokio::test]
+    async fn opportunity_id_is_deterministic() {
+        let s = make_strategy();
+        let books = make_book(dec!(50000), dec!(50010));
+        let signals = make_signals(dec!(0.9), dec!(0.9), dec!(0.9));
+        let now = Utc::now();
+        let a = s
+            .evaluate(&books, &HashMap::new(), now, &signals)
+            .await
+            .unwrap();
+        let b = s
+            .evaluate(&books, &HashMap::new(), now, &signals)
+            .await
+            .unwrap();
+        assert_eq!(a.id, b.id, "same inputs should produce same opportunity ID");
+    }
+
+    #[tokio::test]
+    async fn re_verify_rejects_widened_spread() {
+        let s = make_strategy();
+        let books_tight = make_book(dec!(50000), dec!(50010));
+        let signals = make_signals(dec!(0.9), dec!(0.9), dec!(0.9));
+        let opp = s
+            .evaluate(&books_tight, &HashMap::new(), Utc::now(), &signals)
+            .await
+            .unwrap();
+        // Spread blew out before submit (half-spread 100bps > 50bps alpha).
+        let books_wide = make_book(dec!(49500), dec!(50500));
+        let result = s.re_verify(&opp, &books_wide);
+        assert!(
+            result.is_none(),
+            "re_verify must skip when spread now exceeds alpha"
+        );
     }
 }
