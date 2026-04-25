@@ -64,17 +64,25 @@ class FubonAdapter(BaseAdapter):
             if message.get("event") != "data":
                 return
             data = message.get("data", {})
-            bids = data.get("bids", [{}])
-            asks = data.get("asks", [{}])
-            best_bid = bids[0] if bids else {}
-            best_ask = asks[0] if asks else {}
+            bids = data.get("bids") or []
+            asks = data.get("asks") or []
+            # Skip empty-side updates so strategies don't see bid=0/ask=0
+            # quotes that spike spread metrics + quote_age_ms (review §3.6).
+            if not bids or not asks:
+                return
+            best_bid = bids[0]
+            best_ask = asks[0]
+            bid_price = float(best_bid.get("price", 0))
+            ask_price = float(best_ask.get("price", 0))
+            if bid_price <= 0 or ask_price <= 0:
+                return
             quote = Quote(
                 venue=Venue.FUBON,
                 base=data.get("symbol", ""),
                 quote_currency="TWD",
                 instrument_type="stock",
-                bid=float(best_bid.get("price", 0)),
-                ask=float(best_ask.get("price", 0)),
+                bid=bid_price,
+                ask=ask_price,
                 bid_size=float(best_bid.get("volume", 0)),
                 ask_size=float(best_ask.get("volume", 0)),
                 timestamp_ms=int(time.time() * 1000),

@@ -21,9 +21,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import struct
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of consecutive respawn attempts before giving up. Each spawn
+# takes a few hundred ms even when failing, so a tight respawn loop on an
+# unhealthy host can exhaust file descriptors fast.
+MAX_RESPAWN_ATTEMPTS = 8
+# Initial / maximum wait between respawn attempts (exponential backoff).
+RESPAWN_BACKOFF_INITIAL_S = 0.5
+RESPAWN_BACKOFF_MAX_S = 30.0
+# Window after which the respawn counter resets — if a spawn was healthy
+# this long, treat the next failure as a fresh incident.
+RESPAWN_RESET_WINDOW_S = 60.0
 
 
 def _default_bin_path() -> Path:
@@ -55,6 +67,9 @@ class AeronClient:
         self.bin_path = bin_path or _default_bin_path()
         self.log_level = log_level
         self._proc: asyncio.subprocess.Process | None = None
+        # Respawn budget tracking — see review §2.8.
+        self._respawn_attempts = 0
+        self._last_spawn_ts = 0.0
 
     async def connect(self) -> None:
         if self._proc is not None:
@@ -72,6 +87,7 @@ class AeronClient:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=None,  # inherit, so driver errors are visible
         )
+        self._last_spawn_ts = time.monotonic()
 
     async def publish(self, data: bytes) -> None:
         if self._proc is None or self._proc.stdin is None:
@@ -85,7 +101,18 @@ class AeronClient:
             await self._respawn()
 
     async def _respawn(self) -> None:
-        """Kill the dead subprocess and reconnect."""
+        """Kill the dead subprocess and reconnect with exponential backoff.
+
+        Without backoff, a permanently-broken aeron_pub (driver down,
+        binary missing) loops `spawn → die → respawn` until the host runs
+        out of file descriptors. Cap at MAX_RESPAWN_ATTEMPTS within the
+        reset window; after that, raise so the caller can surface the
+        outage upstream and let systemd restart the whole sidecar.
+        """
+        # Reset the attempt counter if we had a long-enough healthy run.
+        if (time.monotonic() - self._last_spawn_ts) > RESPAWN_RESET_WINDOW_S:
+            self._respawn_attempts = 0
+
         old = self._proc
         self._proc = None
         if old is not None:
@@ -94,6 +121,26 @@ class AeronClient:
                 await old.wait()
             except Exception:
                 pass
+
+        if self._respawn_attempts >= MAX_RESPAWN_ATTEMPTS:
+            logger.error(
+                "AeronClient: %d respawn attempts in %ds — giving up",
+                self._respawn_attempts, int(RESPAWN_RESET_WINDOW_S),
+            )
+            raise RuntimeError(
+                f"aeron_pub respawn budget exhausted ({self._respawn_attempts} attempts)"
+            )
+
+        backoff = min(
+            RESPAWN_BACKOFF_INITIAL_S * (2 ** self._respawn_attempts),
+            RESPAWN_BACKOFF_MAX_S,
+        )
+        self._respawn_attempts += 1
+        logger.warning(
+            "AeronClient respawn attempt %d (sleeping %.2fs)",
+            self._respawn_attempts, backoff,
+        )
+        await asyncio.sleep(backoff)
         await self.connect()
 
     async def disconnect(self) -> None:

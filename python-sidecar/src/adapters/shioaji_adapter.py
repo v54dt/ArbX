@@ -61,36 +61,40 @@ class ShioajiAdapter(BaseAdapter):
     async def subscribe_quotes(
         self, symbols: list[str], callback: Callable[[Quote], None]
     ) -> None:
-        @self._api.on_bidask_stk_v1()
-        def _on_bidask_stk(_, bid_ask):
-            quote = Quote(
+        def _build_quote(bid_ask, instrument_type: str) -> Quote | None:
+            # Empty bid/ask lists arrive momentarily during venue book reset
+            # and at session boundaries. Indexing [0] there would IndexError
+            # in the C++-callback thread, killing the callback silently while
+            # the asyncio loop runs on (review §3.6).
+            if (
+                not getattr(bid_ask, "bid_price", None)
+                or not getattr(bid_ask, "ask_price", None)
+                or not bid_ask.bid_price
+                or not bid_ask.ask_price
+            ):
+                return None
+            return Quote(
                 venue=Venue.SHIOAJI,
                 base=bid_ask.code,
                 quote_currency="TWD",
-                instrument_type="stock",
+                instrument_type=instrument_type,
                 bid=bid_ask.bid_price[0],
                 ask=bid_ask.ask_price[0],
-                bid_size=bid_ask.bid_volume[0],
-                ask_size=bid_ask.ask_volume[0],
+                bid_size=bid_ask.bid_volume[0] if bid_ask.bid_volume else 0,
+                ask_size=bid_ask.ask_volume[0] if bid_ask.ask_volume else 0,
                 timestamp_ms=int(time.time() * 1000),
             )
-            if self._loop:
+
+        @self._api.on_bidask_stk_v1()
+        def _on_bidask_stk(_, bid_ask):
+            quote = _build_quote(bid_ask, "stock")
+            if quote is not None and self._loop:
                 self._loop.call_soon_threadsafe(callback, quote)
 
         @self._api.on_bidask_fop_v1()
         def _on_bidask_fop(_, bid_ask):
-            quote = Quote(
-                venue=Venue.SHIOAJI,
-                base=bid_ask.code,
-                quote_currency="TWD",
-                instrument_type="futures",
-                bid=bid_ask.bid_price[0],
-                ask=bid_ask.ask_price[0],
-                bid_size=bid_ask.bid_volume[0],
-                ask_size=bid_ask.ask_volume[0],
-                timestamp_ms=int(time.time() * 1000),
-            )
-            if self._loop:
+            quote = _build_quote(bid_ask, "futures")
+            if quote is not None and self._loop:
                 self._loop.call_soon_threadsafe(callback, quote)
 
         for symbol in symbols:
