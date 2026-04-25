@@ -33,6 +33,11 @@ pub enum OpportunityKind {
     FundingArb {
         annualized_diff_bps: Decimal,
     },
+    /// Directional bet driven by external/internal signal confluence.
+    /// `composite` is the signed signal score in [-1, 1]; positive = bullish.
+    SignalMomentum {
+        composite: Decimal,
+    },
 }
 
 #[derive(Debug, Clone)]

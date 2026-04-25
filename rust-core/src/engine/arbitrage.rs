@@ -885,6 +885,21 @@ impl ArbitrageEngine {
         opp: Opportunity,
         orders: Vec<OrderRequest>,
     ) -> Result<()> {
+        // Defense-in-depth: every strategy must declare positive expected
+        // net_profit before the engine submits orders. Strategy bugs (e.g.
+        // signal_momentum's earlier inverted formula in review_new.md §1.2)
+        // are caught here before they spend any capital.
+        if opp.economics.net_profit <= Decimal::ZERO {
+            warn!(
+                strategy = strategy_name,
+                net_profit = %opp.economics.net_profit,
+                net_profit_bps = %opp.economics.net_profit_bps,
+                "opportunity skipped: non-positive expected net_profit"
+            );
+            crate::metrics::record_order_rejected(strategy_name);
+            return Ok(());
+        }
+
         // Per-strategy budget gate — checked BEFORE the global risk chain so
         // one strategy burning through its own budget doesn't halt others.
         if let Some(budget) = self.strategy_budgets.get(strategy_name)
