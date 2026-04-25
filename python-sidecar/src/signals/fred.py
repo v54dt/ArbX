@@ -1,8 +1,8 @@
 """FRED API macro economic data source (free)."""
-import json
 import logging
 import time
-import urllib.request
+
+import aiohttp
 
 from .base import RawSignal, SignalSource
 
@@ -30,38 +30,40 @@ class FredSource(SignalSource):
         signals = []
         now_ms = int(time.time() * 1000)
 
-        for series_id, (label, signal_id) in SERIES_MAP.items():
-            url = (
-                f"https://api.stlouisfed.org/fred/series/observations"
-                f"?series_id={series_id}&api_key={self._api_key}"
-                f"&sort_order=desc&limit=1&file_type=json"
-            )
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: ASYNC210, ASYNC230
-                    data = json.loads(resp.read())
-                obs = data.get("observations", [])
-                if not obs:
-                    continue
-                value = float(obs[0]["value"])
-                prev = self._last_values.get(series_id)
-                self._last_values[series_id] = value
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            for series_id, (label, signal_id) in SERIES_MAP.items():
+                url = (
+                    f"https://api.stlouisfed.org/fred/series/observations"
+                    f"?series_id={series_id}&api_key={self._api_key}"
+                    f"&sort_order=desc&limit=1&file_type=json"
+                )
+                try:
+                    async with session.get(url) as resp:
+                        resp.raise_for_status()
+                        data = await resp.json()
+                    obs = data.get("observations", [])
+                    if not obs:
+                        continue
+                    value = float(obs[0]["value"])
+                    prev = self._last_values.get(series_id)
+                    self._last_values[series_id] = value
 
-                if prev is not None and prev != value:
-                    delta = value - prev
-                    signals.append(
-                        RawSignal(
-                            instrument_key="*",
-                            signal_id=signal_id,
-                            value=delta,
-                            confidence=1.0,
-                            timestamp_ms=now_ms,
+                    if prev is not None and prev != value:
+                        delta = value - prev
+                        signals.append(
+                            RawSignal(
+                                instrument_key="*",
+                                signal_id=signal_id,
+                                value=delta,
+                                confidence=1.0,
+                                timestamp_ms=now_ms,
+                            )
                         )
-                    )
-                    logger.info(
-                        "FRED %s: %.4f -> %.4f (delta=%.4f)", label, prev, value, delta
-                    )
-            except Exception:
-                logger.exception("FRED poll failed for %s", series_id)
+                        logger.info(
+                            "FRED %s: %.4f -> %.4f (delta=%.4f)", label, prev, value, delta
+                        )
+                except Exception:
+                    logger.exception("FRED poll failed for %s", series_id)
 
         return signals
