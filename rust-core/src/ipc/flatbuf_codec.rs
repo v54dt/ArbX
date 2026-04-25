@@ -205,7 +205,37 @@ fn checked_root_as_table<'a>(data: &'a [u8], label: &str) -> anyhow::Result<Tabl
             data.len()
         );
     }
+    // Sanity-check the root offset before letting `root_unchecked` build a
+    // Table. A garbage root offset would later cause a slice-range panic
+    // inside `flatbuffers::primitives` when get_field or get_str follows
+    // the vtable. This is the cheapest pre-check that catches the random
+    // bytes case without paying for a full typed verifier (which we don't
+    // have because `Table` is untyped).
+    let root_offset = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if root_offset >= data.len() || root_offset.saturating_add(4) > data.len() {
+        bail!(
+            "flatbuffer root offset out of range for {label}: {} (len {})",
+            root_offset,
+            data.len()
+        );
+    }
     Ok(unsafe { flatbuffers::root_unchecked::<Table>(data) })
+}
+
+/// Wraps the decode body in `catch_unwind` so a malformed payload that
+/// trips a slice-range panic inside the `flatbuffers` crate becomes a
+/// clean Err. Without this, a single bad Aeron payload kills the entire
+/// poll task. Converts panic to anyhow::Error.
+fn decode_with_catch<F, T>(label: &str, f: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(f) {
+        Ok(r) => r,
+        Err(_) => Err(anyhow::anyhow!(
+            "flatbuf decode panic ({label}) — payload rejected"
+        )),
+    }
 }
 
 unsafe fn get_field<'a, T: Follow<'a> + 'a>(
@@ -253,30 +283,32 @@ pub fn encode_quote(quote: &Quote) -> Vec<u8> {
 }
 
 pub fn decode_quote(data: &[u8]) -> anyhow::Result<Quote> {
-    let table = checked_root_as_table(data, "quote")?;
-    let venue_i8 = unsafe { get_field::<i8>(&table, vt::QUOTE_VENUE, 0) };
-    let base = unsafe { get_str(&table, vt::QUOTE_BASE) }.unwrap_or("");
-    let quote_cur = unsafe { get_str(&table, vt::QUOTE_QUOTE_CURRENCY) }.unwrap_or("");
-    let inst_type = unsafe { get_str(&table, vt::QUOTE_INSTRUMENT_TYPE) }.unwrap_or("spot");
-    let bid = unsafe { get_str(&table, vt::QUOTE_BID) }.unwrap_or("0");
-    let ask = unsafe { get_str(&table, vt::QUOTE_ASK) }.unwrap_or("0");
-    let bid_size = unsafe { get_str(&table, vt::QUOTE_BID_SIZE) }.unwrap_or("0");
-    let ask_size = unsafe { get_str(&table, vt::QUOTE_ASK_SIZE) }.unwrap_or("0");
-    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::QUOTE_TIMESTAMP_MS, 0) };
+    decode_with_catch("quote", || {
+        let table = checked_root_as_table(data, "quote")?;
+        let venue_i8 = unsafe { get_field::<i8>(&table, vt::QUOTE_VENUE, 0) };
+        let base = unsafe { get_str(&table, vt::QUOTE_BASE) }.unwrap_or("");
+        let quote_cur = unsafe { get_str(&table, vt::QUOTE_QUOTE_CURRENCY) }.unwrap_or("");
+        let inst_type = unsafe { get_str(&table, vt::QUOTE_INSTRUMENT_TYPE) }.unwrap_or("spot");
+        let bid = unsafe { get_str(&table, vt::QUOTE_BID) }.unwrap_or("0");
+        let ask = unsafe { get_str(&table, vt::QUOTE_ASK) }.unwrap_or("0");
+        let bid_size = unsafe { get_str(&table, vt::QUOTE_BID_SIZE) }.unwrap_or("0");
+        let ask_size = unsafe { get_str(&table, vt::QUOTE_ASK_SIZE) }.unwrap_or("0");
+        let timestamp_ms = unsafe { get_field::<i64>(&table, vt::QUOTE_TIMESTAMP_MS, 0) };
 
-    let ts = Utc
-        .timestamp_millis_opt(timestamp_ms)
-        .single()
-        .context("invalid timestamp")?;
+        let ts = Utc
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .context("invalid timestamp")?;
 
-    Ok(Quote {
-        venue: venue_from_i8(venue_i8)?,
-        instrument: make_instrument(base, quote_cur, inst_type)?,
-        bid: parse_decimal_str(bid)?,
-        ask: parse_decimal_str(ask)?,
-        bid_size: parse_decimal_str(bid_size)?,
-        ask_size: parse_decimal_str(ask_size)?,
-        timestamp: ts,
+        Ok(Quote {
+            venue: venue_from_i8(venue_i8)?,
+            instrument: make_instrument(base, quote_cur, inst_type)?,
+            bid: parse_decimal_str(bid)?,
+            ask: parse_decimal_str(ask)?,
+            bid_size: parse_decimal_str(bid_size)?,
+            ask_size: parse_decimal_str(ask_size)?,
+            timestamp: ts,
+        })
     })
 }
 
@@ -310,27 +342,29 @@ pub fn encode_order_request(req: &OrderRequest) -> Vec<u8> {
 }
 
 pub fn decode_order_request(data: &[u8]) -> anyhow::Result<OrderRequest> {
-    let table = checked_root_as_table(data, "order_request")?;
-    let venue_i8 = unsafe { get_field::<i8>(&table, vt::OR_VENUE, 0) };
-    let base = unsafe { get_str(&table, vt::OR_BASE) }.unwrap_or("");
-    let quote_cur = unsafe { get_str(&table, vt::OR_QUOTE_CURRENCY) }.unwrap_or("");
-    let inst_type = unsafe { get_str(&table, vt::OR_INSTRUMENT_TYPE) }.unwrap_or("spot");
-    let side_i8 = unsafe { get_field::<i8>(&table, vt::OR_SIDE, 0) };
-    let ot_i8 = unsafe { get_field::<i8>(&table, vt::OR_ORDER_TYPE, 0) };
-    let tif_i8 = unsafe { get_field::<i8>(&table, vt::OR_TIME_IN_FORCE, 0) };
-    let price_str = unsafe { get_str(&table, vt::OR_PRICE) }.unwrap_or("");
-    let qty_str = unsafe { get_str(&table, vt::OR_QUANTITY) }.unwrap_or("0");
+    decode_with_catch("order_request", || {
+        let table = checked_root_as_table(data, "order_request")?;
+        let venue_i8 = unsafe { get_field::<i8>(&table, vt::OR_VENUE, 0) };
+        let base = unsafe { get_str(&table, vt::OR_BASE) }.unwrap_or("");
+        let quote_cur = unsafe { get_str(&table, vt::OR_QUOTE_CURRENCY) }.unwrap_or("");
+        let inst_type = unsafe { get_str(&table, vt::OR_INSTRUMENT_TYPE) }.unwrap_or("spot");
+        let side_i8 = unsafe { get_field::<i8>(&table, vt::OR_SIDE, 0) };
+        let ot_i8 = unsafe { get_field::<i8>(&table, vt::OR_ORDER_TYPE, 0) };
+        let tif_i8 = unsafe { get_field::<i8>(&table, vt::OR_TIME_IN_FORCE, 0) };
+        let price_str = unsafe { get_str(&table, vt::OR_PRICE) }.unwrap_or("");
+        let qty_str = unsafe { get_str(&table, vt::OR_QUANTITY) }.unwrap_or("0");
 
-    Ok(OrderRequest {
-        venue: venue_from_i8(venue_i8)?,
-        instrument: make_instrument(base, quote_cur, inst_type)?,
-        side: side_from_i8(side_i8)?,
-        order_type: order_type_from_i8(ot_i8)?,
-        // Lossy: encode maps None → 0 (Rod), so decode always returns Some.
-        time_in_force: Some(tif_from_i8(tif_i8)?),
-        price: parse_optional_decimal(price_str)?,
-        quantity: parse_decimal_str(qty_str)?,
-        estimated_notional: None,
+        Ok(OrderRequest {
+            venue: venue_from_i8(venue_i8)?,
+            instrument: make_instrument(base, quote_cur, inst_type)?,
+            side: side_from_i8(side_i8)?,
+            order_type: order_type_from_i8(ot_i8)?,
+            // Lossy: encode maps None → 0 (Rod), so decode always returns Some.
+            time_in_force: Some(tif_from_i8(tif_i8)?),
+            price: parse_optional_decimal(price_str)?,
+            quantity: parse_decimal_str(qty_str)?,
+            estimated_notional: None,
+        })
     })
 }
 
@@ -363,35 +397,37 @@ pub fn encode_fill(fill: &Fill) -> Vec<u8> {
 }
 
 pub fn decode_fill(data: &[u8]) -> anyhow::Result<Fill> {
-    let table = checked_root_as_table(data, "fill")?;
-    let order_id = unsafe { get_str(&table, vt::FILL_ORDER_ID) }.unwrap_or("");
-    let venue_i8 = unsafe { get_field::<i8>(&table, vt::FILL_VENUE, 0) };
-    let base = unsafe { get_str(&table, vt::FILL_BASE) }.unwrap_or("");
-    let quote_cur = unsafe { get_str(&table, vt::FILL_QUOTE_CURRENCY) }.unwrap_or("");
-    let inst_type = unsafe { get_str(&table, vt::FILL_INSTRUMENT_TYPE) }.unwrap_or("spot");
-    let side_i8 = unsafe { get_field::<i8>(&table, vt::FILL_SIDE, 0) };
-    let price_str = unsafe { get_str(&table, vt::FILL_PRICE) }.unwrap_or("0");
-    let qty_str = unsafe { get_str(&table, vt::FILL_QUANTITY) }.unwrap_or("0");
-    let fee_str = unsafe { get_str(&table, vt::FILL_FEE) }.unwrap_or("0");
-    let fee_cur = unsafe { get_str(&table, vt::FILL_FEE_CURRENCY) }.unwrap_or("");
-    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::FILL_TIMESTAMP_MS, 0) };
+    decode_with_catch("fill", || {
+        let table = checked_root_as_table(data, "fill")?;
+        let order_id = unsafe { get_str(&table, vt::FILL_ORDER_ID) }.unwrap_or("");
+        let venue_i8 = unsafe { get_field::<i8>(&table, vt::FILL_VENUE, 0) };
+        let base = unsafe { get_str(&table, vt::FILL_BASE) }.unwrap_or("");
+        let quote_cur = unsafe { get_str(&table, vt::FILL_QUOTE_CURRENCY) }.unwrap_or("");
+        let inst_type = unsafe { get_str(&table, vt::FILL_INSTRUMENT_TYPE) }.unwrap_or("spot");
+        let side_i8 = unsafe { get_field::<i8>(&table, vt::FILL_SIDE, 0) };
+        let price_str = unsafe { get_str(&table, vt::FILL_PRICE) }.unwrap_or("0");
+        let qty_str = unsafe { get_str(&table, vt::FILL_QUANTITY) }.unwrap_or("0");
+        let fee_str = unsafe { get_str(&table, vt::FILL_FEE) }.unwrap_or("0");
+        let fee_cur = unsafe { get_str(&table, vt::FILL_FEE_CURRENCY) }.unwrap_or("");
+        let timestamp_ms = unsafe { get_field::<i64>(&table, vt::FILL_TIMESTAMP_MS, 0) };
 
-    let ts = Utc
-        .timestamp_millis_opt(timestamp_ms)
-        .single()
-        .context("invalid timestamp")?;
+        let ts = Utc
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .context("invalid timestamp")?;
 
-    Ok(Fill {
-        order_id: order_id.to_string(),
-        client_order_id: None,
-        venue: venue_from_i8(venue_i8)?,
-        instrument: make_instrument(base, quote_cur, inst_type)?,
-        side: side_from_i8(side_i8)?,
-        price: parse_decimal_str(price_str)?,
-        quantity: parse_decimal_str(qty_str)?,
-        fee: parse_decimal_str(fee_str)?,
-        fee_currency: fee_cur.to_string(),
-        filled_at: ts,
+        Ok(Fill {
+            order_id: order_id.to_string(),
+            client_order_id: None,
+            venue: venue_from_i8(venue_i8)?,
+            instrument: make_instrument(base, quote_cur, inst_type)?,
+            side: side_from_i8(side_i8)?,
+            price: parse_decimal_str(price_str)?,
+            quantity: parse_decimal_str(qty_str)?,
+            fee: parse_decimal_str(fee_str)?,
+            fee_currency: fee_cur.to_string(),
+            filled_at: ts,
+        })
     })
 }
 
@@ -441,66 +477,69 @@ pub fn encode_order_book(book: &OrderBook) -> Vec<u8> {
 }
 
 pub fn decode_order_book(data: &[u8]) -> anyhow::Result<OrderBook> {
-    let table = checked_root_as_table(data, "order_book")?;
-    let venue_i8 = unsafe { get_field::<i8>(&table, vt::OB_VENUE, 0) };
-    let base = unsafe { get_str(&table, vt::OB_BASE) }.unwrap_or("");
-    let quote_cur = unsafe { get_str(&table, vt::OB_QUOTE_CURRENCY) }.unwrap_or("");
-    let inst_type = unsafe { get_str(&table, vt::OB_INSTRUMENT_TYPE) }.unwrap_or("spot");
-    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::OB_TIMESTAMP_MS, 0) };
+    decode_with_catch("order_book", || {
+        let table = checked_root_as_table(data, "order_book")?;
+        let venue_i8 = unsafe { get_field::<i8>(&table, vt::OB_VENUE, 0) };
+        let base = unsafe { get_str(&table, vt::OB_BASE) }.unwrap_or("");
+        let quote_cur = unsafe { get_str(&table, vt::OB_QUOTE_CURRENCY) }.unwrap_or("");
+        let inst_type = unsafe { get_str(&table, vt::OB_INSTRUMENT_TYPE) }.unwrap_or("spot");
+        let timestamp_ms = unsafe { get_field::<i64>(&table, vt::OB_TIMESTAMP_MS, 0) };
 
-    let read_str_vec = |vt_offset: u16| -> Vec<String> {
-        let opt: Option<Vector<'_, ForwardsUOffset<&str>>> =
-            unsafe { table.get::<ForwardsUOffset<Vector<ForwardsUOffset<&str>>>>(vt_offset, None) };
-        opt.map(|v| v.iter().map(|s| s.to_string()).collect())
-            .unwrap_or_default()
-    };
-    let bid_prices = read_str_vec(vt::OB_BID_PRICES);
-    let bid_sizes = read_str_vec(vt::OB_BID_SIZES);
-    let ask_prices = read_str_vec(vt::OB_ASK_PRICES);
-    let ask_sizes = read_str_vec(vt::OB_ASK_SIZES);
+        let read_str_vec = |vt_offset: u16| -> Vec<String> {
+            let opt: Option<Vector<'_, ForwardsUOffset<&str>>> = unsafe {
+                table.get::<ForwardsUOffset<Vector<ForwardsUOffset<&str>>>>(vt_offset, None)
+            };
+            opt.map(|v| v.iter().map(|s| s.to_string()).collect())
+                .unwrap_or_default()
+        };
+        let bid_prices = read_str_vec(vt::OB_BID_PRICES);
+        let bid_sizes = read_str_vec(vt::OB_BID_SIZES);
+        let ask_prices = read_str_vec(vt::OB_ASK_PRICES);
+        let ask_sizes = read_str_vec(vt::OB_ASK_SIZES);
 
-    if bid_prices.len() != bid_sizes.len() {
-        bail!(
-            "bid prices/sizes length mismatch: {} vs {}",
-            bid_prices.len(),
-            bid_sizes.len()
-        );
-    }
-    if ask_prices.len() != ask_sizes.len() {
-        bail!(
-            "ask prices/sizes length mismatch: {} vs {}",
-            ask_prices.len(),
-            ask_sizes.len()
-        );
-    }
+        if bid_prices.len() != bid_sizes.len() {
+            bail!(
+                "bid prices/sizes length mismatch: {} vs {}",
+                bid_prices.len(),
+                bid_sizes.len()
+            );
+        }
+        if ask_prices.len() != ask_sizes.len() {
+            bail!(
+                "ask prices/sizes length mismatch: {} vs {}",
+                ask_prices.len(),
+                ask_sizes.len()
+            );
+        }
 
-    let to_levels = |prices: &[String],
-                     sizes: &[String]|
-     -> anyhow::Result<smallvec::SmallVec<[OrderBookLevel; 20]>> {
-        prices
-            .iter()
-            .zip(sizes.iter())
-            .map(|(p, s)| {
-                Ok(OrderBookLevel {
-                    price: parse_decimal_str(p)?,
-                    size: parse_decimal_str(s)?,
+        let to_levels = |prices: &[String],
+                         sizes: &[String]|
+         -> anyhow::Result<smallvec::SmallVec<[OrderBookLevel; 20]>> {
+            prices
+                .iter()
+                .zip(sizes.iter())
+                .map(|(p, s)| {
+                    Ok(OrderBookLevel {
+                        price: parse_decimal_str(p)?,
+                        size: parse_decimal_str(s)?,
+                    })
                 })
-            })
-            .collect()
-    };
+                .collect()
+        };
 
-    let ts = Utc
-        .timestamp_millis_opt(timestamp_ms)
-        .single()
-        .context("invalid timestamp")?;
+        let ts = Utc
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .context("invalid timestamp")?;
 
-    Ok(OrderBook {
-        venue: venue_from_i8(venue_i8)?,
-        instrument: make_instrument(base, quote_cur, inst_type)?,
-        bids: to_levels(&bid_prices, &bid_sizes)?,
-        asks: to_levels(&ask_prices, &ask_sizes)?,
-        timestamp: ts,
-        local_timestamp: Utc::now(),
+        Ok(OrderBook {
+            venue: venue_from_i8(venue_i8)?,
+            instrument: make_instrument(base, quote_cur, inst_type)?,
+            bids: to_levels(&bid_prices, &bid_sizes)?,
+            asks: to_levels(&ask_prices, &ask_sizes)?,
+            timestamp: ts,
+            local_timestamp: Utc::now(),
+        })
     })
 }
 
@@ -534,20 +573,22 @@ pub fn encode_signal(
 }
 
 pub fn decode_signal(data: &[u8]) -> anyhow::Result<(String, String, Decimal, Decimal, i64)> {
-    let table = checked_root_as_table(data, "signal")?;
-    let instrument_key = unsafe { get_str(&table, vt::SIG_INSTRUMENT_KEY) }.unwrap_or("");
-    let signal_id = unsafe { get_str(&table, vt::SIG_SIGNAL_ID) }.unwrap_or("");
-    let value_str = unsafe { get_str(&table, vt::SIG_VALUE) }.unwrap_or("0");
-    let conf_str = unsafe { get_str(&table, vt::SIG_CONFIDENCE) }.unwrap_or("0");
-    let timestamp_ms = unsafe { get_field::<i64>(&table, vt::SIG_TIMESTAMP_MS, 0) };
+    decode_with_catch("signal", || {
+        let table = checked_root_as_table(data, "signal")?;
+        let instrument_key = unsafe { get_str(&table, vt::SIG_INSTRUMENT_KEY) }.unwrap_or("");
+        let signal_id = unsafe { get_str(&table, vt::SIG_SIGNAL_ID) }.unwrap_or("");
+        let value_str = unsafe { get_str(&table, vt::SIG_VALUE) }.unwrap_or("0");
+        let conf_str = unsafe { get_str(&table, vt::SIG_CONFIDENCE) }.unwrap_or("0");
+        let timestamp_ms = unsafe { get_field::<i64>(&table, vt::SIG_TIMESTAMP_MS, 0) };
 
-    Ok((
-        instrument_key.to_string(),
-        signal_id.to_string(),
-        parse_decimal_str(value_str)?,
-        parse_decimal_str(conf_str)?,
-        timestamp_ms,
-    ))
+        Ok((
+            instrument_key.to_string(),
+            signal_id.to_string(),
+            parse_decimal_str(value_str)?,
+            parse_decimal_str(conf_str)?,
+            timestamp_ms,
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -983,6 +1024,67 @@ mod tests {
                 let s = dec_to_string(val);
                 let back = parse_decimal_str(&s).unwrap();
                 prop_assert_eq!(back, val, "dec_to_string -> parse_decimal_str mismatch for {}", s);
+            }
+
+            /// Random-bytes fuzz: decoders must fail closed, never panic.
+            /// FlatBuffers' `checked_root_as_table` already bounds-checks
+            /// offsets, but user-derived indices (e.g. `n_bids`) need their
+            /// own guards. Review §3.5 flagged this — the existing proptests
+            /// only round-tripped valid encodings.
+            #[test]
+            fn decode_quote_random_bytes_no_panic(
+                bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                // Either decode succeeds with a "garbage" value or returns Err.
+                // What we forbid is a panic.
+                let _ = decode_quote(&bytes);
+            }
+
+            #[test]
+            fn decode_order_book_random_bytes_no_panic(
+                bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                let _ = decode_order_book(&bytes);
+            }
+
+            #[test]
+            fn decode_fill_random_bytes_no_panic(
+                bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                let _ = decode_fill(&bytes);
+            }
+
+            #[test]
+            fn decode_signal_random_bytes_no_panic(
+                bytes in proptest::collection::vec(any::<u8>(), 0..2048),
+            ) {
+                let _ = decode_signal(&bytes);
+            }
+
+            /// Truncated valid encoding — start with a real Quote, then
+            /// truncate at a random offset. The decoder still must not panic.
+            #[test]
+            fn decode_quote_truncated_no_panic(
+                cut in 0usize..200,
+            ) {
+                let ts = Utc.timestamp_millis_opt(1_700_000_000_000).single().unwrap();
+                let q = Quote {
+                    venue: DomainVenue::Binance,
+                    instrument: make_test_instrument(
+                        "BTC".into(),
+                        "USDT".into(),
+                        InstrumentType::Spot,
+                    ),
+                    bid: Decimal::new(50_000, 0),
+                    ask: Decimal::new(50_010, 0),
+                    bid_size: Decimal::new(1, 1),
+                    ask_size: Decimal::new(1, 1),
+                    timestamp: ts,
+                };
+                let mut bytes = encode_quote(&q);
+                let truncate_at = cut.min(bytes.len());
+                bytes.truncate(truncate_at);
+                let _ = decode_quote(&bytes);
             }
         }
     }
