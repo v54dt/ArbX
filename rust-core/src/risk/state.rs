@@ -16,6 +16,10 @@ pub struct RiskState {
     /// Last known mark price per instrument, used by `update_mark_price` to
     /// refresh notional between fills.
     mark_price_by_instrument: HashMap<String, Decimal>,
+    /// Per-instrument timestamp of the last mark price update. Used by
+    /// `evict_stale_marks` so a disconnected venue's stale mark stops
+    /// feeding into MaxNotionalExposure (review §2.5).
+    mark_price_ts: HashMap<String, DateTime<Utc>>,
     pub total_notional_exposure: Decimal,
     pub realized_pnl_today: Decimal,
     pub max_position_size: Decimal,
@@ -36,6 +40,7 @@ impl RiskState {
             position_by_instrument: HashMap::new(),
             position_notional: HashMap::new(),
             mark_price_by_instrument: HashMap::new(),
+            mark_price_ts: HashMap::new(),
             total_notional_exposure: Decimal::ZERO,
             realized_pnl_today: Decimal::ZERO,
             max_position_size,
@@ -48,19 +53,28 @@ impl RiskState {
 
     /// Reset `realized_pnl_today` to zero if the UTC+8 calendar date has
     /// changed since the last reset. Called from the engine's main loop.
-    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) {
+    /// Returns `Some(prev_pnl)` when an actual reset occurred (post-init,
+    /// not the initial "first call" set), so callers can emit a
+    /// DailyPnLReset event. Returns `None` otherwise.
+    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) -> Option<Decimal> {
         let taipei = FixedOffset::east_opt(TAIPEI_OFFSET_SECS).unwrap();
         let today = now.with_timezone(&taipei).date_naive();
         if self.last_reset_date != Some(today) {
-            if self.last_reset_date.is_some() {
+            let prev = self.realized_pnl_today;
+            let was_initialized = self.last_reset_date.is_some();
+            if was_initialized {
                 tracing::info!(
-                    prev_pnl = %self.realized_pnl_today,
+                    prev_pnl = %prev,
                     "daily PnL reset (midnight UTC+8)"
                 );
             }
             self.realized_pnl_today = Decimal::ZERO;
             self.last_reset_date = Some(today);
+            if was_initialized {
+                return Some(prev);
+            }
         }
+        None
     }
 
     pub fn check_order(
@@ -115,6 +129,8 @@ impl RiskState {
         *pos += quantity;
         self.mark_price_by_instrument
             .insert(instrument_key.to_string(), mark_price);
+        self.mark_price_ts
+            .insert(instrument_key.to_string(), Utc::now());
         let new_notional = (*pos * mark_price).abs();
         if new_notional.is_zero() {
             self.position_notional.remove(instrument_key);
@@ -129,10 +145,17 @@ impl RiskState {
     /// Refresh mark price for an instrument and recompute its notional
     /// contribution to `total_notional_exposure`. O(1) per call — only
     /// updates the delta for the single instrument, no iteration over all
-    /// positions.
-    pub fn update_mark_price(&mut self, instrument_key: &str, mark_price: Decimal) {
+    /// positions. Updates the last-seen timestamp so `evict_stale_marks`
+    /// can later clear marks from a disconnected venue.
+    pub fn update_mark_price_at(
+        &mut self,
+        instrument_key: &str,
+        mark_price: Decimal,
+        now: DateTime<Utc>,
+    ) {
         self.mark_price_by_instrument
             .insert(instrument_key.to_string(), mark_price);
+        self.mark_price_ts.insert(instrument_key.to_string(), now);
         // Only recompute if we hold a position in this instrument.
         let pos = match self.position_by_instrument.get(instrument_key) {
             Some(p) if !p.is_zero() => *p,
@@ -147,6 +170,37 @@ impl RiskState {
         self.position_notional
             .insert(instrument_key.to_string(), new_notional);
         self.total_notional_exposure += new_notional - old_notional;
+    }
+
+    /// Backwards-compatible wrapper for callers that don't have an injected
+    /// clock — stamps the update with `Utc::now()`. Prefer
+    /// `update_mark_price_at` for testability.
+    pub fn update_mark_price(&mut self, instrument_key: &str, mark_price: Decimal) {
+        self.update_mark_price_at(instrument_key, mark_price, Utc::now());
+    }
+
+    /// Drop marks older than `max_age` and zero their notional contribution.
+    /// Used to keep MaxNotionalExposure honest when a venue disconnects —
+    /// without this a stale mark sits in the gauge forever, either inflating
+    /// (real price dropped) or under-reporting (real price rose) exposure.
+    pub fn evict_stale_marks(&mut self, now: DateTime<Utc>, max_age: chrono::Duration) {
+        let stale_keys: Vec<String> = self
+            .mark_price_ts
+            .iter()
+            .filter(|(_, ts)| now.signed_duration_since(**ts) > max_age)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in stale_keys {
+            self.mark_price_ts.remove(&key);
+            self.mark_price_by_instrument.remove(&key);
+            if let Some(notional) = self.position_notional.remove(&key) {
+                self.total_notional_exposure -= notional;
+            }
+            tracing::warn!(
+                instrument = key.as_str(),
+                "stale mark evicted; notional contribution zeroed"
+            );
+        }
     }
 
     pub fn halt(&mut self) {
@@ -360,5 +414,35 @@ mod tests {
         // Price drops to 45000 — short exposure shrinks.
         state.update_mark_price("BTC-USDT", dec!(45000));
         assert_eq!(state.total_notional_exposure, dec!(90000));
+    }
+
+    #[test]
+    fn evict_stale_marks_zeros_notional_for_old_marks() {
+        let mut state = default_state();
+        let t0 = Utc::now() - chrono::Duration::seconds(120);
+        let t_now = Utc::now();
+        state.apply_fill("BTC-USDT", dec!(1), dec!(50000), Decimal::ZERO);
+        // Force mark to be old.
+        state.update_mark_price_at("BTC-USDT", dec!(50000), t0);
+        state.apply_fill("ETH-USDT", dec!(10), dec!(3000), Decimal::ZERO);
+        state.update_mark_price_at("ETH-USDT", dec!(3000), t_now);
+        // Both contribute: 50_000 + 30_000.
+        assert_eq!(state.total_notional_exposure, dec!(80000));
+
+        // Evict marks older than 60s — BTC-USDT goes, ETH-USDT stays.
+        state.evict_stale_marks(t_now, chrono::Duration::seconds(60));
+        assert_eq!(state.total_notional_exposure, dec!(30000));
+        assert!(!state.position_notional.contains_key("BTC-USDT"));
+        assert!(state.position_notional.contains_key("ETH-USDT"));
+    }
+
+    #[test]
+    fn evict_stale_marks_no_op_when_all_fresh() {
+        let mut state = default_state();
+        let t_now = Utc::now();
+        state.apply_fill("BTC-USDT", dec!(1), dec!(50000), Decimal::ZERO);
+        state.update_mark_price_at("BTC-USDT", dec!(50000), t_now);
+        state.evict_stale_marks(t_now, chrono::Duration::seconds(60));
+        assert_eq!(state.total_notional_exposure, dec!(50000));
     }
 }

@@ -41,7 +41,10 @@ impl StrategyRiskBudget {
         }
     }
 
-    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) {
+    /// Reset budget counters if the trading-day boundary has crossed.
+    /// Returns `Some(prev_pnl)` when an actual reset occurred (post-init),
+    /// so callers can emit a DailyPnLReset event.
+    pub fn maybe_reset_daily(&mut self, now: DateTime<Utc>) -> Option<Decimal> {
         // Compute the "trading date" — the calendar date boundary shifts
         // depending on reset_hour_utc. For example, reset_hour_utc=0 means
         // the trading day flips at UTC midnight; reset_hour_utc=16 (default,
@@ -51,11 +54,17 @@ impl StrategyRiskBudget {
             FixedOffset::east_opt(-reset_hour * 3600).unwrap_or(FixedOffset::east_opt(0).unwrap());
         let today = now.with_timezone(&offset).date_naive();
         if self.last_reset_date != Some(today) {
+            let prev = self.daily_pnl;
+            let was_initialized = self.last_reset_date.is_some();
             self.daily_pnl = Decimal::ZERO;
             self.notional_submitted = Decimal::ZERO;
             self.order_count = 0;
             self.last_reset_date = Some(today);
+            if was_initialized {
+                return Some(prev);
+            }
         }
+        None
     }
 
     /// Returns `true` if the strategy is within its budget.

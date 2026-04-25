@@ -55,6 +55,13 @@ pub enum EngineEvent {
         succeeded: usize,
         failed: usize,
     },
+    /// Daily PnL counters were reset at the configured trading-day boundary.
+    /// Operators monitoring `/recent-events` see this event mark the moment
+    /// when capital was rearmed (review §2.6).
+    DailyPnLReset {
+        scope: String,
+        prev_pnl: Decimal,
+    },
     Paused,
     Resumed,
     Shutdown,
