@@ -35,6 +35,15 @@ pub struct EngineConfig {
     pub admin_port: Option<u16>,
     #[serde(default)]
     pub admin_bind: Option<String>,
+    /// Bind address for the Prometheus metrics endpoint. Defaults to
+    /// `127.0.0.1` (loopback) so positions / PnL / order rate are not
+    /// trivially scrapable from the LAN. Override to `0.0.0.0` only when
+    /// reverse-proxying behind authenticated infrastructure.
+    #[serde(default)]
+    pub metrics_bind: Option<String>,
+    /// Port for the Prometheus metrics endpoint. Default 9090.
+    #[serde(default)]
+    pub metrics_port: Option<u16>,
     /// Dead-man's-switch stall threshold in milliseconds. If the engine's
     /// main loop doesn't stamp its heartbeat within this window, a
     /// watchdog fires `shutdown_tx` so supervisors can restart a wedged
@@ -63,6 +72,8 @@ impl Default for EngineConfig {
             trade_log_file: None,
             admin_port: None,
             admin_bind: None,
+            metrics_bind: None,
+            metrics_port: None,
             heartbeat_stall_ms: default_heartbeat_stall_ms(),
         }
     }
@@ -293,10 +304,13 @@ pub fn load(path: &str) -> anyhow::Result<AppConfig> {
 
 const KNOWN_STRATEGIES: &[&str] = &[
     "cross_exchange",
+    "multi_pair_cross_exchange",
     "ewma_spread",
     "funding_rate",
+    "cross_venue_funding",
     "triangular_arb",
     "tw_etf_futures",
+    "signal_momentum",
 ];
 
 const KNOWN_VENUES: &[&str] = &["binance", "bybit", "okx", "fubon", "shioaji"];
@@ -468,8 +482,20 @@ pub fn validate(config: &AppConfig) -> anyhow::Result<()> {
     }
 
     warn_spot_vs_spot(&config.strategy, "strategy");
+    let mut seen_strategy_names: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    seen_strategy_names.insert(config.strategy.name.to_lowercase());
     for (i, extra) in config.extra_strategies.iter().enumerate() {
         warn_spot_vs_spot(extra, &format!("extra_strategies[{}]", i));
+        if !seen_strategy_names.insert(extra.name.to_lowercase()) {
+            anyhow::bail!(
+                "duplicate strategy name '{}' (extra_strategies[{}]) — \
+                 per-strategy budgets are keyed by name and would silently \
+                 overwrite. Rename or remove the duplicate.",
+                extra.name,
+                i
+            );
+        }
     }
 
     if config.risk.max_position_size <= Decimal::ZERO {
@@ -786,6 +812,22 @@ logging:
             cfg.strategy.instrument_b.instrument_type.to_lowercase(),
             "spot"
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_extra_strategy_name() {
+        // Duplicate strategy names silently overwrite per-strategy budgets in
+        // the engine's HashMap. Catch the typo at config-load time instead.
+        let yaml = sample_yaml().replace(
+            "logging:",
+            "extra_strategies:\n  - name: cross_exchange\n    \
+             instrument_a: { base: BTC, quote: USDT, instrument_type: spot }\n    \
+             instrument_b: { base: BTC, quote: USDT, instrument_type: swap, settle_currency: USDT }\n    \
+             min_net_profit_bps: \"1\"\n    max_quantity: \"0.01\"\n    max_quote_age_ms: 5000\n\
+             logging:",
+        );
+        let err = try_load(&yaml).unwrap_err().to_string();
+        assert!(err.contains("duplicate strategy name"), "got: {err}");
     }
 
     #[test]

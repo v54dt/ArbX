@@ -965,7 +965,16 @@ async fn main() -> anyhow::Result<()> {
         return run_dry_validate(&cfg);
     }
 
-    metrics::setup_metrics_server(9090);
+    let metrics_bind = cfg.engine.metrics_bind.as_deref().unwrap_or("127.0.0.1");
+    let metrics_port = cfg.engine.metrics_port.unwrap_or(9090);
+    if metrics_bind != "127.0.0.1" && metrics_bind != "localhost" {
+        tracing::warn!(
+            metrics_bind,
+            "metrics endpoint bound to non-loopback address — \
+             positions / PnL / order rate are scrapable. Reverse-proxy with auth."
+        );
+    }
+    metrics::setup_metrics_server(metrics_bind, metrics_port);
 
     if let Some(csv_path) = cli.backtest.as_ref() {
         return run_backtest_mode(
@@ -1309,10 +1318,18 @@ async fn main() -> anyhow::Result<()> {
         (result, engine)
     });
 
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| anyhow::anyhow!("install SIGTERM handler: {e}"))?;
+
     let outcome = tokio::select! {
         biased;
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Ctrl+C received, signalling shutdown...");
+            tracing::info!("SIGINT received, signalling shutdown...");
+            let _ = shutdown_tx.send(true);
+            engine_handle.await
+        }
+        _ = sigterm.recv() => {
+            tracing::info!("SIGTERM received, signalling shutdown...");
             let _ = shutdown_tx.send(true);
             engine_handle.await
         }
