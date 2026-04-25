@@ -711,6 +711,7 @@ async fn run_backtest_mode(
         max_position_per_venue: cfg.risk.max_position_per_venue.clone(),
         backtest_fill_delay_ms: cfg.risk.backtest_fill_delay_ms,
         backtest_slippage_bps: cfg.risk.backtest_slippage_bps,
+        backtest_fee_rate: cfg.risk.backtest_fee_rate,
     };
 
     match window_size {

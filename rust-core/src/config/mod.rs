@@ -235,6 +235,11 @@ pub struct RiskConfig {
     /// Backtest adverse slippage in bps. Default 2 if omitted.
     #[serde(default)]
     pub backtest_slippage_bps: Option<Decimal>,
+    /// Backtest taker fee as fraction of notional (e.g. `"0.0004"` = 4 bps).
+    /// When omitted, fills emit fee=0 and the trade-log economics rely on
+    /// the strategy's expected fee declaration (legacy behaviour).
+    #[serde(default)]
+    pub backtest_fee_rate: Option<Decimal>,
 }
 
 #[derive(Debug, Deserialize)]

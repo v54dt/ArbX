@@ -15,6 +15,11 @@ pub struct PaperExecutor {
     order_counter: AtomicU64,
     fill_delay_ms: u64,
     slippage_bps: Decimal,
+    /// Taker fee as fraction of notional (e.g. dec!(0.0004) = 4 bps). When
+    /// 0, fills emit fee=ZERO; review §3.7 flagged this as a backtest
+    /// validity issue (strategy expected fees never showed up as actual
+    /// executor fees in the trade log).
+    fee_rate: Decimal,
 }
 
 impl PaperExecutor {
@@ -32,6 +37,15 @@ impl PaperExecutor {
     /// sell fills get order_price * (1 - bps/1e4). 0 = fill at order price (legacy default).
     pub fn with_slippage_bps(mut self, bps: Decimal) -> Self {
         self.slippage_bps = bps;
+        self
+    }
+
+    /// Per-fill taker fee as fraction of notional. Default 0 (legacy behaviour
+    /// — fees only enter the trade log via strategy-declared expected_net).
+    /// Set this to match the live taker rate so backtest economics match
+    /// production.
+    pub fn with_fee_rate(mut self, rate: Decimal) -> Self {
+        self.fee_rate = rate;
         self
     }
 
@@ -87,6 +101,7 @@ impl OrderExecutor for PaperExecutor {
             }
         };
         let fill_price = self.apply_slippage(order.side, order_price);
+        let fee = fill_price * order.quantity * self.fee_rate;
 
         let fill = Fill {
             order_id: order_id.clone(),
@@ -96,7 +111,7 @@ impl OrderExecutor for PaperExecutor {
             side: order.side,
             price: fill_price,
             quantity: order.quantity,
-            fee: Decimal::ZERO,
+            fee,
             fee_currency: order.instrument.quote.clone(),
             filled_at: chrono::Utc::now(),
         };
