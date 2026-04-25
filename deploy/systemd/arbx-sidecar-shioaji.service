@@ -3,6 +3,8 @@ Description=ArbX Sidecar - Shioaji (stream 1001)
 After=network-online.target aeron-driver.service
 Wants=network-online.target
 Requires=aeron-driver.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -23,6 +25,24 @@ ExecStart=/usr/bin/podman run --rm --name arbx-sidecar-shioaji \
 ExecStop=/usr/bin/podman stop arbx-sidecar-shioaji
 Restart=on-failure
 RestartSec=5
+# Resource caps (review §3.10).
+MemoryMax=2G
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+# Sandbox hardening.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/dev/shm
+ReadOnlyPaths=/etc/arbx
 
 [Install]
 WantedBy=multi-user.target

@@ -2,6 +2,9 @@
 Description=Aeron Media Driver (IPC shared-memory transport)
 After=network-online.target
 Wants=network-online.target
+# Stop thrashing on persistent startup failure (review §3.10).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -14,7 +17,26 @@ ExecStart=/usr/bin/podman run --rm --name aeron-driver \
     localhost/aeron-driver:latest
 ExecStop=/usr/bin/podman stop aeron-driver
 Restart=always
-RestartSec=3
+# Exponential backoff via StartLimit*: 5 attempts in 300s, then back off.
+RestartSec=10
+# Resource caps so a runaway can't exhaust the host.
+MemoryMax=2G
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+# Sandbox hardening (review §3.10).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+# /dev/shm must be writable for Aeron IPC; PrivateTmp doesn't affect it.
+ReadWritePaths=/dev/shm
 
 [Install]
 WantedBy=multi-user.target

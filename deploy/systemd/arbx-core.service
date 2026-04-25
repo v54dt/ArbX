@@ -3,6 +3,8 @@ Description=ArbX Core Engine
 After=network-online.target aeron-driver.service
 Wants=network-online.target
 Requires=aeron-driver.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -22,6 +24,27 @@ ExecStart=/usr/bin/podman run --rm --name arbx-core \
 ExecStop=/usr/bin/podman stop arbx-core
 Restart=on-failure
 RestartSec=5
+# Resource caps (review §3.10): without MemoryMax a runaway can OOM the host.
+MemoryMax=4G
+CPUQuota=400%
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+# Sandbox hardening. Note: --network=host already breaks ProtectSystem on the
+# kernel level; these stanzas still apply to anything outside that namespace.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+# Trade log + Aeron shm + config dir need write or read access.
+ReadWritePaths=/var/lib/arbx /dev/shm
+ReadOnlyPaths=/etc/arbx
 
 [Install]
 WantedBy=multi-user.target
