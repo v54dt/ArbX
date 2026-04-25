@@ -44,6 +44,12 @@ struct IntendedFill {
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
 const TRADE_LOG_CAP: usize = 10_000;
+/// Capacity of the merged Quote / OrderBook channel into the engine main
+/// loop. At 1 kHz quote rate this is ~4 s of buffer before backpressure.
+const MERGED_CHANNEL_CAPACITY: usize = 4096;
+/// Capacity of the merged Fill channel. Fills are far less frequent than
+/// quotes so the same buffer is comfortably oversized.
+const FILL_CHANNEL_CAPACITY: usize = 1024;
 
 fn fill_fingerprint(fill: &Fill) -> String {
     format!(
@@ -301,11 +307,15 @@ impl ArbitrageEngine {
             "starting arbitrage engine"
         );
 
-        let (merged_tx, mut merged_rx) = mpsc::unbounded_channel::<Quote>();
-        let (merged_book_tx, mut merged_book_rx) = mpsc::unbounded_channel::<OrderBook>();
-
-        // Pre-declare fill_tx here so feed-level fills can merge into it.
-        let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
+        // Bounded merged channels apply backpressure if the engine main loop
+        // falls behind feed publish rate. At 1 kHz quote rate × 1 s stall =
+        // ~1000 buffered messages — well under capacity. Sustained lag
+        // surfaces via the per-channel depth gauge instead of unbounded
+        // memory growth.
+        let (merged_tx, mut merged_rx) = mpsc::channel::<Quote>(MERGED_CHANNEL_CAPACITY);
+        let (merged_book_tx, mut merged_book_rx) =
+            mpsc::channel::<OrderBook>(MERGED_CHANNEL_CAPACITY);
+        let (fill_tx, mut fill_rx) = mpsc::channel::<Fill>(FILL_CHANNEL_CAPACITY);
 
         for feed in self.feeds.iter_mut() {
             let MarketDataReceivers {
@@ -326,7 +336,7 @@ impl ArbitrageEngine {
                                 }
                                 msg = ff.recv() => {
                                     match msg {
-                                        Some(f) => { if ftx.send(f).is_err() { break; } }
+                                        Some(f) => { if ftx.send(f).await.is_err() { break; } }
                                         None => break,
                                     }
                                 }
@@ -361,7 +371,7 @@ impl ArbitrageEngine {
                                     tracing::debug!(error = %e, "ipc quote publish failed");
                                 }
                             }
-                            if tx.send(q).is_err() { break; }
+                            if tx.send(q).await.is_err() { break; }
                         }
                         Some(ob) = order_books.recv() => {
                             for pub_ in publishers.iter() {
@@ -373,7 +383,7 @@ impl ArbitrageEngine {
                                     tracing::debug!(error = %e, "ipc order_book publish failed");
                                 }
                             }
-                            if btx.send(ob).is_err() { break; }
+                            if btx.send(ob).await.is_err() { break; }
                         }
                         else => break,
                     }
@@ -399,7 +409,7 @@ impl ArbitrageEngine {
             tokio::spawn(
                 std::panic::AssertUnwindSafe(async move {
                     while let Some(f) = fills.recv().await {
-                        if tx.send(f).is_err() {
+                        if tx.send(f).await.is_err() {
                             break;
                         }
                     }
@@ -423,7 +433,7 @@ impl ArbitrageEngine {
                     tokio::spawn(
                         std::panic::AssertUnwindSafe(async move {
                             while let Some(f) = fills.recv().await {
-                                if tx.send(f).is_err() {
+                                if tx.send(f).await.is_err() {
                                     break;
                                 }
                             }
@@ -458,7 +468,7 @@ impl ArbitrageEngine {
                     tokio::spawn(
                         std::panic::AssertUnwindSafe(async move {
                             while let Some(f) = fills.recv().await {
-                                if tx.send(f).is_err() {
+                                if tx.send(f).await.is_err() {
                                     break;
                                 }
                             }
@@ -499,6 +509,12 @@ impl ArbitrageEngine {
             for budget in self.strategy_budgets.values_mut() {
                 budget.maybe_reset_daily(loop_now);
             }
+            // Channel depth = items currently buffered. Sustained high
+            // values indicate the engine is the bottleneck; transient
+            // bursts barely register because the next iteration drains.
+            crate::metrics::set_channel_depth("merged_quotes", merged_rx.len() as f64);
+            crate::metrics::set_channel_depth("merged_books", merged_book_rx.len() as f64);
+            crate::metrics::set_channel_depth("merged_fills", fill_rx.len() as f64);
             tokio::select! {
                 Some(quote) = merged_rx.recv() => {
                     self.handle_quote(quote).await?;
