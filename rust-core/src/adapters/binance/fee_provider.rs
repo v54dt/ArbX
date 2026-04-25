@@ -84,6 +84,7 @@ impl FeeProvider for BinanceFeeProvider {
                     method: HttpMethod::Get,
                     path: "/fapi/v1/commissionRate".to_string(),
                     params,
+                    raw_body: None,
                 };
                 match self.rest_client.send(request).await {
                     Ok(resp) if resp.status == 200 => {
@@ -112,6 +113,7 @@ impl FeeProvider for BinanceFeeProvider {
                     method: HttpMethod::Get,
                     path: "/api/v3/account".to_string(),
                     params: HashMap::new(),
+                    raw_body: None,
                 };
                 match self.rest_client.send(request).await {
                     Ok(resp) if resp.status == 200 => {

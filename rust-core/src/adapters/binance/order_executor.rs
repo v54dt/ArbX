@@ -188,6 +188,7 @@ impl OrderExecutor for BinanceOrderExecutor {
             method: HttpMethod::Post,
             path: self.order_path().to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -246,6 +247,7 @@ impl OrderExecutor for BinanceOrderExecutor {
             method: HttpMethod::Delete,
             path: self.order_path().to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -278,6 +280,7 @@ impl OrderExecutor for BinanceOrderExecutor {
             method: HttpMethod::Get,
             path: self.order_path().to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;

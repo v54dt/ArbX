@@ -48,6 +48,7 @@ impl MarketDataFeed for AeronMarketDataFeed {
                     Ok(Some(bytes)) => {
                         let Some((tag, payload)) = bytes.split_first() else {
                             tracing::debug!("aeron payload empty; skipping");
+                            crate::metrics::record_aeron_decode_error("unknown", "empty_payload");
                             continue;
                         };
                         match *tag {
@@ -57,7 +58,13 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                         break;
                                     }
                                 }
-                                Err(e) => tracing::debug!(error = %e, "decode_quote failed"),
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "decode_quote failed");
+                                    crate::metrics::record_aeron_decode_error(
+                                        "quote",
+                                        "decode_error",
+                                    );
+                                }
                             },
                             MSG_TAG_ORDER_BOOK => match decode_order_book(payload) {
                                 Ok(book) => {
@@ -65,7 +72,13 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                         break;
                                     }
                                 }
-                                Err(e) => tracing::debug!(error = %e, "decode_order_book failed"),
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "decode_order_book failed");
+                                    crate::metrics::record_aeron_decode_error(
+                                        "order_book",
+                                        "decode_error",
+                                    );
+                                }
                             },
                             MSG_TAG_FILL => match decode_fill(payload) {
                                 Ok(fill) => {
@@ -73,7 +86,13 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                         break;
                                     }
                                 }
-                                Err(e) => tracing::debug!(error = %e, "decode_fill failed"),
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "decode_fill failed");
+                                    crate::metrics::record_aeron_decode_error(
+                                        "fill",
+                                        "decode_error",
+                                    );
+                                }
                             },
                             MSG_TAG_SIGNAL => match decode_signal(payload) {
                                 Ok((key, signal_id, value, confidence, ts_ms)) => {
@@ -92,9 +111,18 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                         break;
                                     }
                                 }
-                                Err(e) => tracing::debug!(error = %e, "decode_signal failed"),
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "decode_signal failed");
+                                    crate::metrics::record_aeron_decode_error(
+                                        "signal",
+                                        "decode_error",
+                                    );
+                                }
                             },
-                            other => tracing::debug!(tag = other, "unknown msg tag; skipping"),
+                            other => {
+                                tracing::debug!(tag = other, "unknown msg tag; skipping");
+                                crate::metrics::record_aeron_decode_error("unknown", "unknown_tag");
+                            }
                         }
                     }
                     Ok(None) => {

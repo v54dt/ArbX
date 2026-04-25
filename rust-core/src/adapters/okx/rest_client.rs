@@ -91,14 +91,25 @@ impl ExchangeRestClient for OkxRestClient {
         self.rate_limiter.acquire().await;
 
         let method_str = Self::method_str(request.method);
-        let qs = Self::build_query_string(&request.params);
+        // raw_body overrides params for endpoints that need a JSON-array
+        // body (e.g. cancel-batch-orders); when it's set, we skip the
+        // params→query-string serialization so the payload only lives in
+        // the body. Otherwise behaviour matches the legacy path.
+        let use_raw_body = request.raw_body.is_some();
+        let qs = if use_raw_body {
+            String::new()
+        } else {
+            Self::build_query_string(&request.params)
+        };
         let request_path = if qs.is_empty() {
             request.path.clone()
         } else {
             format!("{}?{}", request.path, qs)
         };
 
-        let body = if matches!(request.method, HttpMethod::Post) && !request.params.is_empty() {
+        let body = if let Some(raw) = request.raw_body.as_ref() {
+            raw.clone()
+        } else if matches!(request.method, HttpMethod::Post) && !request.params.is_empty() {
             serde_json::to_string(&request.params)?
         } else {
             String::new()

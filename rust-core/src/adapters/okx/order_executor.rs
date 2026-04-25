@@ -123,6 +123,7 @@ impl OrderExecutor for OkxOrderExecutor {
             method: HttpMethod::Post,
             path: "/api/v5/trade/order".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -176,6 +177,7 @@ impl OrderExecutor for OkxOrderExecutor {
             method: HttpMethod::Post,
             path: "/api/v5/trade/cancel-order".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -216,6 +218,7 @@ impl OrderExecutor for OkxOrderExecutor {
             method: HttpMethod::Get,
             path: "/api/v5/trade/order".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;

@@ -63,6 +63,7 @@ impl FeeProvider for OkxFeeProvider {
             method: HttpMethod::Get,
             path: "/api/v5/account/trade-fee".to_string(),
             params,
+            raw_body: None,
         };
 
         match self.rest_client.send(request).await {

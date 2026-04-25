@@ -147,6 +147,7 @@ impl OrderExecutor for BybitOrderExecutor {
             method: HttpMethod::Post,
             path: "/v5/order/create".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -202,6 +203,7 @@ impl OrderExecutor for BybitOrderExecutor {
             method: HttpMethod::Post,
             path: "/v5/order/cancel".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
@@ -243,6 +245,7 @@ impl OrderExecutor for BybitOrderExecutor {
             method: HttpMethod::Get,
             path: "/v5/order/realtime".to_string(),
             params,
+            raw_body: None,
         };
 
         let response = self.rest_client.send(request).await?;
