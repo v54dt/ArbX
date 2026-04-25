@@ -78,8 +78,12 @@ impl StrategyRiskBudget {
         self.order_count += 1;
     }
 
-    pub fn record_pnl(&mut self, expected_net: Decimal) {
-        self.daily_pnl += expected_net;
+    /// Apply a realized PnL delta from a fill (positive = profit, negative =
+    /// loss). Called from the engine fill handler so `daily_pnl` reflects
+    /// actual filled PnL rather than the strategy's self-reported expected
+    /// edge at submit time.
+    pub fn record_realized_pnl(&mut self, realized_delta: Decimal) {
+        self.daily_pnl += realized_delta;
     }
 
     pub fn rejection_reason(&self) -> Option<&'static str> {
@@ -115,9 +119,9 @@ mod tests {
             max_notional: None,
             ..Default::default()
         });
-        b.record_pnl(dec!(-50));
+        b.record_realized_pnl(dec!(-50));
         assert!(b.is_within_budget());
-        b.record_pnl(dec!(-60));
+        b.record_realized_pnl(dec!(-60));
         assert!(!b.is_within_budget());
         assert_eq!(
             b.rejection_reason(),
@@ -149,7 +153,7 @@ mod tests {
             max_notional: Some(dec!(5000)),
             ..Default::default()
         });
-        b.record_pnl(dec!(-101));
+        b.record_realized_pnl(dec!(-101));
         assert!(!b.is_within_budget());
         assert!(b.rejection_reason().unwrap().contains("daily_loss"));
     }
@@ -161,7 +165,7 @@ mod tests {
             max_notional: Some(dec!(1000)),
             ..Default::default()
         });
-        b.record_pnl(dec!(-101));
+        b.record_realized_pnl(dec!(-101));
         b.record_order(dec!(1001));
         assert!(!b.is_within_budget());
 
@@ -186,7 +190,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         b.maybe_reset_daily(before);
-        b.record_pnl(dec!(-50));
+        b.record_realized_pnl(dec!(-50));
 
         // 2026-04-23 00:01 UTC — new day, should reset
         let after = chrono::DateTime::parse_from_rfc3339("2026-04-23T00:01:00Z")
@@ -208,7 +212,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         b.maybe_reset_daily(before);
-        b.record_pnl(dec!(-50));
+        b.record_realized_pnl(dec!(-50));
 
         // 2026-04-22 05:01 UTC — new trading day, should reset
         let after = chrono::DateTime::parse_from_rfc3339("2026-04-22T05:01:00Z")
@@ -231,7 +235,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         b.maybe_reset_daily(before);
-        b.record_pnl(dec!(-50));
+        b.record_realized_pnl(dec!(-50));
 
         // 2026-04-22 16:01 UTC = 2026-04-23 00:01 UTC+8 — new day
         let after = chrono::DateTime::parse_from_rfc3339("2026-04-22T16:01:00Z")
@@ -250,7 +254,7 @@ mod tests {
         });
         let now = Utc::now();
         b.maybe_reset_daily(now);
-        b.record_pnl(dec!(-50));
+        b.record_realized_pnl(dec!(-50));
         b.maybe_reset_daily(now);
         assert_eq!(b.daily_pnl, dec!(-50)); // not reset
     }
