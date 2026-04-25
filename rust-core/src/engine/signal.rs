@@ -27,6 +27,18 @@ pub struct SignalValue {
     pub timestamp: DateTime<Utc>,
 }
 
+/// A signal that arrived over IPC (Aeron) before being routed into the
+/// `SignalCache`. Carries the routing key alongside the value so the
+/// engine can dispatch without re-parsing.
+#[derive(Debug, Clone)]
+pub struct ExternalSignal {
+    pub instrument_key: String,
+    pub signal_id: String,
+    pub value: Decimal,
+    pub confidence: Decimal,
+    pub timestamp: DateTime<Utc>,
+}
+
 /// Cache of latest signal values, keyed by (instrument_key, signal_id).
 /// Strategies can read this during evaluate() without subscribing to a stream.
 #[derive(Debug, Clone, Default)]

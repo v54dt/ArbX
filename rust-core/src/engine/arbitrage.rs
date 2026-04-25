@@ -18,7 +18,7 @@ use crate::adapters::private_stream::PrivateStream;
 use crate::engine::admin::EngineHandle;
 use crate::engine::clock::{Clock, LiveClock};
 use crate::engine::event_bus::{EngineEvent, EngineEventBus};
-use crate::engine::signal::{SignalCache, SignalProducer};
+use crate::engine::signal::{SignalCache, SignalProducer, SignalValue};
 use crate::engine::watchdog::Heartbeat;
 use crate::ipc::IpcPublisher;
 use crate::models::enums::Venue;
@@ -43,6 +43,12 @@ struct IntendedFill {
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
 const TRADE_LOG_CAP: usize = 10_000;
+/// Maximum age of a SignalCache entry before eviction. Sized to outlast a
+/// 30-min poll cadence (FRED, CryptoQuant) but kill stale data from a
+/// dead sidecar within an hour.
+const SIGNAL_CACHE_TTL_SECS: i64 = 3600;
+/// Cadence at which the engine sweeps the SignalCache for stale entries.
+const SIGNAL_EVICT_INTERVAL_SECS: u64 = 60;
 
 fn fill_fingerprint(fill: &Fill) -> String {
     format!(
@@ -229,7 +235,6 @@ impl ArbitrageEngine {
         self
     }
 
-    #[allow(dead_code)]
     pub fn with_signal_producers(mut self, producers: Vec<Box<dyn SignalProducer>>) -> Self {
         self.signal_producers = producers;
         self
@@ -308,13 +313,46 @@ impl ArbitrageEngine {
 
         // Pre-declare fill_tx here so feed-level fills can merge into it.
         let (fill_tx, mut fill_rx) = mpsc::unbounded_channel::<Fill>();
+        let (signal_tx, mut signal_rx) =
+            mpsc::unbounded_channel::<crate::engine::signal::ExternalSignal>();
 
         for feed in self.feeds.iter_mut() {
             let MarketDataReceivers {
                 mut quotes,
                 mut order_books,
                 fills: feed_fills,
+                signals: feed_signals,
             } = feed.connect().await?;
+            // Merge external signals (Python sidecar via Aeron) so the
+            // engine main loop can route them into the SignalCache without
+            // each strategy having to subscribe.
+            if let Some(mut fs) = feed_signals {
+                let stx = signal_tx.clone();
+                let mut fs_shutdown = self.shutdown_rx.clone();
+                tokio::spawn(
+                    std::panic::AssertUnwindSafe(async move {
+                        loop {
+                            tokio::select! {
+                                _ = fs_shutdown.changed() => {
+                                    if *fs_shutdown.borrow() { break; }
+                                }
+                                msg = fs.recv() => {
+                                    match msg {
+                                        Some(s) => { if stx.send(s).is_err() { break; } }
+                                        None => break,
+                                    }
+                                }
+                            }
+                        }
+                    })
+                    .catch_unwind()
+                    .then(|r| async {
+                        if let Err(e) = r {
+                            tracing::error!("feed-level signal forwarder task panicked: {:?}", e);
+                        }
+                    }),
+                );
+            }
             // Merge feed-level fills (e.g. Aeron IPC carrying TW broker fills).
             if let Some(mut ff) = feed_fills {
                 let ftx = fill_tx.clone();
@@ -389,6 +427,7 @@ impl ArbitrageEngine {
 
         drop(merged_tx);
         drop(merged_book_tx);
+        drop(signal_tx);
 
         // Connect the legacy single executor and forward its fills into a
         // merged channel. Per-venue executors registered via
@@ -491,6 +530,10 @@ impl ArbitrageEngine {
             tokio::time::interval(std::time::Duration::from_secs(self.reconcile_interval_secs));
         let mut cancel_check_interval =
             tokio::time::interval(std::time::Duration::from_millis(500));
+        // Drop signal cache entries older than `SIGNAL_CACHE_TTL` so a
+        // disconnected sidecar can't keep stale alpha in the cache forever.
+        let mut signal_evict_interval =
+            tokio::time::interval(std::time::Duration::from_secs(SIGNAL_EVICT_INTERVAL_SECS));
 
         loop {
             if let Some(hb) = self.heartbeat.as_ref() {
@@ -509,6 +552,41 @@ impl ArbitrageEngine {
                     let key = book_key(book.venue, &book.instrument);
                     tracing::debug!(key = key.as_str(), levels = book.bids.len(), "L2 order book update");
                     self.books.insert(key, book);
+                }
+                Some(signal) = signal_rx.recv() => {
+                    let id = signal.signal_id.clone();
+                    let key = signal.instrument_key.clone();
+                    let value = SignalValue {
+                        value: signal.value,
+                        confidence: signal.confidence,
+                        timestamp: signal.timestamp,
+                    };
+                    // SignalId lookup table: well-known IDs become &'static str
+                    // so SignalCache::update keeps its `&'static str` key
+                    // contract. Unknown IDs are intentionally dropped (not
+                    // leaked into a permanent allocation).
+                    if let Some(static_id) = match id.as_str() {
+                        crate::engine::signal::SIGNAL_QUEUE_IMBALANCE => Some(crate::engine::signal::SIGNAL_QUEUE_IMBALANCE),
+                        crate::engine::signal::SIGNAL_MICROPRICE => Some(crate::engine::signal::SIGNAL_MICROPRICE),
+                        crate::engine::signal::SIGNAL_OFI => Some(crate::engine::signal::SIGNAL_OFI),
+                        crate::engine::signal::SIGNAL_VPIN => Some(crate::engine::signal::SIGNAL_VPIN),
+                        crate::engine::signal::SIGNAL_FUNDING_Z => Some(crate::engine::signal::SIGNAL_FUNDING_Z),
+                        crate::engine::signal::SIGNAL_NEWS_SENTIMENT => Some(crate::engine::signal::SIGNAL_NEWS_SENTIMENT),
+                        crate::engine::signal::SIGNAL_WHALE_ALERT => Some(crate::engine::signal::SIGNAL_WHALE_ALERT),
+                        crate::engine::signal::SIGNAL_MACRO_EVENT => Some(crate::engine::signal::SIGNAL_MACRO_EVENT),
+                        crate::engine::signal::SIGNAL_EXCHANGE_FLOW => Some(crate::engine::signal::SIGNAL_EXCHANGE_FLOW),
+                        _ => None,
+                    } {
+                        self.signal_cache.update(&key, static_id, value);
+                    } else {
+                        tracing::debug!(signal_id = id.as_str(), "unknown external signal_id; dropped");
+                    }
+                }
+                _ = signal_evict_interval.tick() => {
+                    self.signal_cache.evict_stale(
+                        self.clock.utc_now(),
+                        chrono::Duration::seconds(SIGNAL_CACHE_TTL_SECS),
+                    );
                 }
                 Some(fill) = fill_rx.recv() => {
                     let fp = fill_fingerprint(&fill);

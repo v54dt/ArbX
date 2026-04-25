@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use super::market_data::{MarketDataFeed, MarketDataReceivers};
 use super::order_executor::{OrderExecutor, OrderReceivers};
 use super::position_manager::PositionManager;
+use crate::engine::signal::ExternalSignal;
 use crate::models::enums::{OrderStatus, Side};
 use crate::models::market::{OrderBook, Quote};
 use crate::models::order::{Fill, Order, OrderUpdate};
@@ -31,6 +32,10 @@ pub struct MockExchange {
     ack_delay_ms: u64,
     cancel_success_rate: f64,
     fee_rate: Decimal,
+    /// External signals to emit on connect (timing-independent, all sent
+    /// before the receiver is returned). Tests use this to verify the
+    /// engine's signal-channel pump.
+    pre_load_signals: Vec<ExternalSignal>,
 }
 
 impl MockExchange {
@@ -51,7 +56,15 @@ impl MockExchange {
             ack_delay_ms: 0,
             cancel_success_rate: 1.0,
             fee_rate: Decimal::ZERO,
+            pre_load_signals: Vec::new(),
         }
+    }
+
+    /// Pre-load signals to emit on connect. The signal channel is then closed
+    /// (sender dropped) so receivers won't block waiting for more.
+    pub fn with_signals(mut self, signals: Vec<ExternalSignal>) -> Self {
+        self.pre_load_signals = signals;
+        self
     }
 
     pub fn with_quote_interval(mut self, ms: u64) -> Self {
@@ -125,10 +138,21 @@ impl MarketDataFeed for MockExchange {
             }
         });
 
+        let signals_rx = if self.pre_load_signals.is_empty() {
+            None
+        } else {
+            let (signal_tx, signal_rx) = mpsc::unbounded_channel::<ExternalSignal>();
+            for s in self.pre_load_signals.drain(..) {
+                let _ = signal_tx.send(s);
+            }
+            Some(signal_rx)
+        };
+
         Ok(MarketDataReceivers {
             quotes: quotes_rx,
             order_books: books_rx,
             fills: None,
+            signals: signals_rx,
         })
     }
 
