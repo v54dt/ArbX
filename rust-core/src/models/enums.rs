@@ -40,3 +40,18 @@ pub enum Venue {
     Bybit,
     Okx,
 }
+
+impl Venue {
+    /// Lowercase label suitable for Prometheus metric labels. Static — avoids
+    /// `format!("{:?}", venue).to_lowercase()` allocations in the fill /
+    /// submit hot paths (review §3.8).
+    pub fn label(self) -> &'static str {
+        match self {
+            Venue::Fubon => "fubon",
+            Venue::Shioaji => "shioaji",
+            Venue::Binance => "binance",
+            Venue::Bybit => "bybit",
+            Venue::Okx => "okx",
+        }
+    }
+}

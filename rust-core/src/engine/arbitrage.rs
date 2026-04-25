@@ -663,7 +663,7 @@ impl ArbitrageEngine {
                     // delta from the portfolio snapshot so RiskState gets the real
                     // value instead of hardcoded ZERO.
                     let venue = fill.venue;
-                    let venue_key = format!("{:?}", venue).to_lowercase();
+                    let venue_key = venue.label().to_string();
                     self.position_manager_mut_for(venue).apply_fill(&fill).await?;
                     let realized_pnl_delta = match self
                         .position_manager_for(venue)
@@ -694,9 +694,9 @@ impl ArbitrageEngine {
                     self.circuit_breaker.check_drawdown(self.risk_state.realized_pnl_today);
                     crate::metrics::record_fill_received(self.strategy.name());
                     {
-                        let venue_label = format!("{:?}", fill.venue).to_lowercase();
+                        let venue_label = fill.venue.label();
                         crate::metrics::record_fees_paid(
-                            &venue_label,
+                            venue_label,
                             self.strategy.name(),
                             "taker",
                             fill.fee.to_string().parse::<f64>().unwrap_or(0.0),
@@ -734,9 +734,9 @@ impl ArbitrageEngine {
                             crate::models::enums::Side::Buy => raw,
                             crate::models::enums::Side::Sell => -raw,
                         };
-                        let venue_label = format!("{:?}", fill.venue).to_lowercase();
+                        let venue_label = fill.venue.label();
                         crate::metrics::record_slippage_bps(
-                            &venue_label,
+                            venue_label,
                             self.strategy.name(),
                             signed_bps.to_string().parse::<f64>().unwrap_or(0.0),
                         );
@@ -744,11 +744,11 @@ impl ArbitrageEngine {
                         let delay_ms =
                             (fill.filled_at - intended.submitted_at).num_milliseconds();
                         crate::metrics::record_tca_fill_delay_ms(
-                            &venue_label,
+                            venue_label,
                             delay_ms.max(0) as f64,
                         );
                         crate::metrics::set_orders_pending(
-                            &venue_label,
+                            venue_label,
                             self.strategy.name(),
                             self.intended_fills.len() as f64,
                         );
@@ -811,14 +811,14 @@ impl ArbitrageEngine {
                         if !self.intended_fills.contains_key(&order_id) {
                             continue;
                         }
-                        let venue_label = format!("{:?}", venue).to_lowercase();
+                        let venue_label = venue.label();
                         match self.executor_for(venue).cancel_order(&order_id).await {
                             Ok(true) => {
                                 info!(order_id = order_id.as_str(), "order cancelled after TTL");
                                 crate::metrics::record_order_ttl_expired(self.strategy.name());
                                 self.intended_fills.remove(&order_id);
                                 crate::metrics::set_orders_pending(
-                                    &venue_label,
+                                    venue_label,
                                     self.strategy.name(),
                                     self.intended_fills.len() as f64,
                                 );
@@ -827,7 +827,7 @@ impl ArbitrageEngine {
                                 tracing::debug!(order_id = order_id.as_str(), "TTL cancel: already filled or unknown");
                                 self.intended_fills.remove(&order_id);
                                 crate::metrics::set_orders_pending(
-                                    &venue_label,
+                                    venue_label,
                                     self.strategy.name(),
                                     self.intended_fills.len() as f64,
                                 );
@@ -836,7 +836,7 @@ impl ArbitrageEngine {
                                 warn!(error = %e, order_id = order_id.as_str(), "TTL cancel failed");
                                 self.intended_fills.remove(&order_id);
                                 crate::metrics::set_orders_pending(
-                                    &venue_label,
+                                    venue_label,
                                     self.strategy.name(),
                                     self.intended_fills.len() as f64,
                                 );
@@ -1200,9 +1200,9 @@ impl ArbitrageEngine {
             for (order, (result, ack_elapsed)) in approved_orders.iter().zip(results.iter()) {
                 match result {
                     Ok(order_id) => {
-                        let venue_label = format!("{:?}", order.venue).to_lowercase();
+                        let venue_label = order.venue.label();
                         crate::metrics::record_send_to_ack_latency_us(
-                            &venue_label,
+                            venue_label,
                             ack_elapsed.as_micros() as f64,
                         );
                         info!(
@@ -1226,7 +1226,7 @@ impl ArbitrageEngine {
                             self.intended_fills.insert(order_id.clone(), fill);
                         }
                         crate::metrics::set_orders_pending(
-                            &venue_label,
+                            venue_label,
                             strategy_name,
                             self.intended_fills.len() as f64,
                         );
