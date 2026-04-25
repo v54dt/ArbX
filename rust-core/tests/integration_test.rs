@@ -1258,3 +1258,107 @@ async fn realized_pnl_ticks_negative_on_losing_fills() {
         "expected -1000 from buy@50000 sell@49000 x 1 BTC"
     );
 }
+
+// ── External signal pipeline: Aeron → SignalCache → strategy.evaluate ──
+
+use arbx_core::engine::signal::{ExternalSignal, SIGNAL_NEWS_SENTIMENT, SignalCache};
+use arbx_core::strategy::Opportunity;
+use arbx_core::strategy::base::ArbitrageStrategy;
+use std::sync::Arc as StdArc;
+use tokio::sync::Mutex as TokioMutex;
+
+/// Strategy that reads `signals` and surfaces the most recent news_sentiment
+/// value into a shared cell. No orders, just observation.
+struct SignalObservingStrategy {
+    observed: StdArc<TokioMutex<Option<Decimal>>>,
+}
+
+#[async_trait]
+impl ArbitrageStrategy for SignalObservingStrategy {
+    async fn evaluate(
+        &self,
+        _books: &arbx_core::models::market::BookMap,
+        _portfolios: &std::collections::HashMap<
+            String,
+            arbx_core::models::position::PortfolioSnapshot,
+        >,
+        _now: chrono::DateTime<Utc>,
+        signals: &SignalCache,
+    ) -> Option<Opportunity> {
+        let v = signals.get_value("BTCUSDT", SIGNAL_NEWS_SENTIMENT);
+        if let Some(value) = v {
+            let mut g = self.observed.lock().await;
+            *g = Some(value);
+        }
+        None
+    }
+    fn compute_hedge_orders(
+        &self,
+        _opportunity: &Opportunity,
+    ) -> Vec<arbx_core::models::order::OrderRequest> {
+        Vec::new()
+    }
+    fn name(&self) -> &str {
+        "signal_observer"
+    }
+}
+
+#[tokio::test]
+async fn external_signals_arrive_in_signal_cache_for_strategy_evaluate() {
+    let (spot_quotes, perp_quotes) = profitable_quotes();
+
+    let observed: StdArc<TokioMutex<Option<Decimal>>> = StdArc::new(TokioMutex::new(None));
+
+    // Pre-load a news_sentiment signal on feed_a; the engine's signal pump
+    // should route it into the cache before the strategy's first evaluate.
+    let signals = vec![ExternalSignal {
+        instrument_key: "BTCUSDT".into(),
+        signal_id: SIGNAL_NEWS_SENTIMENT.to_string(),
+        value: dec!(0.42),
+        confidence: Decimal::ONE,
+        timestamp: Utc::now(),
+    }];
+
+    let feed_a = MockExchange::new(spot_quotes, 0, 1.0)
+        .with_quote_interval(10)
+        .with_signals(signals);
+    let feed_b = MockExchange::new(perp_quotes, 0, 1.0).with_quote_interval(10);
+    let executor = MockExchange::new(vec![], 0, 1.0);
+    let position_manager = MockExchange::new(vec![], 0, 1.0);
+
+    let strategy = SignalObservingStrategy {
+        observed: observed.clone(),
+    };
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut engine = build_engine(
+        feed_a,
+        feed_b,
+        executor,
+        position_manager,
+        // build_engine wants CrossExchangeStrategy; swap in the observer
+        // by constructing the engine directly.
+        build_strategy(),
+        Vec::<Box<dyn arbx_core::risk::limits::RiskLimit>>::new(),
+        dec!(100),
+        shutdown_rx.clone(),
+    );
+    // Replace the primary strategy with the observer.
+    engine = engine.with_extra_strategy(Box::new(strategy));
+
+    let handle = tokio::spawn(async move {
+        let _ = engine.run().await;
+        engine
+    });
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _ = shutdown_tx.send(true);
+    let _engine = handle.await.unwrap();
+
+    let observed_value = *observed.lock().await;
+    assert_eq!(
+        observed_value,
+        Some(dec!(0.42)),
+        "external signal should reach strategy.evaluate via SignalCache"
+    );
+}

@@ -282,6 +282,7 @@ impl MarketDataFeed for OkxMarketData {
             quotes: quote_rx,
             order_books: book_rx,
             fills: None,
+            signals: None,
         })
     }
 

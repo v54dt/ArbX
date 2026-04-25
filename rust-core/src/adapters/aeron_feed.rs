@@ -1,9 +1,11 @@
 use async_trait::async_trait;
+use chrono::{TimeZone, Utc};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use super::market_data::{MarketDataFeed, MarketDataReceivers};
+use crate::engine::signal::ExternalSignal;
 use crate::ipc::IpcSubscriber;
 use crate::ipc::aeron::AeronSubscriber;
 use crate::ipc::flatbuf_codec::{
@@ -38,6 +40,7 @@ impl MarketDataFeed for AeronMarketDataFeed {
         let (quote_tx, quote_rx) = mpsc::unbounded_channel();
         let (book_tx, book_rx) = mpsc::unbounded_channel();
         let (fill_tx, fill_rx) = mpsc::unbounded_channel::<Fill>();
+        let (signal_tx, signal_rx) = mpsc::unbounded_channel::<ExternalSignal>();
 
         let task = tokio::spawn(async move {
             loop {
@@ -73,12 +76,21 @@ impl MarketDataFeed for AeronMarketDataFeed {
                                 Err(e) => tracing::debug!(error = %e, "decode_fill failed"),
                             },
                             MSG_TAG_SIGNAL => match decode_signal(payload) {
-                                Ok((key, signal_id, _value, _confidence, _ts_ms)) => {
-                                    tracing::debug!(
-                                        key = key.as_str(),
-                                        signal_id = signal_id.as_str(),
-                                        "signal received via Aeron"
-                                    );
+                                Ok((key, signal_id, value, confidence, ts_ms)) => {
+                                    let timestamp = Utc
+                                        .timestamp_millis_opt(ts_ms)
+                                        .single()
+                                        .unwrap_or_else(Utc::now);
+                                    let sig = ExternalSignal {
+                                        instrument_key: key,
+                                        signal_id,
+                                        value,
+                                        confidence,
+                                        timestamp,
+                                    };
+                                    if signal_tx.send(sig).is_err() {
+                                        break;
+                                    }
                                 }
                                 Err(e) => tracing::debug!(error = %e, "decode_signal failed"),
                             },
@@ -103,6 +115,7 @@ impl MarketDataFeed for AeronMarketDataFeed {
             quotes: quote_rx,
             order_books: book_rx,
             fills: Some(fill_rx),
+            signals: Some(signal_rx),
         })
     }
 

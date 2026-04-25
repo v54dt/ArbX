@@ -1250,6 +1250,17 @@ async fn main() -> anyhow::Result<()> {
         engine = engine.with_strategy_budget(&cfg.strategy.name, budget);
     }
 
+    // Internal signal producers — derived per-quote from the local order book.
+    // Strategies that want news / flow / macro signals receive them via the
+    // engine signal channel; what goes here is the engine's own micro-structure
+    // signal feed (queue imbalance, microprice). External signals from the
+    // Python sidecar arrive over Aeron MSG_TAG_SIGNAL.
+    let signal_producers: Vec<Box<dyn engine::signal::SignalProducer>> = vec![
+        Box::new(engine::signal::QueueImbalanceProducer),
+        Box::new(engine::signal::MicropriceProducer),
+    ];
+    engine = engine.with_signal_producers(signal_producers);
+
     let admin_port = cfg.engine.admin_port.unwrap_or(9091);
     let admin_bind = cfg
         .engine
