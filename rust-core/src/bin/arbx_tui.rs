@@ -45,6 +45,11 @@ struct Cli {
     /// Polling interval in milliseconds.
     #[arg(long, default_value_t = 500)]
     poll_ms: u64,
+    /// Bearer token for the engine's admin HTTP endpoint. Required for
+    /// /pause and /resume when the engine is started with ARBX_ADMIN_TOKEN.
+    /// Falls back to env `ARBX_ADMIN_TOKEN` when this flag is absent.
+    #[arg(long)]
+    bearer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -149,15 +154,15 @@ async fn post_pause_resume(
     client: &reqwest::Client,
     base: &str,
     target_paused: bool,
+    bearer: Option<&str>,
 ) -> Result<(), String> {
     let path = if target_paused { "/pause" } else { "/resume" };
     let url = format!("{}{}", base.trim_end_matches('/'), path);
-    let resp = client
-        .post(&url)
-        .timeout(Duration::from_millis(750))
-        .send()
-        .await
-        .map_err(|e| format!("POST {url}: {e}"))?;
+    let mut req = client.post(&url).timeout(Duration::from_millis(750));
+    if let Some(token) = bearer {
+        req = req.bearer_auth(token);
+    }
+    let resp = req.send().await.map_err(|e| format!("POST {url}: {e}"))?;
     if !resp.status().is_success() {
         return Err(format!("POST {url}: status {}", resp.status()));
     }
@@ -305,6 +310,10 @@ fn render(frame: &mut ratatui::Frame, state: &AppState) {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let client = reqwest::Client::new();
+    let bearer = cli
+        .bearer_token
+        .clone()
+        .or_else(|| std::env::var("ARBX_ADMIN_TOKEN").ok());
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -359,7 +368,9 @@ async fn main() -> anyhow::Result<()> {
                 KeyCode::Char('q') | KeyCode::Esc => break Ok(()),
                 KeyCode::Char('p') => {
                     let target = !state.last_status.as_ref().is_some_and(|s| s.paused);
-                    match post_pause_resume(&client, &cli.admin_url, target).await {
+                    match post_pause_resume(&client, &cli.admin_url, target, bearer.as_deref())
+                        .await
+                    {
                         Ok(()) => {
                             // Force an immediate re-poll so the header flips
                             // on the very next frame instead of waiting up to

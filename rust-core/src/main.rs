@@ -1245,6 +1245,14 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or("127.0.0.1")
         .to_string();
     let admin_token = std::env::var("ARBX_ADMIN_TOKEN").ok();
+    let bind_is_loopback = admin_bind == "127.0.0.1" || admin_bind == "localhost";
+    if !bind_is_loopback && admin_token.is_none() {
+        anyhow::bail!(
+            "admin endpoint bound to non-loopback ({admin_bind}) without ARBX_ADMIN_TOKEN. \
+             Either set ARBX_ADMIN_TOKEN to gate /pause /resume /kill, or change \
+             engine.admin_bind to 127.0.0.1."
+        );
+    }
     let event_bus = engine::event_bus::EngineEventBus::new();
     engine = engine.with_event_bus(event_bus.clone());
 
