@@ -39,6 +39,11 @@ struct IntendedFill {
     side: crate::models::enums::Side,
     intended_price: Decimal,
     submitted_at: chrono::DateTime<Utc>,
+    /// Strategy that submitted this order. Used to attribute realized PnL
+    /// (positive or negative) back to the per-strategy budget when the fill
+    /// arrives, so the budget reflects actual filled PnL rather than the
+    /// strategy's self-reported expected edge at submit time (review §1.4).
+    strategy_name: String,
 }
 
 const FILL_DEDUP_CAPACITY: usize = 1024;
@@ -687,6 +692,13 @@ impl ArbitrageEngine {
                     if let Some(intended) = intended_opt
                         && !intended.intended_price.is_zero()
                     {
+                        // §1.4: attribute realized PnL delta to the strategy
+                        // that submitted this fill so the per-strategy budget
+                        // tracks actual filled PnL (not expected_net at submit).
+                        if let Some(budget) = self.strategy_budgets.get_mut(&intended.strategy_name) {
+                            budget.record_realized_pnl(realized_pnl_delta);
+                        }
+
                         let raw = (fill.price - intended.intended_price)
                             / intended.intended_price
                             * Decimal::from(10_000);
@@ -1137,6 +1149,7 @@ impl ArbitrageEngine {
                             side: order.side,
                             intended_price,
                             submitted_at: self.clock.utc_now(),
+                            strategy_name: strategy_name.to_string(),
                         },
                     );
                 }
@@ -1266,10 +1279,10 @@ impl ArbitrageEngine {
                 warn!(error = %e, "trade log writer append failed");
             }
 
-            // Record spend against per-strategy budget (if configured).
+            // Track gross notional for the per-strategy budget. Realized PnL
+            // is debited later in the fill handler (see §1.4 / record_realized_pnl).
             if let Some(budget) = self.strategy_budgets.get_mut(strategy_name) {
                 budget.record_order(trade_log.notional);
-                budget.record_pnl(trade_log.expected_net_profit);
             }
 
             if self.trade_logs.len() >= TRADE_LOG_CAP {
