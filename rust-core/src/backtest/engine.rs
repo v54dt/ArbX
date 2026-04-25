@@ -79,6 +79,11 @@ pub async fn run_backtest(
             risk_config
                 .backtest_slippage_bps
                 .unwrap_or(rust_decimal_macros::dec!(2)),
+        )
+        .with_fee_rate(
+            risk_config
+                .backtest_fee_rate
+                .unwrap_or(rust_decimal::Decimal::ZERO),
         );
     let position_manager = NullPositionManager;
 
@@ -236,6 +241,7 @@ mod tests {
             max_position_per_venue: None,
             backtest_fill_delay_ms: None,
             backtest_slippage_bps: None,
+            backtest_fee_rate: None,
         }
     }
 
