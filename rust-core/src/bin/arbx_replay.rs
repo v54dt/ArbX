@@ -27,6 +27,10 @@ use arbx_core::strategy::cross_exchange::CrossExchangeStrategy;
 use arbx_core::strategy::cross_venue_funding::CrossVenueFundingStrategy;
 use arbx_core::strategy::ewma_spread::EwmaSpreadStrategy;
 use arbx_core::strategy::funding_rate::FundingRateStrategy;
+use arbx_core::strategy::multi_pair_cross_exchange::{MultiPairCrossExchangeStrategy, PairConfig};
+use arbx_core::strategy::signal_momentum::SignalMomentumStrategy;
+use arbx_core::strategy::triangular_arb::{TriangleCycle, TriangleLeg, TriangularArbStrategy};
+use arbx_core::strategy::tw_etf_futures::TwEtfFuturesStrategy;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use rust_decimal::Decimal;
@@ -403,9 +407,107 @@ fn build_strategy_from_config(config_path: &str) -> anyhow::Result<Box<dyn Arbit
             lot_size_b: lot_b,
             holding_intervals: 21,
         })),
+        "multi_pair_cross_exchange" => {
+            // Build a single pair from instrument_a/b in the config; multi-pair
+            // tuning is best done in the live config (extra_strategies). Replay
+            // is a single-pair check.
+            let pairs = vec![PairConfig {
+                venue_a,
+                venue_b,
+                instrument_a: instrument_a.clone(),
+                instrument_b: instrument_b.clone(),
+                max_quantity: cfg.strategy.max_quantity,
+                tick_size_a: tick,
+                tick_size_b: tick_b,
+                lot_size_a: lot,
+                lot_size_b: lot_b,
+                fee_a: fee_a.clone(),
+                fee_b: fee_b.clone(),
+            }];
+            Ok(Box::new(MultiPairCrossExchangeStrategy {
+                pairs,
+                min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_book_depth: cfg.strategy.max_book_depth,
+            }))
+        }
+        "triangular_arb" => {
+            if cfg.strategy.triangle_cycles.is_empty() {
+                anyhow::bail!("triangular_arb config has no triangle_cycles");
+            }
+            let mut cycles: Vec<TriangleCycle> = Vec::new();
+            for c in &cfg.strategy.triangle_cycles {
+                let mk_inst = |base: &str, quote_cur: &str| Instrument {
+                    asset_class: AssetClass::Crypto,
+                    instrument_type: InstrumentType::Spot,
+                    base: base.into(),
+                    quote: quote_cur.into(),
+                    settle_currency: None,
+                    expiry: None,
+                    last_trade_time: None,
+                    settlement_time: None,
+                };
+                let parse_side = |s: &str| match s.to_lowercase().as_str() {
+                    "buy" => arbx_core::models::enums::Side::Buy,
+                    _ => arbx_core::models::enums::Side::Sell,
+                };
+                cycles.push(TriangleCycle {
+                    venue: venue_a,
+                    leg_a: TriangleLeg {
+                        instrument: mk_inst(&c.leg_a.base, &c.leg_a.quote),
+                        side: parse_side(&c.leg_a.side),
+                    },
+                    leg_b: TriangleLeg {
+                        instrument: mk_inst(&c.leg_b.base, &c.leg_b.quote),
+                        side: parse_side(&c.leg_b.side),
+                    },
+                    leg_c: TriangleLeg {
+                        instrument: mk_inst(&c.leg_c.base, &c.leg_c.quote),
+                        side: parse_side(&c.leg_c.side),
+                    },
+                    fee: fee_a.clone(),
+                    max_notional_usdt: c.max_notional_usdt,
+                    min_net_profit_bps: c
+                        .min_net_profit_bps
+                        .unwrap_or(cfg.strategy.min_net_profit_bps),
+                    tick_size: c.tick_size,
+                    lot_size: c.lot_size,
+                });
+            }
+            Ok(Box::new(TriangularArbStrategy {
+                cycles,
+                max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+                max_book_depth: cfg.strategy.max_book_depth,
+            }))
+        }
+        "tw_etf_futures" => Ok(Box::new(TwEtfFuturesStrategy {
+            venue: venue_a,
+            etf_instrument: instrument_a,
+            futures_instrument: instrument_b,
+            hedge_ratio: cfg.strategy.tw_hedge_ratio.unwrap_or(dec!(1.0)),
+            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+            max_quantity: cfg.strategy.max_quantity,
+            fee_etf: fee_a,
+            fee_futures: fee_b,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            cost_of_carry_bps: cfg.strategy.tw_cost_of_carry_bps.unwrap_or(dec!(0)),
+            days_to_expiry: cfg.strategy.tw_days_to_expiry.unwrap_or(30),
+        })),
+        "signal_momentum" => Ok(Box::new(SignalMomentumStrategy {
+            venue: venue_a,
+            instrument: instrument_a,
+            fee: fee_a,
+            min_signal_strength: dec!(0.2),
+            max_quantity: cfg.strategy.max_quantity,
+            max_quote_age_ms: cfg.strategy.max_quote_age_ms,
+            ttl_ms: 3000,
+            alpha_bps_at_full_signal: dec!(20),
+            min_net_profit_bps: cfg.strategy.min_net_profit_bps,
+        })),
         other => anyhow::bail!(
             "unsupported strategy '{}' in --config; supported: cross_exchange, \
-             ewma_spread, funding_rate, cross_venue_funding",
+             multi_pair_cross_exchange, ewma_spread, funding_rate, cross_venue_funding, \
+             triangular_arb, tw_etf_futures, signal_momentum",
             other
         ),
     }
