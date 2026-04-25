@@ -324,6 +324,7 @@ impl PositionManager for BinancePositionManager {
             method: HttpMethod::Get,
             path: path.to_string(),
             params: HashMap::new(),
+            raw_body: None,
         };
 
         match rest.send(req).await {

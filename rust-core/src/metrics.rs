@@ -166,3 +166,17 @@ pub fn record_aeron_backpressure() {
 pub fn set_channel_depth(channel: &str, depth: f64) {
     gauge!("arbx_channel_depth", "channel" => channel.to_string()).set(depth);
 }
+
+/// Increment when an Aeron payload fails to decode. `tag` is the message
+/// type tag (e.g. "quote", "fill", "signal", "unknown"); `kind` describes
+/// the failure (e.g. "empty_payload", "decode_error"). Surfaces
+/// cross-language codec drift in Grafana — exactly the failure the metric
+/// exists to catch (review §3.1).
+pub fn record_aeron_decode_error(tag: &str, kind: &str) {
+    counter!(
+        "arbx_aeron_decode_errors_total",
+        "tag" => tag.to_string(),
+        "kind" => kind.to_string()
+    )
+    .increment(1);
+}

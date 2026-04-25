@@ -303,11 +303,13 @@ impl PositionManager for OkxPositionManager {
             method: HttpMethod::Get,
             path: "/api/v5/account/balance".to_string(),
             params: HashMap::new(),
+            raw_body: None,
         };
         let pos_req = RestRequest {
             method: HttpMethod::Get,
             path: "/api/v5/account/positions".to_string(),
             params: HashMap::new(),
+            raw_body: None,
         };
 
         let bal_resp = match rest.send(bal_req).await {

@@ -258,6 +258,7 @@ async fn run_bybit_stream(
             method: HttpMethod::Post,
             path: "/v5/order/cancel-all".to_string(),
             params,
+            raw_body: None,
         };
         match rest.send(req).await {
             Ok(resp) if (200..300).contains(&resp.status) => {

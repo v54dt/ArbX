@@ -256,6 +256,7 @@ async fn run_binance_stream(
         method: HttpMethod::Post,
         path: listen_key_path.to_string(),
         params: HashMap::new(),
+        raw_body: None,
     };
     let resp = rest.send(create_req).await?;
     if resp.status != 200 {
@@ -315,6 +316,7 @@ async fn run_binance_stream(
                 method: HttpMethod::Put,
                 path: keepalive_path.clone(),
                 params,
+                raw_body: None,
             };
             if let Err(e) = keepalive_rest.send(request).await {
                 warn!(error = %e, "listenKey keepalive failed");
@@ -359,6 +361,7 @@ async fn fetch_open_orders(
         method: HttpMethod::Get,
         path: path.to_string(),
         params: HashMap::new(),
+        raw_body: None,
     };
     let resp = rest.send(req).await?;
     if resp.status != 200 {
@@ -410,6 +413,7 @@ fn build_cancel_request(market: BinanceMarket, order_id: &str, symbol: &str) -> 
         method: HttpMethod::Delete,
         path: path.to_string(),
         params,
+        raw_body: None,
     }
 }
 

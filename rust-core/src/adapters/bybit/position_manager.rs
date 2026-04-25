@@ -357,6 +357,7 @@ impl PositionManager for BybitPositionManager {
             method: HttpMethod::Get,
             path: "/v5/account/wallet-balance".to_string(),
             params: wallet_params,
+            raw_body: None,
         };
 
         let mut pos_params = HashMap::new();
@@ -366,6 +367,7 @@ impl PositionManager for BybitPositionManager {
             method: HttpMethod::Get,
             path: "/v5/position/list".to_string(),
             params: pos_params,
+            raw_body: None,
         };
 
         let wallet_resp = match rest.send(wallet_req).await {

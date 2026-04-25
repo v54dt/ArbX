@@ -6,6 +6,23 @@ pub struct RestRequest {
     pub method: HttpMethod,
     pub path: String,
     pub params: HashMap<String, String>,
+    /// When set, the venue REST client uses this string as the JSON body
+    /// instead of serializing `params`. Use for endpoints that require a
+    /// JSON array body (e.g. OKX cancel-batch-orders) where a HashMap can't
+    /// represent the wire format. `params` is still used for query-string
+    /// signing on GET-style methods.
+    pub raw_body: Option<String>,
+}
+
+impl RestRequest {
+    pub fn new(method: HttpMethod, path: String) -> Self {
+        Self {
+            method,
+            path,
+            params: HashMap::new(),
+            raw_body: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +65,7 @@ mod tests {
             method: HttpMethod::Put,
             path: "/api/v3/userDataStream".to_string(),
             params,
+            raw_body: None,
         };
         assert_eq!(req.method, HttpMethod::Put);
         assert_eq!(req.path, "/api/v3/userDataStream");

@@ -99,6 +99,7 @@ impl FeeProvider for BybitFeeProvider {
             method: HttpMethod::Get,
             path: "/v5/account/fee-rate".to_string(),
             params,
+            raw_body: None,
         };
 
         match self.rest_client.send(request).await {
