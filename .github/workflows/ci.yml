@@ -39,6 +39,8 @@ jobs:
   build:
     name: cargo build
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings"
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
@@ -49,6 +51,22 @@ jobs:
           rustup default ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: audit
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - run: cargo audit --deny warnings
 
   test:
     name: cargo test
