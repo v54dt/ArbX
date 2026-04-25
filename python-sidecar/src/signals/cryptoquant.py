@@ -10,10 +10,10 @@ Docs: https://cryptoquant.com/docs
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-import urllib.request
+
+import aiohttp
 
 from .base import RawSignal, SignalSource
 
@@ -37,42 +37,47 @@ class CryptoQuantSource(SignalSource):
         signals: list[RawSignal] = []
         now_ms = int(time.time() * 1000)
 
-        for asset in self._assets:
-            try:
-                netflow = self._fetch_exchange_netflow(asset)
-                if netflow is None:
-                    continue
+        timeout = aiohttp.ClientTimeout(total=15)
+        headers = {"Authorization": f"Bearer {self._api_key}"}
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            for asset in self._assets:
+                try:
+                    netflow = await self._fetch_exchange_netflow(session, asset)
+                    if netflow is None:
+                        continue
 
-                prev = self._prev_netflow.get(asset)
-                self._prev_netflow[asset] = netflow
+                    prev = self._prev_netflow.get(asset)
+                    self._prev_netflow[asset] = netflow
 
-                # Normalize: negative netflow (outflow > inflow) = bullish signal
-                # Scale by a rough factor so signal is in [-1, 1] range
-                # Typical BTC daily netflow is -5000 to +5000 BTC
-                scale = 5000.0 if asset == "btc" else 50000.0
-                normalized = max(-1.0, min(1.0, -netflow / scale))
+                    # Normalize: negative netflow (outflow > inflow) = bullish signal
+                    # Scale by a rough factor so signal is in [-1, 1] range
+                    # Typical BTC daily netflow is -5000 to +5000 BTC
+                    scale = 5000.0 if asset == "btc" else 50000.0
+                    normalized = max(-1.0, min(1.0, -netflow / scale))
 
-                signals.append(RawSignal(
-                    instrument_key=f"*:{asset}-usdt:*",
-                    signal_id="exchange_flow",
-                    value=normalized,
-                    confidence=0.7 if prev is not None else 0.3,
-                    timestamp_ms=now_ms,
-                ))
+                    signals.append(RawSignal(
+                        instrument_key=f"*:{asset}-usdt:*",
+                        signal_id="exchange_flow",
+                        value=normalized,
+                        confidence=0.7 if prev is not None else 0.3,
+                        timestamp_ms=now_ms,
+                    ))
 
-                if prev is not None:
-                    delta = netflow - prev
-                    if abs(delta) > scale * 0.1:
-                        logger.info(
-                            "CryptoQuant %s: netflow=%.1f (delta=%.1f, signal=%.3f)",
-                            asset, netflow, delta, normalized,
-                        )
-            except Exception:
-                logger.exception("CryptoQuant poll failed for %s", asset)
+                    if prev is not None:
+                        delta = netflow - prev
+                        if abs(delta) > scale * 0.1:
+                            logger.info(
+                                "CryptoQuant %s: netflow=%.1f (delta=%.1f, signal=%.3f)",
+                                asset, netflow, delta, normalized,
+                            )
+                except Exception:
+                    logger.exception("CryptoQuant poll failed for %s", asset)
 
         return signals
 
-    def _fetch_exchange_netflow(self, asset: str) -> float | None:
+    async def _fetch_exchange_netflow(
+        self, session: aiohttp.ClientSession, asset: str
+    ) -> float | None:
         """Fetch latest exchange netflow (inflow - outflow) for an asset."""
         url = (
             f"{self.BASE_URL}/btc/exchange-flows/netflow"
@@ -81,11 +86,9 @@ class CryptoQuantSource(SignalSource):
             f"{self.BASE_URL}/{asset}/exchange-flows/netflow"
             f"?window=day&limit=1"
         )
-        req = urllib.request.Request(url)
-        req.add_header("Authorization", f"Bearer {self._api_key}")
-
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
 
         results = data.get("result", {}).get("data", [])
         if not results:

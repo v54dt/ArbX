@@ -1,8 +1,8 @@
 """CryptoPanic news sentiment source (free tier)."""
-import json
 import logging
 import time
-import urllib.request
+
+import aiohttp
 
 from .base import RawSignal, SignalSource
 
@@ -43,9 +43,11 @@ class CryptoPanicSource(SignalSource):
         url = base + params
 
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ArbX/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: ASYNC210, ASYNC230
-                data = json.loads(resp.read())
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers={"User-Agent": "ArbX/1.0"}) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
         except Exception:
             logger.exception("CryptoPanic poll failed")
             return []
