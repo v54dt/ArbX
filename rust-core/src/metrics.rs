@@ -160,3 +160,9 @@ pub fn record_event_bus_dropped(count: u64) {
 pub fn record_aeron_backpressure() {
     counter!("arbx_aeron_publish_backpressure_total").increment(1);
 }
+
+/// Depth (queued items) of a bounded engine channel. Surfaces sustained
+/// backpressure as a high gauge value; transient bursts barely show up.
+pub fn set_channel_depth(channel: &str, depth: f64) {
+    gauge!("arbx_channel_depth", "channel" => channel.to_string()).set(depth);
+}
