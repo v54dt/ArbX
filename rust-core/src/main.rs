@@ -327,7 +327,11 @@ fn build_private_streams(venue_cfg: &VenueConfig) -> Vec<Box<dyn PrivateStream>>
     }
 }
 
-async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Result<FeeSchedule> {
+async fn fetch_fee_schedule(
+    venue_cfg: &VenueConfig,
+    venue: Venue,
+    symbol: &str,
+) -> anyhow::Result<FeeSchedule> {
     if let (Some(maker), Some(taker)) = (venue_cfg.fee_maker_override, venue_cfg.fee_taker_override)
     {
         tracing::info!(?venue, %maker, %taker, "using fee overrides from config");
@@ -351,7 +355,7 @@ async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Re
                 &venue_cfg.api_key,
                 &venue_cfg.api_secret,
             )?;
-            let provider = BinanceFeeProvider::new(rest, market);
+            let provider = BinanceFeeProvider::new(rest, market, symbol);
             match provider.get_fee_schedule().await {
                 Ok(fee) => Ok(fee),
                 Err(e) => {
@@ -396,7 +400,7 @@ async fn fetch_fee_schedule(venue_cfg: &VenueConfig, venue: Venue) -> anyhow::Re
                 &venue_cfg.api_key,
                 &venue_cfg.api_secret,
             )?;
-            let provider = BybitFeeProvider::new(rest, market);
+            let provider = BybitFeeProvider::new(rest, market, symbol);
             match provider.get_fee_schedule().await {
                 Ok(fee) => Ok(fee),
                 Err(e) => {
@@ -1027,8 +1031,8 @@ async fn main() -> anyhow::Result<()> {
             )
         };
 
-    let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a).await?;
-    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b).await?;
+    let fee_a = fetch_fee_schedule(&cfg.venues[0], venue_a, &symbol_a).await?;
+    let fee_b = fetch_fee_schedule(&cfg.venues[idx_b], venue_b, &symbol_b).await?;
 
     let strategy = build_strategy_from_config(
         &cfg,

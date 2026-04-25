@@ -41,13 +41,18 @@ struct FeeRateResponse {
 pub struct BybitFeeProvider {
     rest_client: BybitRestClient,
     market: BybitMarket,
+    /// Symbol to fetch the commission rate for. Bybit's `/v5/account/fee-rate`
+    /// returns per-symbol overrides; querying with the wrong symbol yields the
+    /// wrong rate for non-canonical instruments.
+    symbol: String,
 }
 
 impl BybitFeeProvider {
-    pub fn new(rest_client: BybitRestClient, market: BybitMarket) -> Self {
+    pub fn new(rest_client: BybitRestClient, market: BybitMarket, symbol: &str) -> Self {
         Self {
             rest_client,
             market,
+            symbol: symbol.to_string(),
         }
     }
 
@@ -88,7 +93,7 @@ impl FeeProvider for BybitFeeProvider {
     async fn get_fee_schedule(&self) -> anyhow::Result<FeeSchedule> {
         let mut params = HashMap::new();
         params.insert("category".to_string(), self.category().to_string());
-        params.insert("symbol".to_string(), "BTCUSDT".to_string());
+        params.insert("symbol".to_string(), self.symbol.clone());
 
         let request = RestRequest {
             method: HttpMethod::Get,

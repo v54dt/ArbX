@@ -15,6 +15,10 @@ pub struct BinanceFeeProvider {
     rest_client: BinanceRestClient,
     venue: Venue,
     market: BinanceMarket,
+    /// Symbol to fetch the commission rate for (Futures only — spot uses the
+    /// account-wide rate). Different VIP tiers can apply per-symbol on Binance
+    /// Futures, so always fetch the symbol the strategy will trade against.
+    symbol: String,
 }
 
 fn decimal_from_str<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
@@ -42,12 +46,13 @@ struct SpotAccount {
 }
 
 impl BinanceFeeProvider {
-    pub fn new(rest_client: BinanceRestClient, market: BinanceMarket) -> Self {
+    pub fn new(rest_client: BinanceRestClient, market: BinanceMarket, symbol: &str) -> Self {
         let venue = Venue::Binance;
         Self {
             rest_client,
             venue,
             market,
+            symbol: symbol.to_string(),
         }
     }
 
@@ -74,7 +79,7 @@ impl FeeProvider for BinanceFeeProvider {
         match self.market {
             BinanceMarket::UsdtFutures | BinanceMarket::CoinFutures => {
                 let mut params = HashMap::new();
-                params.insert("symbol".to_string(), "BTCUSDT".to_string());
+                params.insert("symbol".to_string(), self.symbol.clone());
                 let request = RestRequest {
                     method: HttpMethod::Get,
                     path: "/fapi/v1/commissionRate".to_string(),
