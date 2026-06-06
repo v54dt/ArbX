@@ -15,3 +15,11 @@ token    = ""        # ntfy access/publish token (centralised here, see ~/notify
 # Drop an identical (topic+title+message) event seen again within this many
 # seconds. 0 disables de-dup. (Forwards the first, suppresses repeats.)
 dedup_window_s = 30
+
+[filter]
+# Drop events with priority below this (ntfy 1..5). 1 = forward everything.
+# e.g. 3 drops Submit(2)/low-priority noise but keeps Fill(3)/Milestone(4)/Error(5).
+min_priority = 1
+# Drop events whose title STARTS WITH any of these (prefix). e.g. ["Quote feed"]
+# mutes both "Quote feed stalled" and "Quote feed resumed".
+mute_titles = []

@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace {
 namespace chrono = std::chrono;
@@ -40,6 +41,7 @@ struct Stats {
   std::atomic<long> received{0};
   std::atomic<long> forwarded{0};
   std::atomic<long> deduped{0};
+  std::atomic<long> filtered{0};
   std::atomic<long> forward_failed{0};
 };
 
@@ -111,6 +113,8 @@ int main(int argc, char** argv) {
   int port = 8095;
   std::string ntfy_base, ntfy_token;
   int dedup_window_s = 30;
+  int min_priority = 1;             // drop events with priority < this (1 = forward all)
+  std::vector<std::string> mute_titles;  // drop events whose title starts with any of these
   try {
     auto t = toml::parse_file(cfg_path);
     host = t["listen"]["host"].value_or<std::string>("127.0.0.1");
@@ -118,6 +122,11 @@ int main(int argc, char** argv) {
     ntfy_base = t["ntfy"]["base_url"].value_or<std::string>("");
     ntfy_token = t["ntfy"]["token"].value_or<std::string>("");
     dedup_window_s = t["policy"]["dedup_window_s"].value_or<int>(30);
+    min_priority = t["filter"]["min_priority"].value_or<int>(1);
+    if (auto arr = t["filter"]["mute_titles"].as_array()) {
+      for (auto& el : *arr)
+        if (auto s = el.value<std::string>()) mute_titles.push_back(*s);
+    }
   } catch (const std::exception& e) {
     std::cerr << "failed to parse " << cfg_path << ": " << e.what() << std::endl;
     return 1;
@@ -145,6 +154,7 @@ int main(int argc, char** argv) {
     json j = {{"received", stats.received.load()},
               {"forwarded", stats.forwarded.load()},
               {"deduped", stats.deduped.load()},
+              {"filtered", stats.filtered.load()},
               {"forward_failed", stats.forward_failed.load()}};
     res.set_content(j.dump(), "application/json");
   });
@@ -152,17 +162,34 @@ int main(int argc, char** argv) {
   svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
     stats.received.fetch_add(1, std::memory_order_relaxed);
 
-    std::string key;
+    std::string key, title;
+    int prio = 3;
     try {
       auto j = json::parse(req.body);
-      key = j.value("topic", "") + "\x1f" + j.value("title", "") + "\x1f" +
-            j.value("message", "");
+      title = j.value("title", "");
+      prio = j.value("priority", 3);
+      key = j.value("topic", "") + "\x1f" + title + "\x1f" + j.value("message", "");
     } catch (...) {
       // Unparseable body -> forward as-is, never silently drop.
       bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
       (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
       res.status = ok ? 200 : 502;
       res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}", "application/json");
+      return;
+    }
+
+    // Central filter: drop below the priority floor, or titles muted by config.
+    bool muted = prio < min_priority;
+    if (!muted)
+      for (const auto& m : mute_titles)
+        if (!m.empty() && title.rfind(m, 0) == 0) {
+          muted = true;
+          break;
+        }
+    if (muted) {
+      stats.filtered.fetch_add(1, std::memory_order_relaxed);
+      res.status = 200;
+      res.set_content("{\"filtered\":true}", "application/json");
       return;
     }
 
@@ -180,7 +207,8 @@ int main(int argc, char** argv) {
   });
 
   std::cout << "ArbX notifier listening on " << host << ":" << port << " -> " << ntfy_base
-            << " (dedup " << dedup_window_s << "s)" << std::endl;
+            << " (dedup " << dedup_window_s << "s, min_priority " << min_priority
+            << ", mute_titles " << mute_titles.size() << ")" << std::endl;
   if (!svr.listen(host, port)) {
     std::cerr << "notifier: failed to bind " << host << ":" << port << std::endl;
     curl_global_cleanup();

@@ -27,9 +27,9 @@ cp notifier.toml.example notifier.toml   # fill in [ntfy] token
 
 | Method | Path | Body | Effect |
 |--------|------|------|--------|
-| `POST` | `/` | ntfy JSON `{topic,title,message,priority,tags}` | forwarded to ntfy (deduped) |
+| `POST` | `/` | ntfy JSON `{topic,title,message,priority,tags}` | filtered + deduped, then forwarded |
 | `GET`  | `/healthz` | — | `{"healthy":true}` |
-| `GET`  | `/stats` | — | `{received,forwarded,deduped,forward_failed}` |
+| `GET`  | `/stats` | — | `{received,forwarded,deduped,filtered,forward_failed}` |
 
 Smoke test:
 
@@ -44,7 +44,8 @@ curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
 1. **Extract** ✅ — standalone service, ntfy-format passthrough.
 2. **Structured events + exact de-dup + `/stats`** ✅ — identical events within
    `[policy] dedup_window_s` are dropped; counters exposed.
-3. Filtering / per-class + min-priority on-off.
+3. **Filtering** ✅ — `[filter] min_priority` + `mute_titles` (prefix) drop noise
+   centrally; `filtered` counter exposed.
 4. ntfy.sh 250/12h budget management (degrade / drop low-priority near the cap).
 5. Reliability: retry queue for failed forwards.
 6. Wire ArbX components (tw-exec, …) at the notifier.
