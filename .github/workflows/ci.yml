@@ -162,3 +162,21 @@ jobs:
           name: criterion-report
           path: rust-core/target/criterion/
           retention-days: 14
+
+  notifier:
+    name: notifier (C++ build + smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libcurl4-openssl-dev
+      - name: Build
+        run: |
+          cmake -S notifier -B notifier/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build notifier/build -j
+      - name: Smoke test (/healthz)
+        run: |
+          printf '[listen]\nhost="127.0.0.1"\nport=8095\n[ntfy]\nbase_url="http://127.0.0.1:9"\ntoken=""\n' > /tmp/notifier_ci.toml
+          ./notifier/build/notifier /tmp/notifier_ci.toml &
+          for i in $(seq 1 30); do curl -sf localhost:8095/healthz >/dev/null 2>&1 && break; sleep 1; done
+          curl -sf localhost:8095/healthz | grep -q '"healthy":true'
