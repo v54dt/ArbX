@@ -1,0 +1,12 @@
+# ArbX notifier — config. Copy to notifier.toml and fill in (notifier.toml is
+# git-ignored because it holds the ntfy token).
+
+[listen]
+host = "127.0.0.1"   # bind address (localhost only)
+port = 8095          # ArbX components POST notifications here
+
+[ntfy]
+# Upstream ntfy server to forward to. Can be the Cloudflare-tunnel URL or the
+# local ntfy container directly (http://127.0.0.1:8090) to skip the tunnel hop.
+base_url = ""
+token    = ""        # ntfy access/publish token (centralised here, see ~/notify-stack)
