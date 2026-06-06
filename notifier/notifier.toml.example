@@ -10,3 +10,8 @@ port = 8095          # ArbX components POST notifications here
 # local ntfy container directly (http://127.0.0.1:8090) to skip the tunnel hop.
 base_url = ""
 token    = ""        # ntfy access/publish token (centralised here, see ~/notify-stack)
+
+[policy]
+# Drop an identical (topic+title+message) event seen again within this many
+# seconds. 0 disables de-dup. (Forwards the first, suppresses repeats.)
+dedup_window_s = 30

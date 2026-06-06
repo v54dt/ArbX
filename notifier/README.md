@@ -27,8 +27,9 @@ cp notifier.toml.example notifier.toml   # fill in [ntfy] token
 
 | Method | Path | Body | Effect |
 |--------|------|------|--------|
-| `POST` | `/` | ntfy JSON `{topic,title,message,priority,tags}` | forwarded to ntfy |
+| `POST` | `/` | ntfy JSON `{topic,title,message,priority,tags}` | forwarded to ntfy (deduped) |
 | `GET`  | `/healthz` | — | `{"healthy":true}` |
+| `GET`  | `/stats` | — | `{received,forwarded,deduped,forward_failed}` |
 
 Smoke test:
 
@@ -40,9 +41,10 @@ curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
 
 ## Roadmap (PR by PR)
 
-1. **Extract** ✅ — standalone service, ntfy-format passthrough (this PR).
-2. Point tw-exec at the notifier (`[notify] base_url` → `http://127.0.0.1:8095`).
-3. Cross-source de-dup + throttle.
-4. Central filtering / per-class on-off (move `on_fills` / `on_quote_stall` … here).
-5. ntfy.sh 250/12h budget management (degrade / drop low-priority near the cap).
-6. Reliability: retry queue, survive restart.
+1. **Extract** ✅ — standalone service, ntfy-format passthrough.
+2. **Structured events + exact de-dup + `/stats`** ✅ — identical events within
+   `[policy] dedup_window_s` are dropped; counters exposed.
+3. Filtering / per-class + min-priority on-off.
+4. ntfy.sh 250/12h budget management (degrade / drop low-priority near the cap).
+5. Reliability: retry queue for failed forwards.
+6. Wire ArbX components (tw-exec, …) at the notifier.
