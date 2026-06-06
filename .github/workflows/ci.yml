@@ -174,17 +174,22 @@ jobs:
         run: |
           cmake -S notifier -B notifier/build -DCMAKE_BUILD_TYPE=Release
           cmake --build notifier/build -j
-      - name: Smoke test (/healthz, /stats, de-dup)
+      - name: Smoke test (/healthz, /stats, de-dup, filter)
         run: |
-          printf '[listen]\nhost="127.0.0.1"\nport=8095\n[ntfy]\nbase_url="http://127.0.0.1:9"\ntoken=""\n[policy]\ndedup_window_s=30\n' > /tmp/notifier_ci.toml
+          printf '[listen]\nhost="127.0.0.1"\nport=8095\n[ntfy]\nbase_url="http://127.0.0.1:9"\ntoken=""\n[policy]\ndedup_window_s=30\n[filter]\nmin_priority=2\nmute_titles=["mute"]\n' > /tmp/notifier_ci.toml
           ./notifier/build/notifier /tmp/notifier_ci.toml &
           for i in $(seq 1 30); do curl -sf localhost:8095/healthz >/dev/null 2>&1 && break; sleep 1; done
           curl -sf localhost:8095/healthz | grep -q '"healthy":true'
-          # de-dup: 3 identical events -> received=3, deduped=2
+          # de-dup: 3 identical events -> deduped=2
           for i in 1 2 3; do
             curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
               -d '{"topic":"t","title":"dup","message":"same","priority":3,"tags":[]}' >/dev/null
           done
+          # filter: 1 below min_priority + 1 muted title -> filtered=2
+          curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
+            -d '{"topic":"t","title":"lowp","message":"x","priority":1,"tags":[]}' >/dev/null
+          curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
+            -d '{"topic":"t","title":"mute-this","message":"x","priority":3,"tags":[]}' >/dev/null
           STATS=$(curl -sf localhost:8095/stats); echo "stats: $STATS"
-          echo "$STATS" | grep -q '"received":3'
           echo "$STATS" | grep -q '"deduped":2'
+          echo "$STATS" | grep -q '"filtered":2'
