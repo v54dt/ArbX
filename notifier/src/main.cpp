@@ -1,33 +1,75 @@
 // ArbX notifier — central notification service.
 //
+// PR 2: structured events + exact de-dup + /stats. Incoming ntfy-format POSTs are
+// parsed into events; an identical (topic+title+message) event seen again within
+// the de-dup window is dropped instead of forwarded. /stats exposes counters so
+// the behaviour is observable and CI-testable. Unparseable bodies are forwarded
+// as-is (never silently lost).
 //
 //   Usage: notifier [notifier.toml]
 //   Endpoints:
-//     POST /         ntfy-format JSON body {topic,title,message,priority,tags}
-//     -> ntfy GET  /healthz  liveness
+//     POST /         ntfy-format JSON {topic,title,message,priority,tags} -> ntfy
+//     GET  /healthz  liveness
+//     GET  /stats    {received,forwarded,deduped,forward_failed}
 
 #include <curl/curl.h>
 #include <httplib.h>
+#include <nlohmann/json.hpp>
 #include <toml++/toml.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <iostream>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace {
+namespace chrono = std::chrono;
+using json = nlohmann::json;
 
 httplib::Server* g_server = nullptr;
 void OnSig(int) {
   if (g_server) g_server->stop();
 }
 
-size_t DiscardBody(char*, size_t size, size_t nmemb, void*) {
-  return size * nmemb;
-}
+size_t DiscardBody(char*, size_t size, size_t nmemb, void*) { return size * nmemb; }
 
-// Forward a raw ntfy JSON body to the upstream ntfy server. Best-effort; a
-// failure is logged but never blocks the caller for long (10s cap).
+struct Stats {
+  std::atomic<long> received{0};
+  std::atomic<long> forwarded{0};
+  std::atomic<long> deduped{0};
+  std::atomic<long> forward_failed{0};
+};
+
+// Exact de-dup: drop an event whose key was seen within `window`.
+class Dedup {
+ public:
+  explicit Dedup(int window_s) : window_(window_s) {}
+  bool seen(const std::string& key) {
+    if (window_.count() <= 0) return false;  // disabled
+    auto now = chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    if (last_.size() > 4096) {  // opportunistic prune so the map can't grow unbounded
+      for (auto it = last_.begin(); it != last_.end();)
+        it = (now - it->second) > window_ ? last_.erase(it) : std::next(it);
+    }
+    auto it = last_.find(key);
+    if (it != last_.end() && (now - it->second) < window_) {
+      it->second = now;  // refresh -> a steady stream stays suppressed
+      return true;
+    }
+    last_[key] = now;
+    return false;
+  }
+
+ private:
+  chrono::seconds window_;
+  std::mutex mu_;
+  std::unordered_map<std::string, chrono::steady_clock::time_point> last_;
+};
+
 bool ForwardToNtfy(const std::string& base_url, const std::string& token,
                    const std::string& body) {
   CURL* c = curl_easy_init();
@@ -68,15 +110,16 @@ int main(int argc, char** argv) {
   std::string host = "127.0.0.1";
   int port = 8095;
   std::string ntfy_base, ntfy_token;
+  int dedup_window_s = 30;
   try {
     auto t = toml::parse_file(cfg_path);
     host = t["listen"]["host"].value_or<std::string>("127.0.0.1");
     port = t["listen"]["port"].value_or<int>(8095);
     ntfy_base = t["ntfy"]["base_url"].value_or<std::string>("");
     ntfy_token = t["ntfy"]["token"].value_or<std::string>("");
+    dedup_window_s = t["policy"]["dedup_window_s"].value_or<int>(30);
   } catch (const std::exception& e) {
-    std::cerr << "failed to parse " << cfg_path << ": " << e.what()
-              << std::endl;
+    std::cerr << "failed to parse " << cfg_path << ": " << e.what() << std::endl;
     return 1;
   }
   if (ntfy_base.empty()) {
@@ -85,6 +128,9 @@ int main(int argc, char** argv) {
   }
 
   curl_global_init(CURL_GLOBAL_DEFAULT);
+
+  Stats stats;
+  Dedup dedup(dedup_window_s);
 
   httplib::Server svr;
   g_server = &svr;
@@ -95,18 +141,48 @@ int main(int argc, char** argv) {
     res.set_content("{\"healthy\":true}", "application/json");
   });
 
-  svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
-    bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
-    res.status = ok ? 200 : 502;
-    res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}",
-                    "application/json");
+  svr.Get("/stats", [&](const httplib::Request&, httplib::Response& res) {
+    json j = {{"received", stats.received.load()},
+              {"forwarded", stats.forwarded.load()},
+              {"deduped", stats.deduped.load()},
+              {"forward_failed", stats.forward_failed.load()}};
+    res.set_content(j.dump(), "application/json");
   });
 
-  std::cout << "ArbX notifier listening on " << host << ":" << port << " -> "
-            << ntfy_base << std::endl;
-  if (!svr.listen(host, port)) {  // blocks until stop()
-    std::cerr << "notifier: failed to bind " << host << ":" << port
-              << std::endl;
+  svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
+    stats.received.fetch_add(1, std::memory_order_relaxed);
+
+    std::string key;
+    try {
+      auto j = json::parse(req.body);
+      key = j.value("topic", "") + "\x1f" + j.value("title", "") + "\x1f" +
+            j.value("message", "");
+    } catch (...) {
+      // Unparseable body -> forward as-is, never silently drop.
+      bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
+      (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
+      res.status = ok ? 200 : 502;
+      res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}", "application/json");
+      return;
+    }
+
+    if (dedup.seen(key)) {
+      stats.deduped.fetch_add(1, std::memory_order_relaxed);
+      res.status = 200;
+      res.set_content("{\"deduped\":true}", "application/json");
+      return;
+    }
+
+    bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
+    (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
+    res.status = ok ? 200 : 502;
+    res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}", "application/json");
+  });
+
+  std::cout << "ArbX notifier listening on " << host << ":" << port << " -> " << ntfy_base
+            << " (dedup " << dedup_window_s << "s)" << std::endl;
+  if (!svr.listen(host, port)) {
+    std::cerr << "notifier: failed to bind " << host << ":" << port << std::endl;
     curl_global_cleanup();
     return 1;
   }

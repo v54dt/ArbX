@@ -19,11 +19,18 @@ FetchContent_Declare(tomlplusplus
   GIT_TAG        v3.4.0)
 FetchContent_MakeAvailable(tomlplusplus)
 
+FetchContent_Declare(nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(nlohmann_json)
+
 find_package(CURL REQUIRED)
 
 add_executable(notifier src/main.cpp)
 target_link_libraries(notifier PRIVATE
   httplib::httplib
   tomlplusplus::tomlplusplus
+  nlohmann_json::nlohmann_json
   CURL::libcurl
   pthread)
