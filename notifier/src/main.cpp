@@ -24,6 +24,7 @@
 #include <iostream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -44,7 +45,7 @@ struct Stats {
   std::atomic<long> deduped{0};
   std::atomic<long> filtered{0};
   std::atomic<long> budget_dropped{0};
-  std::atomic<long> forward_failed{0};
+  std::atomic<long> retried_ok{0};
 };
 
 // Exact de-dup: drop an event whose key was seen within `window`.
@@ -142,6 +143,78 @@ bool ForwardToNtfy(const std::string& base_url, const std::string& token,
   return true;
 }
 
+struct RetryItem {
+  std::string body;
+  int attempts = 0;
+  chrono::steady_clock::time_point next_try;
+};
+
+// Retry queue for failed forwards: a background worker retries with exponential
+// backoff up to max_attempts, then drops. A transient ntfy outage no longer loses
+// notifications. Budget/dedup/filter already decided to send, so retries do NOT
+// re-consume the budget.
+class RetryQueue {
+ public:
+  RetryQueue(int max_attempts, int base_s, size_t max_queue)
+      : max_attempts_(max_attempts), base_(base_s), max_queue_(max_queue) {}
+
+  void push(std::string body) {
+    auto now = chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    if (q_.size() >= max_queue_) {
+      dropped_.fetch_add(1, std::memory_order_relaxed);  // queue overflow
+      return;
+    }
+    q_.push_back({std::move(body), 0, now + base_});
+  }
+
+  // Retry every due item once; reschedule failures with backoff, drop at the cap.
+  void tick(const std::string& base_url, const std::string& token,
+            std::atomic<long>& retried_ok) {
+    auto now = chrono::steady_clock::now();
+    std::deque<RetryItem> due;
+    {
+      std::lock_guard<std::mutex> lk(mu_);
+      for (auto it = q_.begin(); it != q_.end();) {
+        if (it->next_try <= now) {
+          due.push_back(std::move(*it));
+          it = q_.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+    for (auto& item : due) {
+      if (ForwardToNtfy(base_url, token, item.body)) {
+        retried_ok.fetch_add(1, std::memory_order_relaxed);
+        continue;
+      }
+      if (++item.attempts >= max_attempts_) {
+        dropped_.fetch_add(1, std::memory_order_relaxed);
+        continue;
+      }
+      int shift = item.attempts < 16 ? item.attempts : 16;  // cap backoff growth
+      item.next_try = now + base_ * (1 << shift);
+      std::lock_guard<std::mutex> lk(mu_);
+      q_.push_back(std::move(item));
+    }
+  }
+
+  long size() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return static_cast<long>(q_.size());
+  }
+  long dropped() const { return dropped_.load(std::memory_order_relaxed); }
+
+ private:
+  int max_attempts_;
+  chrono::seconds base_;
+  size_t max_queue_;
+  std::mutex mu_;
+  std::deque<RetryItem> q_;
+  std::atomic<long> dropped_{0};
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -155,6 +228,9 @@ int main(int argc, char** argv) {
   int budget_max = 250;             // max forwards per window (ntfy.sh free ~250/12h)
   int budget_window_s = 43200;      // 12h
   int budget_reserve = 5;           // priority >= this always passes (never budget-dropped)
+  int retry_max_attempts = 5;       // retry a failed forward this many times before dropping
+  int retry_base_s = 5;             // first retry after this many seconds (then exp backoff)
+  int retry_max_queue = 1000;       // cap the retry queue
   try {
     auto t = toml::parse_file(cfg_path);
     host = t["listen"]["host"].value_or<std::string>("127.0.0.1");
@@ -170,6 +246,9 @@ int main(int argc, char** argv) {
     budget_max = t["budget"]["max_per_window"].value_or<int>(250);
     budget_window_s = t["budget"]["window_s"].value_or<int>(43200);
     budget_reserve = t["budget"]["reserve_priority"].value_or<int>(5);
+    retry_max_attempts = t["reliability"]["max_attempts"].value_or<int>(5);
+    retry_base_s = t["reliability"]["base_s"].value_or<int>(5);
+    retry_max_queue = t["reliability"]["max_queue"].value_or<int>(1000);
   } catch (const std::exception& e) {
     std::cerr << "failed to parse " << cfg_path << ": " << e.what() << std::endl;
     return 1;
@@ -184,6 +263,7 @@ int main(int argc, char** argv) {
   Stats stats;
   Dedup dedup(dedup_window_s);
   Budget budget(budget_max, budget_window_s, budget_reserve);
+  RetryQueue retryq(retry_max_attempts, retry_base_s, static_cast<size_t>(retry_max_queue));
 
   httplib::Server svr;
   g_server = &svr;
@@ -201,7 +281,9 @@ int main(int argc, char** argv) {
               {"filtered", stats.filtered.load()},
               {"budget_used", budget.used()},
               {"budget_dropped", stats.budget_dropped.load()},
-              {"forward_failed", stats.forward_failed.load()}};
+              {"retried_ok", stats.retried_ok.load()},
+              {"retry_queue", retryq.size()},
+              {"retry_dropped", retryq.dropped()}};
     res.set_content(j.dump(), "application/json");
   });
 
@@ -217,10 +299,12 @@ int main(int argc, char** argv) {
       key = j.value("topic", "") + "\x1f" + title + "\x1f" + j.value("message", "");
     } catch (...) {
       // Unparseable body -> forward as-is, never silently drop.
-      bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
-      (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
-      res.status = ok ? 200 : 502;
-      res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}", "application/json");
+      if (ForwardToNtfy(ntfy_base, ntfy_token, req.body))
+        stats.forwarded.fetch_add(1, std::memory_order_relaxed);
+      else
+        retryq.push(req.body);
+      res.status = 200;
+      res.set_content("{\"ok\":true}", "application/json");
       return;
     }
 
@@ -253,17 +337,32 @@ int main(int argc, char** argv) {
       return;
     }
 
-    bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
-    (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
-    res.status = ok ? 200 : 502;
-    res.set_content(ok ? "{\"ok\":true}" : "{\"ok\":false}", "application/json");
+    if (ForwardToNtfy(ntfy_base, ntfy_token, req.body))
+      stats.forwarded.fetch_add(1, std::memory_order_relaxed);
+    else
+      retryq.push(req.body);  // transient failure -> retry in the background
+    res.status = 200;
+    res.set_content("{\"ok\":true}", "application/json");
   });
 
   std::cout << "ArbX notifier listening on " << host << ":" << port << " -> " << ntfy_base
             << " (dedup " << dedup_window_s << "s, min_priority " << min_priority
             << ", mute_titles " << mute_titles.size() << ", budget " << budget_max << "/"
-            << budget_window_s << "s reserve>=" << budget_reserve << ")" << std::endl;
-  if (!svr.listen(host, port)) {
+            << budget_window_s << "s reserve>=" << budget_reserve << ", retry "
+            << retry_max_attempts << "x/" << retry_base_s << "s)" << std::endl;
+
+  std::atomic<bool> worker_stop{false};
+  std::thread worker([&] {
+    while (!worker_stop.load()) {
+      retryq.tick(ntfy_base, ntfy_token, stats.retried_ok);
+      std::this_thread::sleep_for(chrono::milliseconds(500));
+    }
+  });
+
+  bool bound = svr.listen(host, port);  // blocks until stop()
+  worker_stop = true;
+  worker.join();
+  if (!bound) {
     std::cerr << "notifier: failed to bind " << host << ":" << port << std::endl;
     curl_global_cleanup();
     return 1;

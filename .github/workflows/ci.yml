@@ -174,9 +174,9 @@ jobs:
         run: |
           cmake -S notifier -B notifier/build -DCMAKE_BUILD_TYPE=Release
           cmake --build notifier/build -j
-      - name: Smoke test (/healthz, /stats, de-dup, filter, budget)
+      - name: Smoke test (/healthz, /stats, de-dup, filter, budget, retry)
         run: |
-          printf '[listen]\nhost="127.0.0.1"\nport=8095\n[ntfy]\nbase_url="http://127.0.0.1:9"\ntoken=""\n[policy]\ndedup_window_s=30\n[filter]\nmin_priority=2\nmute_titles=["mute"]\n[budget]\nmax_per_window=2\nwindow_s=43200\nreserve_priority=5\n' > /tmp/notifier_ci.toml
+          printf '[listen]\nhost="127.0.0.1"\nport=8095\n[ntfy]\nbase_url="http://127.0.0.1:9"\ntoken=""\n[policy]\ndedup_window_s=30\n[filter]\nmin_priority=2\nmute_titles=["mute"]\n[budget]\nmax_per_window=2\nwindow_s=43200\nreserve_priority=5\n[reliability]\nmax_attempts=1\nbase_s=1\n' > /tmp/notifier_ci.toml
           ./notifier/build/notifier /tmp/notifier_ci.toml &
           for i in $(seq 1 30); do curl -sf localhost:8095/healthz >/dev/null 2>&1 && break; sleep 1; done
           curl -sf localhost:8095/healthz | grep -q '"healthy":true'
@@ -195,3 +195,12 @@ jobs:
           echo "$STATS" | grep -q '"deduped":2'
           echo "$STATS" | grep -q '"filtered":2'
           echo "$STATS" | grep -q '"budget_dropped":2'
+          # reliability: failed forwards (dummy upstream) get queued, retried, then dropped
+          RD=0
+          for i in $(seq 1 20); do
+            RD=$(curl -sf localhost:8095/stats | grep -o '"retry_dropped":[0-9]*' | grep -oE '[0-9]+')
+            [ "${RD:-0}" -ge 1 ] && break
+            sleep 1
+          done
+          echo "retry_dropped=$RD"
+          [ "${RD:-0}" -ge 1 ]
