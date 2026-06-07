@@ -23,3 +23,10 @@ min_priority = 1
 # Drop events whose title STARTS WITH any of these (prefix). e.g. ["Quote feed"]
 # mutes both "Quote feed stalled" and "Quote feed resumed".
 mute_titles = []
+
+[budget]
+# Cap forwards to ntfy within a rolling window (ntfy.sh free tier ~250/12h per IP).
+# When the cap is hit, further events are dropped — EXCEPT priority >= reserve.
+max_per_window  = 250
+window_s        = 43200   # 12h
+reserve_priority = 5      # priority >= this always passes (errors never dropped); 0 = no reserve
