@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <deque>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -42,6 +43,7 @@ struct Stats {
   std::atomic<long> forwarded{0};
   std::atomic<long> deduped{0};
   std::atomic<long> filtered{0};
+  std::atomic<long> budget_dropped{0};
   std::atomic<long> forward_failed{0};
 };
 
@@ -70,6 +72,41 @@ class Dedup {
   chrono::seconds window_;
   std::mutex mu_;
   std::unordered_map<std::string, chrono::steady_clock::time_point> last_;
+};
+
+// Rolling-window send budget. Caps forwards within `window` to `max` (the ntfy.sh
+// free tier is ~250 messages / 12h per IP). Events with priority >= `reserve`
+// always pass, so critical alerts are never budget-dropped.
+class Budget {
+ public:
+  Budget(int max, int window_s, int reserve) : max_(max), window_(window_s), reserve_(reserve) {}
+  // Records and allows a forward, or returns false if the budget is exhausted.
+  bool allow(int prio) {
+    if (max_ <= 0) return true;  // disabled
+    auto now = chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    Prune(now);
+    if (static_cast<long>(times_.size()) >= max_ && !(reserve_ > 0 && prio >= reserve_))
+      return false;  // exhausted and not a reserved (high) priority
+    times_.push_back(now);
+    return true;
+  }
+  long used() {
+    auto now = chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(mu_);
+    Prune(now);
+    return static_cast<long>(times_.size());
+  }
+
+ private:
+  void Prune(chrono::steady_clock::time_point now) {
+    while (!times_.empty() && (now - times_.front()) > window_) times_.pop_front();
+  }
+  long max_;
+  chrono::seconds window_;
+  int reserve_;
+  std::mutex mu_;
+  std::deque<chrono::steady_clock::time_point> times_;
 };
 
 bool ForwardToNtfy(const std::string& base_url, const std::string& token,
@@ -115,6 +152,9 @@ int main(int argc, char** argv) {
   int dedup_window_s = 30;
   int min_priority = 1;             // drop events with priority < this (1 = forward all)
   std::vector<std::string> mute_titles;  // drop events whose title starts with any of these
+  int budget_max = 250;             // max forwards per window (ntfy.sh free ~250/12h)
+  int budget_window_s = 43200;      // 12h
+  int budget_reserve = 5;           // priority >= this always passes (never budget-dropped)
   try {
     auto t = toml::parse_file(cfg_path);
     host = t["listen"]["host"].value_or<std::string>("127.0.0.1");
@@ -127,6 +167,9 @@ int main(int argc, char** argv) {
       for (auto& el : *arr)
         if (auto s = el.value<std::string>()) mute_titles.push_back(*s);
     }
+    budget_max = t["budget"]["max_per_window"].value_or<int>(250);
+    budget_window_s = t["budget"]["window_s"].value_or<int>(43200);
+    budget_reserve = t["budget"]["reserve_priority"].value_or<int>(5);
   } catch (const std::exception& e) {
     std::cerr << "failed to parse " << cfg_path << ": " << e.what() << std::endl;
     return 1;
@@ -140,6 +183,7 @@ int main(int argc, char** argv) {
 
   Stats stats;
   Dedup dedup(dedup_window_s);
+  Budget budget(budget_max, budget_window_s, budget_reserve);
 
   httplib::Server svr;
   g_server = &svr;
@@ -155,6 +199,8 @@ int main(int argc, char** argv) {
               {"forwarded", stats.forwarded.load()},
               {"deduped", stats.deduped.load()},
               {"filtered", stats.filtered.load()},
+              {"budget_used", budget.used()},
+              {"budget_dropped", stats.budget_dropped.load()},
               {"forward_failed", stats.forward_failed.load()}};
     res.set_content(j.dump(), "application/json");
   });
@@ -200,6 +246,13 @@ int main(int argc, char** argv) {
       return;
     }
 
+    if (!budget.allow(prio)) {
+      stats.budget_dropped.fetch_add(1, std::memory_order_relaxed);
+      res.status = 200;
+      res.set_content("{\"budget_dropped\":true}", "application/json");
+      return;
+    }
+
     bool ok = ForwardToNtfy(ntfy_base, ntfy_token, req.body);
     (ok ? stats.forwarded : stats.forward_failed).fetch_add(1, std::memory_order_relaxed);
     res.status = ok ? 200 : 502;
@@ -208,7 +261,8 @@ int main(int argc, char** argv) {
 
   std::cout << "ArbX notifier listening on " << host << ":" << port << " -> " << ntfy_base
             << " (dedup " << dedup_window_s << "s, min_priority " << min_priority
-            << ", mute_titles " << mute_titles.size() << ")" << std::endl;
+            << ", mute_titles " << mute_titles.size() << ", budget " << budget_max << "/"
+            << budget_window_s << "s reserve>=" << budget_reserve << ")" << std::endl;
   if (!svr.listen(host, port)) {
     std::cerr << "notifier: failed to bind " << host << ":" << port << std::endl;
     curl_global_cleanup();
