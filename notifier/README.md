@@ -29,7 +29,7 @@ cp notifier.toml.example notifier.toml   # fill in [ntfy] token
 |--------|------|------|--------|
 | `POST` | `/` | ntfy JSON `{topic,title,message,priority,tags}` | filtered + deduped, then forwarded |
 | `GET`  | `/healthz` | — | `{"healthy":true}` |
-| `GET`  | `/stats` | — | `{received,forwarded,deduped,filtered,budget_used,budget_dropped,forward_failed}` |
+| `GET`  | `/stats` | — | `{received,forwarded,deduped,filtered,budget_used,budget_dropped,retried_ok,retry_queue,retry_dropped}` |
 
 Smoke test:
 
@@ -49,5 +49,7 @@ curl -s -X POST localhost:8095/ -H 'Content-Type: application/json' \
 4. **Budget** ✅ — `[budget]` rolling-window cap (ntfy.sh ~250/12h); over the cap,
    events are dropped except priority >= `reserve_priority`. `budget_used` /
    `budget_dropped` exposed.
-5. Reliability: retry queue for failed forwards.
+5. **Reliability** ✅ — `[reliability]` background retry queue (exp backoff,
+   `max_attempts`) for failed forwards; `retried_ok` / `retry_queue` /
+   `retry_dropped` exposed.
 6. Wire ArbX components (tw-exec, …) at the notifier.

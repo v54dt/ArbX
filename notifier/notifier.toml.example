@@ -30,3 +30,10 @@ mute_titles = []
 max_per_window  = 250
 window_s        = 43200   # 12h
 reserve_priority = 5      # priority >= this always passes (errors never dropped); 0 = no reserve
+
+[reliability]
+# A failed forward is queued and retried by a background worker with exponential
+# backoff (first retry after base_s, then doubling), up to max_attempts, then dropped.
+max_attempts = 5
+base_s       = 5
+max_queue    = 1000       # cap the retry queue (overflow is dropped)
